@@ -94,3 +94,20 @@ test('monitoring pages close before the first fresh eligible recovery query',asy
  f.platform.loss=async(...args)=>{assert.equal(closed,true);return loss(...args);};
  try{await f.service.tick();assert.equal(f.counts.submits,1);}finally{f.journal.close();}
 });
+
+test('a concurrent list change waits for both readers before restoring the original price once',async()=>{
+ const f=fixture(),initial={complete:true,observedAt:now,campaigns:[{id:'400001',status:'进行中'}]};
+ let monitoring=false,readers=0,releasePoll,queryStarted;
+ const started=new Promise(resolve=>{queryStarted=resolve;});
+ f.platform.peekActive=async()=>{monitoring=true;queryStarted();await new Promise(resolve=>{releasePoll=resolve;});monitoring=false;return{complete:true,observedAt:now+31000,campaigns:[]};};
+ const loss=f.platform.loss;f.platform.loss=async(...args)=>{assert.equal(monitoring,false);assert.equal(readers,0);return loss(...args);};
+ f.platform.discover=async({onReadBoundary,onReadBatchStart})=>{
+  await onReadBoundary({listing:initial,reads:[],deferListPoll:true});f.advance(31000);onReadBatchStart();readers=2;
+  await started;readers=0;
+  const result=await onReadBoundary({listing:initial,reads:[],deferListPoll:true});
+  return{baselines:[],activeComplete:false,priorityRefreshRequired:result?.refreshRequired===true};
+ };
+ const run=f.service.tick();try{await started;assert.equal(f.counts.submits,0);assert.equal(f.counts.fresh,0);releasePoll();await run;
+  assert.equal(f.counts.submits,1);assert.equal(f.service.status().verified,1);assert.equal(f.service.priorityPoll,null);
+ }finally{releasePoll?.();await run;f.journal.close();}
+});

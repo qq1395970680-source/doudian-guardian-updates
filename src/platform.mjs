@@ -168,7 +168,7 @@ export class DoudianPlatform {
    throw new GuardError('DETAIL_LIMIT','活动详情超过页数上限');
   }catch(e){await this.fault(page,campaign.id,'detail',e);throw e;}finally{await page.close();}
  }
- async discover({readOnlyReuseMaxAgeMs=0,historyReadLimit=20,onReadBoundary=null}={}){
+ async discover({readOnlyReuseMaxAgeMs=0,historyReadLimit=20,onReadBoundary=null,onReadBatchStart=null}={}){
   requireThat(Number.isInteger(historyReadLimit)&&historyReadLimit>=0&&historyReadLimit<=20,'HISTORY_BUDGET','历史读取预算无效');
   requireThat(Number.isSafeInteger(readOnlyReuseMaxAgeMs)&&readOnlyReuseMaxAgeMs>=0&&readOnlyReuseMaxAgeMs<=900000,'READ_CACHE_SCOPE','只读证据复用时间无效');
   const listing=historyReadLimit===0?await this.listActive():await this.list(),details=new Map(),baselines=[],errors=[];
@@ -195,16 +195,16 @@ export class DoudianPlatform {
   // Publish completed reads as they arrive. This display snapshot does not
   // authorize a loss while any active activity remains unread.
   publish();
-  const boundary=async reads=>{
+  const boundary=async(reads,moreReads=false)=>{
    if(!onReadBoundary)return;
-   this.check();const result=await onReadBoundary({listing,reads});this.check();
+   this.check();const result=await onReadBoundary({listing,reads,deferListPoll:!!onReadBatchStart&&moreReads});this.check();
    if(result?.refreshRequired){
     requireThat(result.listing?.complete===true,'ACTIVE_UNKNOWN','优先核对后的活动列表不完整');
     priorityRefreshRequired=true;priorityListing=result.listing;
    }
   };
-  await boundary([]);
-  const readGroup=async(jobs,stage)=>{
+  await boundary([],activeJobs.length+historyJobs.length>0);
+  const readGroup=async(jobs,stage,remainingJobs=0)=>{
    const inFlight=new Set();
    const progress=()=>{this.progress={stage,read:details.size,total:campaigns.length,activeRead,activeTotal,inFlight:[...inFlight],at:Date.now()};};
    const worker=async({c,key})=>{
@@ -222,12 +222,13 @@ export class DoudianPlatform {
    // Priority checks may create a recovery. Close both independent detail pages
    // before entering that boundary or launching the next pair of readers.
    for(let cursor=0;cursor<jobs.length&&!priorityRefreshRequired;cursor+=2){
+    this.check();if(onReadBatchStart)await onReadBatchStart();
     const results=await Promise.allSettled(jobs.slice(cursor,cursor+2).map(worker));
     const rejected=results.find(r=>r.status==='rejected');if(rejected)throw rejected.reason;
-    this.check();await boundary(results.map(r=>r.value).filter(Boolean));
+    this.check();await boundary(results.map(r=>r.value).filter(Boolean),cursor+2<jobs.length||remainingJobs>0);
    }
   };
-  await readGroup(activeJobs,'核对当前活动');
+  await readGroup(activeJobs,'核对当前活动',historyJobs.length);
   await readGroup(historyJobs,'补读完整历史');
   // Network completion order must not change historical selection or batching.
   for(const c of campaigns){

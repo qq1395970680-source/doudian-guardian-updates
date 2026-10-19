@@ -8,7 +8,7 @@ export class GuardianService {
     this.journal=journal;this.platform=platform;this.policy=policy;this.now=now;this.owner=randomUUID();
     this.running=false;this.busy=false;this.timer=null;this.lastRun=null;this.nextAt=null;this.stopRequested=false;
     this.recovered=false;this.lastHistoryRead=this.now();
-    this.priorityWatch=null;this.priorityListing=null;this.lastPriorityPoll=0;this.priorityResume=false;this.lastPriorityCheck=null;
+    this.priorityWatch=null;this.priorityListing=null;this.lastPriorityPoll=0;this.priorityPoll=null;this.priorityResume=false;this.lastPriorityCheck=null;
     this.platform.assertWrite=()=>{requireThat(!this.stopRequested&&this.policy.liveEnabled&&this.policy.cutoverConfirmed,'STOPPED','后台写入已停止');this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
   }
   status() {
@@ -159,7 +159,19 @@ export class GuardianService {
     }
     this.lastPriorityCheck={at:this.now(),hints:hints.length,inspected,submitted:changed,refreshRequired:changed||differentActivity};return changed||differentActivity;
   }
-  async checkPriority({listing,reads}) {
+  beginPriorityPoll() {
+    if(this.priorityPoll||!this.priorityListing||this.stopRequested||this.now()-this.lastPriorityPoll<30000)return;
+    this.lastPriorityPoll=this.now();
+    // This promise performs reads only. Its result is consumed after both
+    // detail readers have closed, before any priority recovery can write.
+    this.priorityPoll=Promise.resolve().then(()=>this.platform.peekActive?this.platform.peekActive():this.platform.listActive())
+      .then(listing=>({listing}),error=>({error}));
+  }
+  async settlePriorityPoll() {
+    const pending=this.priorityPoll;if(!pending)return null;
+    try{return await pending;}finally{if(this.priorityPoll===pending)this.priorityPoll=null;}
+  }
+  async checkPriority({listing,reads,deferListPoll=false}) {
     requireThat(!this.stopRequested,'STOPPED','后台写入已停止');
     if(!this.priorityWatch)this.priorityWatch=new PriorityWatch(this.journal,this.policy.shopId);
     if(!this.priorityListing){this.priorityListing=listing;this.lastPriorityPoll=this.now();}
@@ -167,11 +179,13 @@ export class GuardianService {
       this.priorityWatch.observe(campaign,detail);
       for(const p of detail.products)if(!p.removalConfirmed&&!p.removalAmbiguous)this.journal.clearProductCheck(this.policy.shopId,p.productId);
     }
-    if(this.now()-this.lastPriorityPoll>=30000){
-      this.lastPriorityPoll=this.now();
-      try{this.priorityListing=await (this.platform.peekActive?this.platform.peekActive():this.platform.listActive());}
-      catch(error){if(error.code==='STOPPED')throw error;this.journal.event(null,'priority-read-pending',{shopId:this.policy.shopId,code:error.code||'READ_ERROR',message:String(error.message).slice(0,1000)},this.now());}
+    if(!deferListPoll)this.beginPriorityPoll();
+    const polled=await this.settlePriorityPoll();
+    if(polled?.error){
+      const error=polled.error;if(error.code==='STOPPED')throw error;
+      this.journal.event(null,'priority-read-pending',{shopId:this.policy.shopId,code:error.code||'READ_ERROR',message:String(error.message).slice(0,1000)},this.now());
     }
+    else if(polled)this.priorityListing=polled.listing;
     const hints=this.priorityWatch.hints(this.priorityListing);
     const changed=await this.recoverPriority(hints);
     if(changed||currentListingKey(listing)!==currentListingKey(this.priorityListing))return{refreshRequired:true,listing:this.priorityListing};
@@ -200,7 +214,7 @@ export class GuardianService {
       if(this.stopRequested)return;
       this.nextAt=null;
       const historyReadLimit=this.policy.captureExistingOnly?0:!this.journal.histories(this.policy.shopId).length?20:this.now()-this.lastHistoryRead>=15*60000?2:0;
-      const discovery=await this.platform.discover({historyReadLimit,...(this.platform.listActive?{onReadBoundary:context=>this.checkPriority(context)}:{})});if(historyReadLimit)this.lastHistoryRead=this.now();
+      const discovery=await this.platform.discover({historyReadLimit,...(this.platform.listActive?{onReadBatchStart:()=>this.beginPriorityPoll(),onReadBoundary:context=>this.checkPriority(context)}:{})});if(historyReadLimit)this.lastHistoryRead=this.now();
       for(const baseline of discovery.baselines||[])this.journal.remember(baseline,this.now());
       if(discovery.priorityRefreshRequired){this.priorityResume=true;return{priorityRefreshRequired:true};}
       requireThat(discovery.activeComplete===true,'ACTIVE_UNKNOWN','全店有效活动尚未完整核对，暂停本轮新建');
@@ -260,7 +274,11 @@ export class GuardianService {
       if(leaseError)throw leaseError;
       this.lastRun={startedAt,finishedAt:this.now(),ok:true};
     }catch(error){this.lastRun={startedAt,finishedAt:this.now(),ok:false,code:error.code||'ERROR',message:String(error.message).slice(0,1000)};}
-    finally{clearInterval(heartbeat);this.journal.release(this.policy.shopId,this.owner);this.busy=false;}
+    finally{
+      // A stop or failed detail read must also drain the read-only monitor;
+      // otherwise the next shop, maintenance handoff or write could overlap it.
+      await this.settlePriorityPoll();clearInterval(heartbeat);this.journal.release(this.policy.shopId,this.owner);this.busy=false;
+    }
     return this.status();
   }
   start() {

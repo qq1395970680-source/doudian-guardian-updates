@@ -335,11 +335,11 @@ export class DoudianPlatform {
   }
   const renew=page.locator('#renew_switch_on');if(await renew.count())await this.radio(page,'不开启');
  }
- async observeDraft(task,page,{originalRisk=false}={}){
+ async observeDraft(task,page,{originalRisk=false,priceReview=false}={}){
   const {products,snapshot}=await collectForm(page,{originalRisk});
   requireThat(snapshot.counts.length&&snapshot.counts.every(n=>n===task.plans.length)&&snapshot.mode==='Excel批量导入'&&snapshot.byDiscount&&!snapshot.renew,'DRAFT_RULES',
    '导入数量、打折方式或续期规则未核对：'+JSON.stringify({expectedCount:task.plans.length,counts:snapshot.counts,mode:snapshot.mode,priceModes:snapshot.priceModes,byDiscount:snapshot.byDiscount,renew:snapshot.renew}));
-  requireThat(products.every(p=>!p.errors.length&&p.skus.every(s=>!s.errors.length)),'DRAFT_WARNING','商品或规格有未解决的价格提示');
+  requireThat(products.every(p=>!p.errors.length&&(priceReview||p.skus.every(s=>!s.errors.length))),'DRAFT_WARNING','商品或规格有未解决的价格提示');
   const dates=snapshot.dates.map(parseDate);requireThat(dates.length===2,'DRAFT_TIME','草稿时间不完整');
   return {kind:'draft',shopId:this.policy.shopId,title:snapshot.title,type:snapshot.type,rules:snapshot.rules,startAt:dates[0],endAt:dates[1],
    complete:true,observedAt:Date.now(),rows:bindFormProducts(products,task.plans),warnings:snapshot.warnings,dialogs:snapshot.dialogs};
@@ -357,13 +357,17 @@ export class DoudianPlatform {
    await this.radio(page,'Excel批量导入');await this.rules(page,task.plans[0]);await page.locator('#title').fill(task.title);
    await page.locator('input[placeholder="开始日期"]').click();await button(page,'近48小时').click();
    await this.identity(page);this.check();this.assertWrite();
+   this.journal.assertPricePlans(task.shopId,task.plans);
    const file=page.locator('input[type="file"][accept*=".xlsx"]');requireThat(await file.count()===1,'UPLOAD_CONTROL','官方导入控件不唯一');
    await file.setInputFiles({name:task.title+'.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:makeWorkbook(task.plans)});
    const expected=`全部${task.plans.length}个商品（共${task.plans.reduce((n,p)=>n+p.skus.length,0)}个规格）上传成功`;
    await until(async()=>{this.check();const t=(await page.locator('body').innerText()).replace(/\s/g,'');
     if(/全部商品或规格上传失败|查看上传失败信息/.test(t))throw new GuardError('IMPORT_REJECTED','平台拒绝部分原折扣；未调整价格或提交');return t.includes(expected);},'导入未返回完整成功数量',60000);
    await this.rules(page,task.plans[0]);await this.expand(page);await this.identity(page);
-   const observation=await this.observeDraft(task,page);proveDraft(task,observation);
+   const observation=await this.observeDraft(task,page,{priceReview:true});
+   if(observation.rows.some(row=>row.errors?.length))throw new GuardError('PRICE_REVIEW_REQUIRED','平台要求调整价格，等待逐规格建议和本人确认；未填入更低价格',
+    {priceProbe:{...observation,source:'live-platform-draft'}});
+   proveDraft(task,observation);
    return {page,observation};
   }catch(e){await this.fault(page,task.id,'prepare',e);throw e;}
  }

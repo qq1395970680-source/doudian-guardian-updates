@@ -130,7 +130,7 @@ function checkDraft(task, observation, now, continuation) {
 
 export function proveOriginalRisk(task,observation,now=Date.now()){
   requireThat(task&&['submitting','unknown','verifying'].includes(task.phase)&&task.submitAttempts===1&&task.riskAttempts===0&&
-    task.plans.every(plan=>plan.originalRiskAllowed)&&task.draftProof&&Array.isArray(observation?.dialogs)&&observation.dialogs.length===1,
+    task.plans.every(plan=>plan.originalRiskAllowed||plan.approvedRiskAllowed&&plan.priceApprovalId&&plan.priceApprovalKey)&&task.draftProof&&Array.isArray(observation?.dialogs)&&observation.dialogs.length===1,
     'RISK_PROOF','原折扣确认必须对应尚未确认的原提交记录');
   const dialog=observation.dialogs[0],count=Number(dialog.replace(/\s/g,'').match(/^(\d+)个商品存在低价风险，请谨慎新建/)?.[1]);
   const ids=[...new Set([...dialog.matchAll(/ID[：:]\s*(\d{3,25})(?!\d)/g)].map(m=>m[1]))];

@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { fingerprint, requireThat, validateHistorical, proveDraft, proveOriginalRisk } from './policy.mjs';
+import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft, proveOriginalRisk } from './policy.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -20,6 +20,8 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS settings(shop TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS leases(shop TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS product_checks(shop TEXT NOT NULL, product TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(shop,product));`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS price_reviews(id TEXT PRIMARY KEY, shop TEXT NOT NULL, product TEXT NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS price_targets(shop TEXT NOT NULL, product TEXT NOT NULL, review TEXT NOT NULL, PRIMARY KEY(shop,product));`);
   }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -64,6 +66,7 @@ export class Journal {
   }
   beginSubmit(taskId, proof, now = Date.now()) {
     const task = this.get(taskId);
+    if(task)this.assertPricePlans(task.shopId,task.plans);
     requireThat(task?.phase === 'prepared' && task.submitAttempts === 0 && proof?.taskId === taskId && proof.at > 0 && now - proof.at <= 30000,
       'SUBMIT_PROOF', '提交证明缺失、过期或已尝试提交');
     const verified=proveDraft(task,proof.observation,now);
@@ -74,12 +77,13 @@ export class Journal {
     return this.transaction(() => {
       const task = this.get(taskId);
       requireThat(task && ['submitting', 'unknown', 'verifying'].includes(task.phase) && task.riskAttempts === 0 &&
-        task.plans.every(p => p.originalRiskAllowed) && proof?.taskId === taskId && proof.kind==='original-discount-risk' &&
+        task.plans.every(p => p.originalRiskAllowed||p.approvedRiskAllowed&&p.priceApprovalId) && proof?.taskId === taskId && proof.kind==='original-discount-risk' &&
         proof.at>0 && proof.at<=now+5000 && now-proof.at<=30000 && proof.observation &&
         Array.isArray(proof.observation.dialogs) && proof.observation.dialogs.length===1 &&
         /低价|风险折扣/.test(proof.observation.dialogs[0]) && /仍要创建/.test(proof.observation.dialogs[0]),
         'RISK_PROOF', '低价提示未对应已授权原折扣，或已尝试确认');
       proveOriginalRisk(task,proof.observation,now);
+      this.assertPricePlans(task.shopId,task.plans);
       const { id, shopId, phase, updatedAt, ...body } = task;
       Object.assign(body, { riskAttempts: 1, riskAttemptedAt: now, riskProof: proof });
       this.db.prepare('UPDATE tasks SET body=?,updated=? WHERE id=?').run(JSON.stringify(body), now, taskId);
@@ -98,6 +102,75 @@ export class Journal {
     this.db.prepare('INSERT OR IGNORE INTO baselines VALUES(?,?,?,?,?)').run(baseline.shopId, baseline.productId, fingerprint(stable), now, JSON.stringify(baseline));
   }
   histories(shopId) { return this.db.prepare('SELECT body FROM baselines WHERE shop=? ORDER BY at DESC').all(shopId).map(r => JSON.parse(r.body)); }
+  priceReview(reviewId) {const r=this.db.prepare('SELECT body FROM price_reviews WHERE id=?').get(reviewId);return r?JSON.parse(r.body):null;}
+  priceReviews(shopId) {return this.db.prepare('SELECT body FROM price_reviews WHERE shop=? ORDER BY updated DESC,rowid DESC LIMIT 200').all(shopId).map(r=>JSON.parse(r.body));}
+  priceTarget(shopId,productId) {const r=this.db.prepare('SELECT review FROM price_targets WHERE shop=? AND product=?').get(shopId,productId);return r?this.priceReview(r.review):null;}
+  supersedePriceReviews(shopId,productId,reason,now=Date.now()) {
+    return this.transaction(()=>{
+      const rows=this.db.prepare("SELECT id,body FROM price_reviews WHERE shop=? AND product=? AND state='pending'").all(shopId,productId);
+      for(const row of rows){const review={...JSON.parse(row.body),status:'superseded',supersededAt:now,supersededReason:reason};
+        this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(review.status,JSON.stringify(review),now,row.id);
+      }
+      return rows.length;
+    });
+  }
+  recordPriceReview(review,now=Date.now()) {
+    const task=this.get(review.taskId);
+    requireThat(task&&task.shopId===review.shopId&&['queued','prepared'].includes(task.phase)&&task.submitAttempts===0&&review.source==='live-platform-draft',
+      'PRICE_REVIEW_EVIDENCE','只有本次未提交草稿的直接读取能生成调价建议');
+    const prior=this.db.prepare('SELECT body FROM price_reviews WHERE shop=? AND product=? ORDER BY updated DESC,rowid DESC').all(review.shopId,review.productId).map(r=>JSON.parse(r.body)).find(r=>r.key===review.key);
+    if(prior&&(['approved','declined'].includes(prior.status)||prior.status==='pending'&&prior.expiresAt>now))return prior;
+    this.supersedePriceReviews(review.shopId,review.productId,'新的平台价格要求已读取',now);
+    const saved={...structuredClone(review),id:randomUUID(),status:'pending'};
+    this.db.prepare('INSERT INTO price_reviews VALUES(?,?,?,?,?,?)').run(saved.id,saved.shopId,saved.productId,saved.status,JSON.stringify(saved),now);
+    this.event(task.id,'price-review-pending',{shopId:saved.shopId,productId:saved.productId,reviewId:saved.id},now);return saved;
+  }
+  decidePriceReview(shopId,reviewId,key,decision,{confirmedSkuIds=[],acceptPriceAndRisk=false,historicalFingerprint=null}={},now=Date.now()) {
+    return this.transaction(()=>{
+      const r=this.priceReview(reviewId);
+      requireThat(r&&r.shopId===shopId&&r.key===key,'PRICE_REVIEW_CHANGED','店铺或调价建议已变化');
+      requireThat(['approve','decline','recalculate'].includes(decision),'PRICE_REVIEW_DECISION','调价确认操作无效');
+      requireThat(!this.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===r.productId)),
+        'PENDING','此商品仍有未完成或结果未知的提交，先独立核实');
+      if(decision==='approve'){
+        requireThat(acceptPriceAndRisk===true&&Array.isArray(confirmedSkuIds)&&new Set(confirmedSkuIds).size===confirmedSkuIds.length&&
+          fingerprint([...confirmedSkuIds].sort())===fingerprint(r.rows.map(row=>row.id).sort()),'PRICE_CONSENT_REQUIRED','须核对全部规格并明确确认表内价格');
+        requireThat(r.status==='pending'&&r.expiresAt>now&&r.createdAt<=now,'PRICE_REVIEW_EXPIRED','建议已处理或过期，请重新核对');
+        requireThat(r.historicalFingerprint===historicalFingerprint,'PRICE_REVIEW_CHANGED','历史来源已变化，请重新核对');
+        const target=this.priceTarget(shopId,r.productId),previous=target?.historicalFingerprint===r.historicalFingerprint?target.id:null;
+        requireThat((r.previousApprovalId||null)===previous,'PRICE_REVIEW_CHANGED','此前已确认的价格已变化');
+        r.status='approved';r.approvedAt=now;r.consent={exactPrices:true,matchedRiskConfirmation:true,continueGuardingExactPrices:true};
+        this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(shopId,r.productId,r.id);
+      }else{
+        requireThat(['pending','declined'].includes(r.status),'PRICE_REVIEW_CHANGED','这份建议不能再修改');
+        r.status=decision==='decline'?'declined':'superseded';
+        if(decision==='recalculate'){
+          const task=this.get(r.taskId);
+          if(task?.phase==='blocked'&&task.submitAttempts===0){
+            const {id,shopId:taskShop,phase,updatedAt,...body}=task;body.retryAfter=now;
+            this.db.prepare('UPDATE tasks SET body=?,updated=? WHERE id=?').run(JSON.stringify(body),now,id);
+          }
+        }
+      }
+      this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(r.status,JSON.stringify(r),now,r.id);
+      this.clearProductCheck(shopId,r.productId);
+      this.event(null,'price-review-'+r.status,{shopId,productId:r.productId,reviewId:r.id},now);return r;
+    });
+  }
+  assertPricePlans(shopId,plans) {
+    for(const plan of plans){
+      if(!plan.priceApprovalId){requireThat(!plan.approvedRiskAllowed,'PRICE_APPROVAL_MISSING','缺少明确的逐规格确认');continue;}
+      const review=this.priceReview(plan.priceApprovalId),baseline=this.histories(shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
+      requireThat(review?.status==='approved'&&review.consent?.exactPrices&&review.consent?.matchedRiskConfirmation&&baseline&&this.priceTarget(shopId,plan.productId)?.id===review.id&&
+        review.shopId===shopId&&plan.shopId===shopId&&review.productId===plan.productId&&review.key===plan.priceApprovalKey&&review.historicalFingerprint===plan.historicalFingerprint,
+        'PRICE_APPROVAL_CHANGED','调价确认与当前执行计划不一致');
+      for(const sku of plan.skus){const original=baseline.skus.find(s=>s.id===sku.id),approved=review.rows.find(r=>r.id===sku.id);
+        requireThat(original&&original.baseFen===sku.baseFen&&normalizeName(original.name)===sku.name&&
+          sku.discount===(approved?.discount??original.discount)&&sku.saleFen===Math.round(sku.baseFen*sku.discount/100),
+          'PRICE_APPROVAL_CHANGED','执行价格超出逐规格确认范围');
+      }
+    }
+  }
   productChecks(shopId){return this.db.prepare('SELECT body FROM product_checks WHERE shop=?').all(shopId).map(r=>JSON.parse(r.body));}
   putProductCheck(shopId,productId,check){this.db.prepare('INSERT INTO product_checks VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET body=excluded.body').run(shopId,productId,JSON.stringify({shopId,productId,...check}));}
   clearProductCheck(shopId,productId){this.db.prepare('DELETE FROM product_checks WHERE shop=? AND product=?').run(shopId,productId);}

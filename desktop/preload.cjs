@@ -4,5 +4,7 @@ contextBridge.exposeInMainWorld('guardianDesktop',{
  checkUpdates:()=>ipcRenderer.invoke('guardian-update-check'),
  installUpdate:()=>ipcRenderer.invoke('guardian-update-install'),
  updateStatus:()=>ipcRenderer.invoke('guardian-update-status'),
+ saveTransfer:file=>ipcRenderer.invoke('guardian-transfer-save',file),
+ chooseTransfer:()=>ipcRenderer.invoke('guardian-transfer-choose'),
  onUpdate:callback=>{if(typeof callback==='function')ipcRenderer.on('guardian-update-state',(_event,value)=>callback(value));}
 });

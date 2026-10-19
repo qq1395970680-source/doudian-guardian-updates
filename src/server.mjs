@@ -12,6 +12,7 @@ import {buildCatalog} from './catalog.mjs';
 import {AccountRegistry} from './accounts.mjs';
 import {checkForUpdates,UPDATE_REPOSITORY} from './updates.mjs';
 import {projectBuild} from './build.mjs';
+import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from './migration.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export async function createApp({config=null,rootDir=root,port=19417,runtime=join(rootDir,'runtime'),dependencies={}}={}){
@@ -20,20 +21,21 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  const journal=dependencies.journal||new Journal(join(runtime,'guardian.sqlite')),accounts=new AccountRegistry(journal);
  if(config?.shopId)accounts.register(config,config.profileKey||'shop-'+id(config.shopId),{...config,captureExistingOnly:config.captureExistingOnly===true});
  const browser=dependencies.browser||new DedicatedBrowser(runtime),token=randomBytes(32).toString('hex'),instance=randomBytes(16).toString('hex');
- let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null;
+ let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,migrationPreview=null;
  function bind(account){
   shopId=account?.shopId||null;saved=shopId?journal.settings(shopId)||{}:{};
   const enabled=saved.executionEnabled===true||saved.cutoverConfirmed===true;
   policy={...account,shopId,liveEnabled:enabled,cutoverConfirmed:enabled};
   platform=dependencies.platformFactory?.(policy)||dependencies.platform||new DoudianPlatform({browser,policy,journal});
   service=dependencies.serviceFactory?.({policy,platform})||dependencies.service||new GuardianService({journal,platform,policy});
-  connection=null;
+  connection=null;migrationPreview=null;
  }
  bind(accounts.selected());
  const snapshot=()=>({version,build:'isolated-headless-journal',sourceBuild,instance,shopId,name:policy.name||null,connection,action,lastAction,
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
   updates:{repository:UPDATE_REPOSITORY,currentVersion:version},
+  priceReviewsPending:shopId?journal.priceReviews(shopId).filter(r=>r.status==='pending').length:0,
   events:shopId?journal.events(150).filter(e=>e.detail?.shopId===shopId||e.task&&journal.get(e.task)?.shopId===shopId).slice(0,30):[]});
  async function background(kind,fn){
   requireThat(!action&&!service.busy,'BUSY','当前任务完成前不能执行另一操作');action=kind;
@@ -57,9 +59,13 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    requireThat(req.headers.host===host,'HOST_REJECTED','只接受本机工作台访问');
    const path=new URL(req.url,origin).pathname;
    if(req.method==='GET'&&path==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(html);return;}
-   const assets={'/app.js':['app.js','text/javascript; charset=utf-8'],'/app.css':['app.css','text/css; charset=utf-8'],'/guardian.png':['guardian.png','image/png']};
+   const assets={'/app.js':['app.js','text/javascript; charset=utf-8'],'/price-reviews.js':['price-reviews.js','text/javascript; charset=utf-8'],'/migration.js':['migration.js','text/javascript; charset=utf-8'],'/app.css':['app.css','text/css; charset=utf-8'],'/guardian.png':['guardian.png','image/png']};
    if(req.method==='GET'&&assets[path]){const[file,type]=assets[path];res.writeHead(200,{'Content-Type':type});res.end(await readFile(join(rootDir,'public',file)));return;}
    if(req.method==='GET'&&path==='/api/status'){json(200,snapshot());return;}
+   if(req.method==='GET'&&path==='/api/price-reviews'){
+    const reviews=shopId?journal.priceReviews(shopId):[];
+    json(200,{shopId,reviews});return;
+   }
    if(req.method==='GET'&&path==='/api/products'){
     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,
      histories:shopId?journal.histories(shopId):[],tasks:shopId?journal.list(shopId):[],excluded:policy.excludedProductIds||[]});
@@ -69,10 +75,32 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }
    requireThat(req.method==='POST'&&req.headers.origin===origin&&req.headers['x-guardian-token']===token,'REQUEST_REJECTED','请求必须来自本机工作台');
    requireThat(req.headers['content-type']==='application/json','REQUEST_REJECTED','请求格式无效');
-   let body='';for await(const chunk of req){body+=chunk.toString('utf8');requireThat(body.length<4096,'REQUEST_REJECTED','请求过大');}
+   const bodyLimit=path==='/api/migration/preview'?TRANSFER_MAX_BYTES+1024:path==='/api/price-reviews/decide'?65536:4096;
+   const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;requireThat(bytes<bodyLimit,'REQUEST_REJECTED','请求过大');chunks.push(chunk);}
+   const body=Buffer.concat(chunks).toString('utf8');
    const args=JSON.parse(body||'{}');requireThat(args&&typeof args==='object'&&!Array.isArray(args),'REQUEST_REJECTED','请求内容无效');
    if(path==='/api/updates/check'){json(200,await checkForUpdates(version));return;}
-   if(path==='/api/login'){
+   if(path.startsWith('/api/migration/')){
+    requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先登录并连接备份对应的店铺');
+    if(path==='/api/migration/preview'){
+     const preview=validateTransfer(args.file,shopId);migrationPreview={id:randomBytes(24).toString('hex'),file:structuredClone(args.file),shopId,expiresAt:Date.now()+30*60000};
+     json(200,{...preview,previewId:migrationPreview.id,expiresAt:migrationPreview.expiresAt});return;
+    }
+    requireThat(!service.running&&!service.busy&&!action,'BUSY','请等待守护暂停并完成当前动作后迁移');
+    if(path==='/api/migration/export'){
+     const file=makeTransfer(journal,accounts.selected(),{version});json(200,{file,name:`DoudianGuardian-${shopId}-${new Date().toISOString().slice(0,10)}.guardian-backup.json`});return;
+    }
+    if(path==='/api/migration/import'){
+     requireThat(migrationPreview&&migrationPreview.shopId===shopId&&migrationPreview.id===args.previewId&&migrationPreview.expiresAt>Date.now(),'TRANSFER_PREVIEW','预览已失效，请重新选择备份');
+     const result=importTransfer(journal,migrationPreview.file,{shopId,accepted:args.accepted,expectedDigest:args.digest});
+     accounts.data=journal.settings('application');Object.assign(policy,accounts.selected());migrationPreview=null;
+     json(200,{ok:true,...result});return;
+    }
+    throw Object.assign(new Error('没有此迁移操作'),{code:'NOT_FOUND'});
+   }else if(path==='/api/price-reviews/decide'){
+    requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先连接并核对当前店铺');
+    const review=service.decidePriceReview(args);json(200,{ok:true,review});return;
+   }else if(path==='/api/login'){
     requireThat(!action&&!service.running&&!service.busy&&!snapshot().unknown,'BUSY','请等待当前守护停止并核实未完成结果，再登录店铺');
     await background('打开店铺登录窗口',async()=>{
      await browser.close();connection=null;platform.stopping=false;

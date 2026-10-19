@@ -3,7 +3,7 @@
   "productName": "抖店折扣守护",
   "artifactName": "DoudianGuardian-Setup-${version}-${arch}.${ext}",
   "directories": {"output": "desktop-dist", "buildResources": "build-assets"},
-  "files": ["desktop/**/*", "src/updates.mjs", "package.json", "!node_modules/**/*"],
+  "files": ["desktop/**/*", "src/updates.mjs", "src/migration.mjs", "src/policy.mjs", "package.json", "!node_modules/**/*"],
   "extraResources": [
     {"from": ".desktop/service", "to": "service"},
     {"from": ".desktop/service/node_modules/playwright", "to": "service/node_modules/playwright"},

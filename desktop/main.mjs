@@ -1,5 +1,5 @@
 import {app,BrowserWindow,Menu,Tray,nativeImage,dialog,shell,session,ipcMain} from 'electron';
-import {readFile,mkdir,writeFile,cp,access} from 'node:fs/promises';
+import {readFile,mkdir,writeFile,cp,access,stat} from 'node:fs/promises';
 import {join,resolve,dirname} from 'node:path';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
@@ -9,6 +9,7 @@ import {createUpdateFetcher,createSystemUpdateFetcher} from './update-network.mj
 import {tmpdir} from 'node:os';
 import {ensureService,probeService,shutdownService,isAllowedNavigation,upgradeService} from './service-controller.mjs';
 import {prepareBackend,launchBackend} from './backend.mjs';
+import {validateTransfer,TRANSFER_MAX_BYTES} from '../src/migration.mjs';
 
 const product='抖店折扣守护';
 // Integration tests use an explicitly isolated temporary runtime and a mock
@@ -65,6 +66,16 @@ async function sourceProject(){
  try{await access(target);}catch{await mkdir(target,{recursive:true});await cp(join(resources,'source'),target,{recursive:true,force:false,errorOnExist:true});}
  await shell.openPath(target);
 }
+async function saveTransfer(file){
+ const preview=validateTransfer(file,file?.payload?.shopId),choice=await dialog.showSaveDialog(window,{title:'保存店铺迁移备份',defaultPath:join(app.getPath('documents'),`DoudianGuardian-${preview.shopId}.guardian-backup.json`),filters:[{name:'折扣守护迁移备份',extensions:['json']}]});
+ if(choice.canceled||!choice.filePath)return{canceled:true};await writeFile(choice.filePath,JSON.stringify(file),'utf8');return{saved:true};
+}
+async function chooseTransfer(){
+ const choice=await dialog.showOpenDialog(window,{title:'选择店铺迁移备份',properties:['openFile'],filters:[{name:'折扣守护迁移备份',extensions:['json']}]});
+ if(choice.canceled||!choice.filePaths.length)return{canceled:true};const path=choice.filePaths[0],info=await stat(path);
+ if(!info.isFile()||info.size>TRANSFER_MAX_BYTES)throw Error('请选择大小不超过 32 MB 的迁移备份');
+ const file=JSON.parse(await readFile(path,'utf8'));validateTransfer(file,file?.payload?.shopId);return{file};
+}
 async function information(){
  let s;try{s=(await probeService({url,shopId})).status;}catch{}
  await message(product+' '+app.getVersion(),['桌面窗口关闭后仍在托盘运行。','完全停止请使用“程序 → 停止守护并退出”。',
@@ -105,6 +116,7 @@ if(!single){app.quit();}else{
   webPreferences:{session:appSession,preload:join(import.meta.dirname,'preload.cjs'),additionalArguments:['--guardian-version='+app.getVersion()],sandbox:true,contextIsolation:true,nodeIntegration:false,nodeIntegrationInWorker:false,webSecurity:true,webviewTag:false}});
  const senderAllowed=event=>event.sender===window.webContents&&event.senderFrame===window.webContents.mainFrame&&isAllowedNavigation(event.senderFrame.url,url);
  for(const [channel,fn] of [['guardian-update-check',checkUpdate],['guardian-update-install',installUpdate],['guardian-update-status',()=>updateState]])ipcMain.handle(channel,async event=>{if(!senderAllowed(event))throw Error('更新请求来源无效');return await fn();});
+ for(const [channel,fn] of [['guardian-transfer-save',saveTransfer],['guardian-transfer-choose',chooseTransfer]])ipcMain.handle(channel,async(event,...args)=>{if(!senderAllowed(event))throw Error('迁移请求来源无效');return await fn(...args);});
  window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
  window.webContents.on('will-navigate',(e,target)=>{if(!isAllowedNavigation(target,url))e.preventDefault();});
  window.webContents.on('will-attach-webview',e=>e.preventDefault());

@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat} from './policy.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
+import {applyPriceTarget,makePriceReviews} from './price-review.mjs';
 
 export class GuardianService {
   constructor({journal,platform,policy,now=()=>Date.now()}) {
@@ -22,6 +23,14 @@ export class GuardianService {
     for(const baseline of histories)if(!latest.has(baseline.productId))latest.set(baseline.productId,baseline);
     return latest;
   }
+  restorePlan(baseline,current) {
+    return applyPriceTarget(planOriginalRestore(baseline,current,this.policy,this.now()),this.journal.priceTarget(this.policy.shopId,baseline.productId));
+  }
+  decidePriceReview(args) {
+    const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
+    requireThat(review?.shopId===this.policy.shopId&&baseline&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','店铺、历史或排除设置已变化');
+    return this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline)},this.now());
+  }
   async preview() {
     requireThat(!this.running&&!this.busy,'BUSY','只读预查不能与守护任务并行');
     requireThat(this.platform.inventory?.activeComplete,'ACTIVE_UNKNOWN','全店有效活动尚未完整核对');
@@ -36,7 +45,7 @@ export class GuardianService {
           const loss=await this.platform.loss(baseline);requireThat(loss?.complete,'ACTIVE_UNKNOWN','当前活动读取不完整');
           if(loss.active)entry.status='active';
           else {
-            const current=await this.platform.precheck(baseline),plan=planOriginalRestore(baseline,current,this.policy,this.now());
+            const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
             Object.assign(entry,{status:'eligible',skuCount:plan.skus.length,skippedSkuIds:plan.skippedSkuIds,observedAt:current.observedAt});
           }
         }
@@ -63,7 +72,7 @@ export class GuardianService {
     const current=this.journal.get(task.id);
     const verified=this.journal.transition(task.id,current.phase,'verified',{receipt},this.now());
     if(!this.priorityWatch)this.priorityWatch=new PriorityWatch(this.journal,this.policy.shopId);
-    for(const plan of verified.plans)this.priorityWatch.recordOne(plan.productId,receipt.campaignId,receipt.verifiedAt);
+    for(const plan of verified.plans){this.priorityWatch.recordOne(plan.productId,receipt.campaignId,receipt.verifiedAt);this.journal.supersedePriceReviews(this.policy.shopId,plan.productId,'已独立回读有效活动',this.now());}
     this.priorityWatch.save();
     if(this.platform.release)await this.platform.release(verified).catch(()=>{});return true;
   }
@@ -71,6 +80,7 @@ export class GuardianService {
     let draft;
     try {
       requireThat(!this.stopRequested,'STOPPED','运行已停止');
+      this.journal.assertPricePlans(task.shopId,task.plans);
       draft=await this.platform.prepare(task);
       const proof=proveDraft(task,draft.observation,this.now());
       this.journal.transition(task.id,'queued','prepared',{preparedAt:this.now()},this.now());
@@ -86,6 +96,10 @@ export class GuardianService {
       this.journal.transition(task.id,'submitting','verifying',{},this.now());
       if(!await this.reconcile(this.journal.get(task.id)))this.journal.transition(task.id,'verifying','unknown',{reason:'平台结果尚未回读确认'},this.now());
     }catch(error){
+      if(error.code==='PRICE_REVIEW_REQUIRED'&&error.detail?.priceProbe){
+        try{for(const review of makePriceReviews(task,error.detail.priceProbe,this.now()))this.journal.recordPriceReview(review,this.now());}
+        catch(proposalError){error=proposalError;}
+      }
       const current=this.journal.get(task.id),reason=`${error.code||'ERROR'}: ${String(error.message).slice(0,800)}`;
       if(this.platform.captureFailure)await this.platform.captureFailure(task,draft,current.phase,error).catch(()=>{});
       if(['queued','prepared'].includes(current.phase))this.journal.transition(task.id,current.phase,'blocked',{reason,retryAfter:this.now()+15*60000},this.now());
@@ -118,11 +132,12 @@ export class GuardianService {
         requireThat(loss?.complete===true,'LOSS_UNPROVEN','优先恢复前未能完整核对当前活动');
         if(loss.active){
           requireThat(!loss.ambiguous,'ACTIVITY_AMBIGUOUS','商品在当前活动中的退出状态仍待核实');
+          this.journal.supersedePriceReviews(this.policy.shopId,baseline.productId,'当前商品已有有效活动',this.now());
           differentActivity=differentActivity||!this.priorityListing.campaigns.some(c=>c.id===loss.campaignId);
           this.priorityWatch.recordOne(baseline.productId,loss.campaignId,loss.observedAt);this.priorityWatch.save();this.journal.clearProductCheck(this.policy.shopId,baseline.productId);continue;
         }
         requireThat(loss.lossKey&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','优先恢复缺少新鲜的独立失效证明');
-        const current=await this.platform.precheck(baseline),plan=planOriginalRestore(baseline,current,this.policy,this.now());
+        const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
         const key=fingerprint({type:plan.type,rules:plan.rules});if(!groups.has(key))groups.set(key,[]);
         groups.get(key).push({baseline,hint,loss,plan});
       }catch(error){blocked(baseline,hint,error);}
@@ -203,7 +218,7 @@ export class GuardianService {
         if(this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===baseline.productId)))continue;
         try{
           const loss=await this.platform.loss(baseline);if(!loss?.complete)continue;
-          if(loss.active){this.journal.clearProductCheck(this.policy.shopId,baseline.productId);continue;}
+          if(loss.active){this.journal.clearProductCheck(this.policy.shopId,baseline.productId);if(!loss.ambiguous)this.journal.supersedePriceReviews(this.policy.shopId,baseline.productId,'当前商品已有有效活动',this.now());continue;}
           const prior=checks.get(baseline.productId),same=prior?.lossKey===loss.lossKey&&prior?.contextKey===fingerprint(baseline);
           if(same&&prior.retryAt>this.now())continue;
           candidates.push({baseline,loss,retry:same,priorAt:prior?.at||0});
@@ -215,7 +230,7 @@ export class GuardianService {
         if(await this.priorityPlanningBoundary())return{priorityRefreshRequired:true};
         try{
           const current=await this.platform.precheck(baseline);
-          const plan=planOriginalRestore(baseline,current,this.policy,this.now());
+          const plan=this.restorePlan(baseline,current);
           this.journal.clearProductCheck(this.policy.shopId,baseline.productId);
           const key=fingerprint({type:plan.type,rules:plan.rules});if(!groups.has(key))groups.set(key,[]);
           groups.get(key).push({plan,loss});
@@ -232,7 +247,7 @@ export class GuardianService {
             const baseline=latest.get(member.plan.productId),loss=await this.platform.loss(baseline,{fresh:true});
             requireThat(loss?.complete===true&&!loss.active&&loss.lossKey,'LOSS_UNPROVEN','提交前未能确认商品当前无有效活动');
             const current=await this.platform.precheck(baseline);
-            plans.push(planOriginalRestore(baseline,current,this.policy,this.now()));losses.push(loss.lossKey);
+            plans.push(this.restorePlan(baseline,current));losses.push(loss.lossKey);
           }catch(error){this.journal.event(null,'product-blocked',{productId:member.plan.productId,code:error.code||'ERROR',message:error.message},this.now());}
         }
         if(!plans.length)continue;

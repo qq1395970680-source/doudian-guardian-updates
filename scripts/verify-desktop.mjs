@@ -22,7 +22,7 @@ for(const dir of ['src','public']){
 }
 if(!(await readFile(join(service,'config/default.json'))).equals(await readFile(join(root,'config/default.json'))))throw Error('Default configuration mismatch');
 const configs=await readdir(join(service,'config'));if(configs.length!==1||configs[0]!=='default.json')throw Error('Release carries a shop configuration');
-if(!asar.extractFile(asarFile,join('src','updates.mjs')).equals(await readFile(join(root,'src/updates.mjs'))))throw Error('Updater module mismatch');
+for(const name of ['updates.mjs','migration.mjs','policy.mjs'])if(!asar.extractFile(asarFile,join('src',name)).equals(await readFile(join(root,'src',name))))throw Error('Desktop dependency mismatch: '+name);
 const version=JSON.parse(await readFile(join(root,'package.json'),'utf8')).version;
 const installer=join(root,'desktop-dist',`DoudianGuardian-Setup-${version}-x64.exe`),bytes=await readFile(installer);
 const result={at:Date.now(),version,app,bundleId,desktopFiles,serviceAndSourceMatch:true,installer,installerBytes:bytes.length,installerSha256:createHash('sha256').update(bytes).digest('hex'),containsUserData:false};

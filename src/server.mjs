@@ -11,12 +11,11 @@ import {requireThat,id} from './policy.mjs';
 import {buildCatalog} from './catalog.mjs';
 import {AccountRegistry} from './accounts.mjs';
 import {checkForUpdates,UPDATE_REPOSITORY} from './updates.mjs';
+import {projectBuild} from './build.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export async function createApp({config=null,rootDir=root,port=19417,runtime=join(rootDir,'runtime'),dependencies={}}={}){
- const buildHash=createHash('sha256');
- for(const file of (await readdir(join(root,'src'))).filter(n=>n.endsWith('.mjs')).sort())buildHash.update(file).update(await readFile(join(root,'src',file)));
- const sourceBuild=buildHash.digest('hex'),version=JSON.parse(await readFile(join(root,'package.json'),'utf8')).version;
+ const sourceBuild=await projectBuild(root),version=JSON.parse(await readFile(join(root,'package.json'),'utf8')).version;
  await mkdir(runtime,{recursive:true});
  const journal=dependencies.journal||new Journal(join(runtime,'guardian.sqlite')),accounts=new AccountRegistry(journal);
  if(config?.shopId)accounts.register(config,config.profileKey||'shop-'+id(config.shopId),{...config,captureExistingOnly:config.captureExistingOnly===true});

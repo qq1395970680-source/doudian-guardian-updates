@@ -1,4 +1,4 @@
-import {readFile,mkdir,cp,rename,access} from 'node:fs/promises';
+import {readFile,mkdir,cp,rename,access,realpath} from 'node:fs/promises';
 import {openSync,closeSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {join,resolve,relative,isAbsolute} from 'node:path';
@@ -21,12 +21,13 @@ export async function prepareBackend({bundleRoot,runtime}){
  // not overwrite a live Node/Chromium process or its login/SQLite directories.
  const bundleId=await validateBundle(bundleRoot),versions=join(runtime,'versions'),target=join(versions,bundleId);
  await mkdir(versions,{recursive:true});
- try{await access(target);await validateBundle(target);return target;}catch(e){if(e.code!=='ENOENT')throw e;}
+ try{await access(target);await validateBundle(target);return await realpath(target);}catch(e){if(e.code!=='ENOENT')throw e;}
  const staging=join(versions,bundleId+'.install-'+process.pid+'-'+Date.now());
- await cp(bundleRoot,staging,{recursive:true,errorOnExist:true,force:false});await validateBundle(staging);await rename(staging,target);return target;
+ await cp(bundleRoot,staging,{recursive:true,errorOnExist:true,force:false});await validateBundle(staging);await rename(staging,target);return await realpath(target);
 }
 export async function launchBackend({root,runtime,shopId}){
  await mkdir(runtime,{recursive:true});
+ root=await realpath(root);runtime=await realpath(runtime);
  const out=openSync(join(runtime,'service-out.log'),'a'),err=openSync(join(runtime,'service-error.log'),'a');let child;
  try{
   child=spawn(join(root,'engine','node.exe'),['src/server.mjs',...(shopId?['--shop',shopId]:[])],{cwd:root,windowsHide:true,detached:true,

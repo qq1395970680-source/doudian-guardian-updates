@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import {join,resolve,relative,isAbsolute,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import './create-desktop-icon.mjs';
+import {projectBuild} from '../src/build.mjs';
 const root=resolve(import.meta.dirname,'..'),stage=join(root,'.desktop');
 await cp(join(root,'desktop/assets'),join(root,'build-assets'),{recursive:true});
 // This is build-only staging, never a runtime or a user-data directory.
@@ -28,8 +29,7 @@ for(const path of ['src','public','desktop','tests','scripts','package.json','pa
 await mkdir(join(source,'config'));await cp(join(root,'config/default.json'),join(source,'config/default.json'));
 await mkdir(join(source,'artifacts'),{recursive:true});await cp(license,join(source,'artifacts/node-v24.18.0-LICENSE.txt'));
 async function manifest(folder){const rows=[];async function walk(dir){for(const e of await readdir(dir,{withFileTypes:true})){const p=join(dir,e.name);if(e.isDirectory())await walk(p);else {const b=await readFile(p);rows.push({path:relative(folder,p),bytes:b.length,sha256:createHash('sha256').update(b).digest('hex').toUpperCase()});}}}await walk(folder);return rows.sort((a,b)=>a.path.localeCompare(b.path));}
-const build=createHash('sha256');for(const name of (await readdir(join(root,'src'))).filter(n=>n.endsWith('.mjs')).sort())build.update(name).update(await readFile(join(root,'src',name)));
-await writeFile(join(service,'bundle-info.json'),JSON.stringify({sourceBuild:build.digest('hex'),desktopVersion:JSON.parse(await readFile(join(root,'package.json'))).version,node:process.version,browser:'chromium-1248'},null,2));
+await writeFile(join(service,'bundle-info.json'),JSON.stringify({sourceBuild:await projectBuild(root),desktopVersion:JSON.parse(await readFile(join(root,'package.json'))).version,node:process.version,browser:'chromium-1248'},null,2));
 const serviceFiles=await manifest(service);await writeFile(join(service,'manifest-sha256.json'),JSON.stringify(serviceFiles,null,2));
 await writeFile(join(source,'source-manifest.json'),JSON.stringify(await manifest(source),null,2));
 console.log(JSON.stringify({prepared:true,serviceFiles:serviceFiles.length,sourceFiles:(await manifest(source)).length,containsUserData:false}));

@@ -10,6 +10,7 @@ const text=(id,value)=>{const el=$(id),t=String(value??'—');if(el.textContent!
 const time=value=>value?new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'尚无记录';
 const money=n=>Number.isSafeInteger(n)?'¥'+(n/100).toFixed(2):'—';
 const discount=n=>Number.isSafeInteger(n)?(n/10).toFixed(n%10?1:0)+' 折':'—';
+const friendly=value=>/browserType\..*spawn|spawn UNKNOWN/.test(value||'')?'专用浏览器暂时未能启动，请在店铺管理重新连接。':String(value||'').split('\n')[0].slice(0,350);
 function node(tag,className,value){const n=document.createElement(tag);if(className)n.className=className;if(value!==undefined)n.textContent=value;return n;}
 function badge(value,color='neutral'){return node('span','badge '+color,value);}
 function icon(name){const s=document.createElementNS('http://www.w3.org/2000/svg','svg'),u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href','#i-'+name);s.append(u);return s;}
@@ -20,7 +21,7 @@ document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>navigate(b.dat
 function range(values,format){const a=values.filter(Number.isSafeInteger);if(!a.length)return'—';const lo=Math.min(...a),hi=Math.max(...a);return lo===hi?format(lo):format(lo)+' – '+format(hi);}
 function renderCatalog(force=false){
  if(!catalog)return;const signature=JSON.stringify([catalog,filter,query,pageIndex]);if(!force&&signature===catalogSignature)return;catalogSignature=signature;
- const c=catalog.counts;text('active-count',c.observedCurrentProducts);text('missing-count',c.missingProducts);
+ const c=catalog.counts;text('active-count',catalog.observedAt?c.observedCurrentProducts:'—');text('missing-count',catalog.complete&&!catalog.stale?c.missingProducts:'—');
  text('active-foot',catalog.stale?'读取时间较早，等待更新':catalog.complete?'当前活动已完整读取':'仍有活动待核对');
  text('catalog-observation',catalog.observedAt?`读取于 ${time(catalog.observedAt)}${catalog.stale?' · 等待本轮更新':''}${!catalog.complete?' · 全店数据尚未完整':''}`:'登录后自动读取当前活动');
  const needle=query.trim().toLocaleLowerCase(),rows=catalog.products.filter(p=>(filter==='all'||filter==='pending'?filter==='all'||p.pending||p.state==='unconfirmed':p.state===filter)&&(!needle||(p.name+' '+p.productId).toLocaleLowerCase().includes(needle)));
@@ -35,7 +36,7 @@ function renderCatalog(force=false){
    for(const a of p.current)addActivity(a,p.stale?'上次读到的活动（待刷新）':'当前活动');for(const a of p.scheduled)addActivity(a,'即将开始');
    if(!p.current.length&&!p.scheduled.length)inner.append(node('p','detail-note','当前折后价尚未确认，历史价格仅供对照。'));
    if(p.history){const history=node('details'),hs=node('summary','detail-note','查看完整历史规格');history.append(hs);history.addEventListener('toggle',()=>{if(history.open&&!history.dataset.loaded){history.dataset.loaded='1';const box=node('div');const before=inner.childNodes.length;addActivity(p.history,'历史折扣');for(const child of [...inner.childNodes].slice(before))box.append(child);history.append(box);}});inner.append(history);}
-   if(p.reason)inner.append(node('div','reason',p.reason));detail.append(inner);
+   if(p.reason)inner.append(node('div','reason',friendly(p.reason)));detail.append(inner);
   };
   detail.ontoggle=()=>{if(detail.open){expanded.add(p.productId);populate();}else expanded.delete(p.productId);};
   if(expanded.has(p.productId)){detail.open=true;populate();}fragment.append(detail);
@@ -49,7 +50,7 @@ $('prev-page').onclick=()=>{pageIndex--;renderCatalog();};$('next-page').onclick
 function renderActivity(s){const signature=JSON.stringify([s.tasks,s.events]);if(signature===activitySignature)return;activitySignature=signature;
  const tasks=document.createDocumentFragment();for(const t of s.tasks||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',t.title),node('p','',t.products.join('、')),node('p','',t.reason||`独立回读：${t.receipt?.skuCount||0} 个规格`));item.append(badge(phases[t.phase]||t.phase,t.phase==='verified'?'green':t.phase==='blocked'?'amber':'purple'),body,node('time','',time(t.updatedAt)));tasks.append(item);}if(!s.tasks?.length)tasks.append(node('div','empty','尚无恢复任务'));$('tasks').replaceChildren(tasks);
  const events=document.createDocumentFragment();const kinds={'product-blocked':'商品等待处理','control-error':'连接 / 操作提示',verified:'规格回读通过',unknown:'等待平台确认',queued:'已生成恢复任务',submitting:'已记录提交尝试',verifying:'正在独立回读','verification-pending':'继续核实平台结果'};
- for(const e of s.events||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',kinds[e.kind]||'任务状态更新'),node('p','',e.detail.message||e.detail.reason||e.detail.productId||'记录已保存'));item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);}if(!s.events?.length)events.append(node('div','empty','新的运行动态会显示在这里'));$('events').replaceChildren(events);
+ for(const e of s.events||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',kinds[e.kind]||'任务状态更新'),node('p','',friendly(e.detail.message||e.detail.reason||e.detail.productId||'记录已保存')));item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);}if(!s.events?.length)events.append(node('div','empty','新的运行动态会显示在这里'));$('events').replaceChildren(events);
 }
 function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s.running,s.busy,s.action,s.unknown]);if(signature!==accountSignature){accountSignature=signature;const fragment=document.createDocumentFragment();for(const a of s.accounts||[]){const row=node('div','setting-row'),body=node('div');body.append(node('strong','',a.name||'店铺'),node('p','',a.shopId));row.append(body);if(a.shopId===s.shopId)row.append(badge('当前店铺','blue'));else{const b=node('button','button small secondary','切换店铺');b.disabled=!!(s.running||s.busy||s.action||s.unknown);b.onclick=()=>act('accounts/select',{shopId:a.shopId});row.append(b);}fragment.append(row);}if(!s.accounts?.length)fragment.append(node('div','empty','登录后自动添加店铺，无需填写店铺 ID'));$('account-list').replaceChildren(fragment);}
  text('connection',s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':'登录后自动读取店铺名称、当前活动与规格价格');
@@ -57,7 +58,7 @@ function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s
 }
 function render(s){
  if(s.instance&&s.instance!==instance){location.reload();return;}state=s;
- $('action-alert').hidden=s.lastAction?.ok!==false||!!s.action;if(s.lastAction?.ok===false)text('action-alert',s.lastAction.message);
+ $('action-alert').hidden=s.lastAction?.ok!==false||!!s.action;if(s.lastAction?.ok===false)text('action-alert',friendly(s.lastAction.message));
  text('shop',s.shopId?(s.name||'店铺')+' · '+s.shopId:'尚未登录店铺');text('avatar',(s.name||'店').slice(0,1));$('shop-dot').classList.toggle('online',!!s.connection);
  text('version','v'+s.version);text('update-version','当前版本 '+(window.guardianDesktop?.version||s.version));text('footer-state',s.running?'守护正在后台运行':'后台已连接');
  text('connection-label',online?(s.running?'后台守护中':'后台已连接'):'正在重新连接');$('connection-dot').classList.toggle('online',online);
@@ -67,7 +68,7 @@ function render(s){
  text('progress',[s.action,p.stage,Number.isInteger(p.activeRead)&&Number.isInteger(p.activeTotal)?p.activeRead+' / '+p.activeTotal+' 个当前活动':''].filter(Boolean).join(' · ')||(s.running?'等待下一轮巡检':'守护尚未开启'));
  text('schedule','最近完成：'+time(s.lastRun?.finishedAt)+'　'+(working?'本轮进行中':s.nextAt?'下一轮：'+time(s.nextAt):'等待开启'));
  text('patrol-status',working?'同步中':s.running?'自动巡检':'待机');text('unknown-count',s.unknown||0);text('verified',s.verified||0);text('blocked',s.blocked||0);text('nav-count',s.unknown||0);$('nav-count').hidden=!s.unknown;
- $('login').disabled=pending||!online||working||s.running||!!s.unknown;$('finish-login').disabled=pending||!online||working||s.running||!s.loginOpen;
+ $('login').disabled=pending||!online||working||s.running||!!s.unknown;$('finish-login').disabled=pending||!online||working||s.running||(!s.loginOpen&&!s.shopId);text('finish-login',s.loginOpen?'登录完成':'重新连接');
  $('audit').disabled=pending||!online||working||s.running||!s.shopId;$('start').disabled=pending||!online||working||s.running||!s.connection;
  $('stop').disabled=pending||!online||!(s.running||s.busy);
  renderAccounts(s);if(view==='activity')renderActivity(s);

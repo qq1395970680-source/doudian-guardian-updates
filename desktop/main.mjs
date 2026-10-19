@@ -4,6 +4,7 @@ import {join,resolve,dirname} from 'node:path';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {checkForUpdates,downloadUpdate,verifyInstaller} from '../src/updates.mjs';
+import {runtimeDirectory} from './runtime-directory.mjs';
 import {tmpdir} from 'node:os';
 import {ensureService,probeService,shutdownService,isAllowedNavigation,upgradeService} from './service-controller.mjs';
 import {prepareBackend,launchBackend} from './backend.mjs';
@@ -12,7 +13,7 @@ const product='抖店折扣守护';
 // Integration tests use an explicitly isolated temporary runtime and a mock
 // loopback service. They never reuse the production profile or service port.
 const testMode=process.env.GUARDIAN_DESKTOP_TEST==='1';
-const runtime=testMode?resolve(process.env.GUARDIAN_DESKTOP_TEST_RUNTIME||''):join(process.env.LOCALAPPDATA,'DoudianDiscountGuardianV2');
+const runtime=testMode?resolve(process.env.GUARDIAN_DESKTOP_TEST_RUNTIME||''):runtimeDirectory({fallback:join(process.env.LOCALAPPDATA,'DoudianDiscountGuardianV2'),installDirectory:app.isPackaged?dirname(app.getPath('exe')):null});
 const url=testMode?process.env.GUARDIAN_DESKTOP_TEST_URL:'http://127.0.0.1:19417';
 if(testMode&&(!runtime.startsWith(resolve(tmpdir())+'\\')||!/^http:\/\/127\.0\.0\.1:\d+$/.test(url)||url.endsWith(':19417')))throw Error('测试只能使用临时目录和独立本机端口');
 const shopId=testMode?'900001':undefined;
@@ -34,7 +35,7 @@ async function installUpdate(){
   update({state:'downloading',release});const directory=join(runtime,'updates'),installer=await downloadUpdate(release,directory,{fetcher:net.fetch,onProgress:progress=>update({state:'downloading',release,progress})});
   await verifyInstaller(installer,release);const backend=await prepareBackend({bundleRoot:join(resources,'service'),runtime});
   const worker=join(directory,'install-update-'+randomUUID()+'.mjs');await cp(join(import.meta.dirname,'install-update.mjs'),worker);
-  const job=join(directory,'install-job-'+randomUUID()+'.json');await writeFile(job,JSON.stringify({pid:process.pid,installer,version:release.version,sha256:release.sha256,size:release.size,executable:app.getPath('exe'),installDir:dirname(app.getPath('exe'))}));
+  const job=join(directory,'install-job-'+randomUUID()+'.json');await writeFile(job,JSON.stringify({pid:process.pid,installer,version:release.version,sha256:release.sha256,size:release.size,executable:app.getPath('exe'),installDir:dirname(app.getPath('exe')),runtime}));
   const child=spawn(join(backend,'engine','node.exe'),[worker,job],{windowsHide:true,detached:true,stdio:'ignore'});await new Promise((accept,reject)=>{child.once('spawn',accept);child.once('error',reject);});child.unref();
   update({state:'installing',release});exiting=true;setTimeout(()=>app.quit(),150);return updateState;
  }catch(e){return update({state:'error',message:e.message,release});}finally{updateBusy=false;}

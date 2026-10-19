@@ -5,6 +5,7 @@ import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {checkForUpdates,downloadUpdate,verifyInstaller} from '../src/updates.mjs';
 import {runtimeDirectory} from './runtime-directory.mjs';
+import {createUpdateFetcher} from './update-network.mjs';
 import {tmpdir} from 'node:os';
 import {ensureService,probeService,shutdownService,isAllowedNavigation,upgradeService} from './service-controller.mjs';
 import {prepareBackend,launchBackend} from './backend.mjs';
@@ -21,18 +22,19 @@ app.setName(product);app.setAppUserModelId('cn.doudian.guardian.desktop');app.se
 const single=app.requestSingleInstanceLock();
 let window,tray,exiting=false,stopping=false,refreshTimer,launchPromise,shownCloseTip=false,refreshing=false,expectedBuild;
 let updateState={state:'idle'},updateBusy=false;
+const updateFetch=createUpdateFetcher({systemFetch:net.fetch});
 const resources=app.isPackaged?process.resourcesPath:resolve(import.meta.dirname,'..','.desktop');
 const icon=join(import.meta.dirname,'assets','guardian.ico');
 const message=(text,detail='')=>dialog.showMessageBox(window,{type:'info',title:product,message:text,detail});
 function update(value){updateState=value;window?.webContents.send('guardian-update-state',value);return value;}
-async function checkUpdate(){if(updateBusy)return updateState;updateBusy=true;update({state:'checking'});try{return update(await checkForUpdates(app.getVersion(),{fetcher:net.fetch}));}catch(e){return update({state:'error',message:e.message});}finally{updateBusy=false;}}
+async function checkUpdate(){if(updateBusy)return updateState;updateBusy=true;update({state:'checking'});try{return update(await checkForUpdates(app.getVersion(),{fetcher:updateFetch}));}catch(e){return update({state:'error',message:e.message});}finally{updateBusy=false;}}
 async function installUpdate(){
  if(updateBusy||updateState.state!=='available')return updateState;
  if(!app.isPackaged||testMode)return update({state:'error',message:'开发与测试窗口不会安装正式更新'});
  const release=updateState.release,choice=await dialog.showMessageBox(window,{type:'info',title:'安装更新',message:'安装 '+release.version+' 并重新打开程序？',detail:'本机登录、折扣历史与任务记录会保留。后台会在当前任务结束后安全更新。',buttons:['安装并重启','稍后'],defaultId:0,cancelId:1});
  if(choice.response!==0)return updateState;updateBusy=true;
  try{
-  update({state:'downloading',release});const directory=join(runtime,'updates'),installer=await downloadUpdate(release,directory,{fetcher:net.fetch,onProgress:progress=>update({state:'downloading',release,progress})});
+  update({state:'downloading',release});const directory=join(runtime,'updates'),installer=await downloadUpdate(release,directory,{fetcher:updateFetch,onProgress:progress=>update({state:'downloading',release,progress})});
   await verifyInstaller(installer,release);const backend=await prepareBackend({bundleRoot:join(resources,'service'),runtime});
   const worker=join(directory,'install-update-'+randomUUID()+'.mjs');await cp(join(import.meta.dirname,'install-update.mjs'),worker);
   const job=join(directory,'install-job-'+randomUUID()+'.json');await writeFile(job,JSON.stringify({pid:process.pid,installer,version:release.version,sha256:release.sha256,size:release.size,executable:app.getPath('exe'),installDir:dirname(app.getPath('exe')),runtime}));

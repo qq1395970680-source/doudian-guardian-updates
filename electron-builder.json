@@ -1,0 +1,30 @@
+{
+  "appId": "cn.doudian.guardian.desktop",
+  "productName": "抖店折扣守护",
+  "artifactName": "DoudianGuardian-Setup-${version}-${arch}.${ext}",
+  "directories": {"output": "desktop-dist", "buildResources": "build-assets"},
+  "files": ["desktop/**/*", "src/updates.mjs", "package.json", "!node_modules/**/*"],
+  "extraResources": [
+    {"from": ".desktop/service", "to": "service"},
+    {"from": ".desktop/service/node_modules/playwright", "to": "service/node_modules/playwright"},
+    {"from": ".desktop/service/node_modules/playwright-core", "to": "service/node_modules/playwright-core"},
+    {"from": ".desktop/source", "to": "source"}
+  ],
+  "afterPack": "scripts/after-desktop-pack.mjs",
+  "asar": true,
+  "npmRebuild": false,
+  "win": {"target": ["nsis"], "icon": "desktop/assets/guardian.ico", "executableName": "DoudianGuardian", "signExecutable": false},
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": "always",
+    "createStartMenuShortcut": true,
+    "shortcutName": "抖店折扣守护",
+    "deleteAppDataOnUninstall": false,
+    "runAfterFinish": false,
+    "installerLanguages": ["zh_CN"],
+    "displayLanguageSelector": false
+  }
+}

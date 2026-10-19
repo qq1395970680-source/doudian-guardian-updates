@@ -1,0 +1,174 @@
+import {randomUUID} from 'node:crypto';
+import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat} from './policy.mjs';
+
+export class GuardianService {
+  constructor({journal,platform,policy,now=()=>Date.now()}) {
+    this.journal=journal;this.platform=platform;this.policy=policy;this.now=now;this.owner=randomUUID();
+    this.running=false;this.busy=false;this.timer=null;this.lastRun=null;this.nextAt=null;this.stopRequested=false;
+    this.recovered=false;this.lastHistoryRead=this.now();
+    this.platform.assertWrite=()=>{requireThat(!this.stopRequested&&this.policy.liveEnabled&&this.policy.cutoverConfirmed,'STOPPED','后台写入已停止');this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
+  }
+  status() {
+    const tasks=this.policy.shopId?this.journal.list(this.policy.shopId):[];
+    return {shopId:this.policy.shopId,running:this.running,busy:this.busy,nextAt:this.nextAt,lastRun:this.lastRun,
+      verified:tasks.filter(t=>t.phase==='verified').reduce((n,t)=>n+t.plans.length,0),unknown:tasks.filter(t=>['submitting','unknown','verifying'].includes(t.phase)).length,
+      blocked:tasks.filter(t=>t.phase==='blocked').length,
+      tasks:tasks.slice(0,100).map(t=>({id:t.id,title:t.title,phase:t.phase,products:t.plans.map(p=>p.productId),updatedAt:t.updatedAt,reason:t.reason||null,receipt:t.receipt||null}))};
+  }
+  latestHistories() {
+    const latest=new Map(),histories=this.journal.histories(this.policy.shopId).sort((a,b)=>Number(!!a.generatedByGuardian)-Number(!!b.generatedByGuardian)||(b.historyAt||0)-(a.historyAt||0));
+    for(const baseline of histories)if(!latest.has(baseline.productId))latest.set(baseline.productId,baseline);
+    return latest;
+  }
+  async preview() {
+    requireThat(!this.running&&!this.busy,'BUSY','只读预查不能与守护任务并行');
+    requireThat(this.platform.inventory?.activeComplete,'ACTIVE_UNKNOWN','全店有效活动尚未完整核对');
+    const products=[],histories=this.latestHistories(),pending=this.journal.list(this.policy.shopId).filter(t=>!['verified','blocked'].includes(t.phase));
+    for(const baseline of histories.values()){
+      this.platform.check?.();
+      const entry={productId:baseline.productId,name:baseline.name,campaignId:baseline.campaignId,historicalSkuCount:baseline.skus.length};
+      try{
+        if(this.policy.excludedProductIds?.includes(baseline.productId))entry.status='excluded';
+        else if(pending.some(t=>t.plans.some(p=>p.productId===baseline.productId)))entry.status='pending';
+        else {
+          const loss=await this.platform.loss(baseline);requireThat(loss?.complete,'ACTIVE_UNKNOWN','当前活动读取不完整');
+          if(loss.active)entry.status='active';
+          else {
+            const current=await this.platform.precheck(baseline),plan=planOriginalRestore(baseline,current,this.policy,this.now());
+            Object.assign(entry,{status:'eligible',skuCount:plan.skus.length,skippedSkuIds:plan.skippedSkuIds,observedAt:current.observedAt});
+          }
+        }
+      }catch(error){if(error.code==='STOPPED')throw error;Object.assign(entry,{status:'blocked',code:error.code||'READ_ERROR',message:String(error.message).slice(0,1000)});}
+      products.push(entry);
+      this.platform.progress={stage:'只读核对当前规格',read:products.length,total:histories.size,at:this.now()};
+    }
+    const result={readOnly:true,observedAt:this.now(),products};
+    this.journal.putSettings('preview:'+this.policy.shopId,result);
+    this.platform.progress={stage:'只读规格核对完成',read:products.length,total:histories.size,eligible:products.filter(p=>p.status==='eligible').length,blocked:products.filter(p=>p.status==='blocked').length,at:this.now()};
+    return result;
+  }
+  async reconcile(task) {
+    let observed=await this.platform.readback(task);
+    if(!observed&&this.platform.resumeOriginalRisk&&await this.platform.resumeOriginalRisk(task,async proof=>{
+      this.platform.assertWrite();this.journal.beginRiskConfirmation(task.id,proof,this.now());
+    })){
+      const current=this.journal.get(task.id);
+      if(current.phase==='unknown')this.journal.transition(task.id,'unknown','verifying',{},this.now());
+      observed=await this.platform.readback(this.journal.get(task.id));
+    }
+    if(!observed)return false;
+    const receipt=proveReadback(task.plans,observed,{title:task.title,now:this.now()});
+    const current=this.journal.get(task.id);
+    const verified=this.journal.transition(task.id,current.phase,'verified',{receipt},this.now());
+    if(this.platform.release)await this.platform.release(verified).catch(()=>{});return true;
+  }
+  async execute(task) {
+    let draft;
+    try {
+      requireThat(!this.stopRequested,'STOPPED','运行已停止');
+      draft=await this.platform.prepare(task);
+      const proof=proveDraft(task,draft.observation,this.now());
+      this.journal.transition(task.id,'queued','prepared',{preparedAt:this.now()},this.now());
+      requireThat(!this.stopRequested,'STOPPED','运行已停止');
+      await this.platform.submit(task,draft,async riskProof=>{
+        requireThat(!this.stopRequested,'STOPPED','运行已停止');
+        this.platform.assertWrite();
+        this.journal.beginRiskConfirmation(task.id,riskProof,this.now());
+      },async submitProof=>{
+        this.platform.assertWrite();this.journal.beginSubmit(task.id,submitProof,this.now());
+      });
+      requireThat(this.journal.get(task.id).phase==='submitting','SUBMIT_NOT_RECORDED','平台适配器未记录提交边界');
+      this.journal.transition(task.id,'submitting','verifying',{},this.now());
+      if(!await this.reconcile(this.journal.get(task.id)))this.journal.transition(task.id,'verifying','unknown',{reason:'平台结果尚未回读确认'},this.now());
+    }catch(error){
+      const current=this.journal.get(task.id),reason=`${error.code||'ERROR'}: ${String(error.message).slice(0,800)}`;
+      if(this.platform.captureFailure)await this.platform.captureFailure(task,draft,current.phase,error).catch(()=>{});
+      if(['queued','prepared'].includes(current.phase))this.journal.transition(task.id,current.phase,'blocked',{reason,retryAfter:this.now()+15*60000},this.now());
+      else if(['submitting','verifying'].includes(current.phase))this.journal.transition(task.id,current.phase,'unknown',{reason},this.now());
+      else this.journal.event(task.id,'readback-error',{reason},this.now());
+    }finally{if(this.platform.release)await this.platform.release(this.journal.get(task.id),draft).catch(()=>{});}
+  }
+  async tick() {
+    requireThat(this.policy.liveEnabled===true&&this.policy.cutoverConfirmed===true,'CUTOVER_REQUIRED','新程序尚未启用实店执行');
+    if(this.busy)return {skipped:'busy'};
+    this.journal.lease(this.policy.shopId,this.owner,this.now());this.busy=true;
+    let leaseError=null;
+    const heartbeat=setInterval(()=>{try{this.journal.lease(this.policy.shopId,this.owner,this.now());}catch(error){leaseError=error;this.stopRequested=true;}},20000);
+    const startedAt=this.now();
+    try{
+      if(!this.recovered){this.journal.recoverInterrupted(this.policy.shopId);this.recovered=true;}
+      for(const task of this.journal.list(this.policy.shopId).filter(t=>['unknown','verifying'].includes(t.phase))){
+        if(this.stopRequested)break;
+        try{await this.reconcile(task);}catch(error){this.journal.event(task.id,'verification-pending',{code:error.code||'ERROR',message:error.message},this.now());}
+      }
+      if(this.stopRequested)return;
+      this.nextAt=null;
+      const historyReadLimit=this.policy.captureExistingOnly?0:!this.journal.histories(this.policy.shopId).length?20:this.now()-this.lastHistoryRead>=15*60000?2:0;
+      const discovery=await this.platform.discover({historyReadLimit});if(historyReadLimit)this.lastHistoryRead=this.now();
+      for(const baseline of discovery.baselines||[])this.journal.remember(baseline,this.now());
+      requireThat(discovery.activeComplete===true,'ACTIVE_UNKNOWN','全店有效活动尚未完整核对，暂停本轮新建');
+      const latest=this.latestHistories();
+      const groups=new Map(),candidates=[],checks=new Map(this.journal.productChecks(this.policy.shopId).map(c=>[c.productId,c]));
+      const blocked=(baseline,loss,error)=>{
+        if(error.code==='STOPPED')throw error;
+        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:error.message};
+        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,lossKey:loss?.lossKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+15*60000});
+        this.journal.event(null,'product-blocked',detail,this.now());
+      };
+      for(const baseline of latest.values()){
+        if(this.stopRequested)break;
+        if(this.policy.excludedProductIds?.includes(baseline.productId))continue;
+        if(this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===baseline.productId)))continue;
+        try{
+          const loss=await this.platform.loss(baseline);if(!loss?.complete)continue;
+          if(loss.active){this.journal.clearProductCheck(this.policy.shopId,baseline.productId);continue;}
+          const prior=checks.get(baseline.productId),same=prior?.lossKey===loss.lossKey&&prior?.contextKey===fingerprint(baseline);
+          if(same&&prior.retryAt>this.now())continue;
+          candidates.push({baseline,loss,retry:same,priorAt:prior?.at||0});
+        }catch(error){blocked(baseline,null,error);}
+      }
+      let retries=0;
+      for(const {baseline,loss,retry} of candidates.sort((a,b)=>Number(a.retry)-Number(b.retry)||a.priorAt-b.priorAt)){
+        if(this.stopRequested)break;if(retry&&retries++>=3)continue;
+        try{
+          const current=await this.platform.precheck(baseline);
+          const plan=planOriginalRestore(baseline,current,this.policy,this.now());
+          this.journal.clearProductCheck(this.policy.shopId,baseline.productId);
+          const key=fingerprint({type:plan.type,rules:plan.rules});if(!groups.has(key))groups.set(key,[]);
+          groups.get(key).push({plan,loss});
+        }catch(error){blocked(baseline,loss,error);}
+      }
+      for(const group of groups.values())for(let start=0;start<group.length;start+=5){
+        if(this.stopRequested)break;
+        const members=group.slice(start,start+5);
+        // Recheck expiry at execution time. A large store cannot use probes
+        // gathered many minutes earlier to authorize a later price write.
+        const plans=[],losses=[];for(const member of members){
+          try{
+            const baseline=latest.get(member.plan.productId),loss=await this.platform.loss(baseline,{fresh:true});
+            requireThat(loss?.complete===true&&!loss.active&&loss.lossKey,'LOSS_UNPROVEN','提交前未能确认商品当前无有效活动');
+            const current=await this.platform.precheck(baseline);
+            plans.push(planOriginalRestore(baseline,current,this.policy,this.now()));losses.push(loss.lossKey);
+          }catch(error){this.journal.event(null,'product-blocked',{productId:member.plan.productId,code:error.code||'ERROR',message:error.message},this.now());}
+        }
+        if(!plans.length)continue;
+        requireThat(plans.every(p=>this.now()-p.observedAt<=120000),'PROOF_EXPIRED','本批预查已过期');
+        const lossEvidence={complete:true,observedAt:this.now(),lossKey:fingerprint(losses)};
+        let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
+        if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
+        if(task.phase==='queued')await this.execute(task);
+      }
+      if(leaseError)throw leaseError;
+      this.lastRun={startedAt,finishedAt:this.now(),ok:true};
+    }catch(error){this.lastRun={startedAt,finishedAt:this.now(),ok:false,code:error.code||'ERROR',message:String(error.message).slice(0,1000)};}
+    finally{clearInterval(heartbeat);this.journal.release(this.policy.shopId,this.owner);this.busy=false;}
+    return this.status();
+  }
+  start() {
+    requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed,'CUTOVER_REQUIRED','首次切换尚未确认');
+    if(this.running)return;this.running=true;this.stopRequested=false;
+    const run=async()=>{if(!this.running)return;try{await this.tick();}catch(error){this.lastRun={ok:false,finishedAt:this.now(),code:error.code||'ERROR',message:error.message};}if(this.running){this.nextAt=this.now()+60000;this.timer=setTimeout(run,60000);}};
+    this.timer=setTimeout(run,0);
+  }
+  stop() {this.running=false;this.stopRequested=true;this.nextAt=null;clearTimeout(this.timer);}
+}

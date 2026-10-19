@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+ <defs>
+  <linearGradient id="base" x1="0" y1="0" x2=".6" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#ecf4ff"/></linearGradient>
+  <linearGradient id="blue" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#58b4ff"/><stop offset=".47" stop-color="#208aff"/><stop offset="1" stop-color="#0867ed"/></linearGradient>
+  <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ffffff" stop-opacity=".3"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+  <filter id="shadow" x="-.4" y="-.3" width="1.8" height="1.8"><feDropShadow dx="0" dy="12" stdDeviation="11" flood-color="#1878e4" flood-opacity=".2"/></filter>
+ </defs>
+ <rect x="4" y="4" width="248" height="248" rx="57" fill="url(#base)" stroke="#dceaff" stroke-width="1.5"/>
+ <g transform="rotate(-13 128 127)" filter="url(#shadow)">
+  <path d="M89 49h78a20 20 0 0 1 20 20v79a24 24 0 0 1-7 17l-37 37a21 21 0 0 1-30 0l-37-37a24 24 0 0 1-7-17V69a20 20 0 0 1 20-20Z" fill="url(#blue)"/>
+  <path d="M89 50h78a19 19 0 0 1 19 19v42H70V69a19 19 0 0 1 19-19Z" fill="url(#shine)"/>
+  <circle cx="128" cy="70" r="6" fill="#e8f5ff"/>
+  <g fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round"><path d="m109 159 38-53"/><circle cx="108" cy="112" r="9"/><circle cx="148" cy="153" r="9"/></g>
+ </g>
+</svg>

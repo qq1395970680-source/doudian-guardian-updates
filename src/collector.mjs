@@ -1,0 +1,75 @@
+import {fingerprint,normalizeName,requireThat,GuardError} from './policy.mjs';
+import {formSlice,scrollForm} from './platform-snapshot.mjs';
+
+export const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+export async function until(read, label, timeout=25000){
+ const end=Date.now()+timeout;
+ while(Date.now()<end){const value=await read();if(value)return value;await delay(150);}
+ throw new GuardError('LOAD_TIMEOUT',label);
+}
+export function parseDate(value){
+ const m=String(value).match(/^(\d{4})[/-](\d{2})[/-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
+ requireThat(m,'TIME_FORMAT','平台时间格式未知');return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}+08:00`);
+}
+export function assembleCells(cells,total){
+ let end=0,product=null;const products=[];
+ for(const cell of [...cells].sort((a,b)=>a.top-b.top)){
+  requireThat(Number.isFinite(cell.top)&&Number.isFinite(cell.height)&&cell.height>0&&Math.abs(cell.top-end)<0.6,'VIRTUAL_GAP','规格虚拟列表存在未读区域');
+  end=cell.top+cell.height;
+  for(const row of cell.rows){
+   if(row.kind==='product'){requireThat(row.productId&&!products.some(p=>p.productId===row.productId),'PRODUCT_DUPLICATE','商品行重复或编号缺失');product={...row,skus:[]};products.push(product);}
+   if(row.kind==='sku'){requireThat(product,'VIRTUAL_GAP','规格前没有所属商品');product.skus.push({...row,id:null,idSource:'unavailable-in-create-form'});}
+  }
+ }
+ requireThat(Math.abs(total-end)<0.6,'VIRTUAL_GAP','规格列表末尾尚未完整读取');
+ for(const p of products){requireThat(p.skus.length,'SKUS_INCOMPLETE','商品规格尚未展开');
+  requireThat(new Set(p.skus.map(s=>normalizeName(s.name))).size===p.skus.length,'DUPLICATE_SKU','页面出现同名规格，不能唯一映射');}
+ return products;
+}
+const materialRow=(r,precheck)=>r.kind==='sku'?{
+ kind:r.kind,name:r.name,baseFen:r.baseFen,errors:r.errors,offShelf:r.offShelf,...(!precheck?{discount:r.discount,saleFen:r.saleFen}:{}),
+}:r.kind==='product'?{kind:r.kind,productId:r.productId,offShelf:r.offShelf,errors:r.errors}:{kind:r.kind};
+async function pass(page,precheck,originalRisk){
+ const loading=s=>s.busy&&!(originalRisk&&s.originalRiskReady&&s.formBusy===false);
+ await page.evaluate(scrollForm,0);await delay(250);
+ const first=await until(async()=>{const s=await page.evaluate(formSlice);return !loading(s)&&s.cells.some(c=>c.rows.some(r=>r.kind==='product'))&&s;},'商品表单未完整加载');
+ requireThat(first.grids<=1&&first.total>0,'VIRTUAL_LAYOUT','商品网格不唯一或高度未知');
+ const cells=new Map(),total=first.total;
+ for(let step=0;step<4000;step++){
+  const s=await page.evaluate(formSlice);
+  requireThat(s.total===total&&!loading(s),'VIRTUAL_CHANGED','读取中布局变化，重新完整采集');
+  for(const cell of s.cells){
+   requireThat(Number.isFinite(cell.top)&&cell.top>=0&&cell.height>0&&cell.top+cell.height<=total+0.6,'VIRTUAL_LAYOUT','未知虚拟行位置');
+   const key=fingerprint(cell.rows.map(r=>materialRow(r,precheck))),old=cells.get(cell.top);
+   requireThat(!old||old.key===key&&old.height===cell.height,'FORM_CHANGED','规格或价格在完整读取期间变化');
+   cells.set(cell.top,{...cell,key});
+  }
+  const ordered=[...cells.values()].sort((a,b)=>a.top-b.top);let cursor=0;
+  for(const cell of ordered){if(Math.abs(cell.top-cursor)>0.6)break;cursor=cell.top+cell.height;}
+  if(Math.abs(cursor-total)<0.6)return {snapshot:s,products:assembleCells(ordered,total)};
+  await page.evaluate(scrollForm,cursor);await delay(120);
+ }
+ throw new GuardError('VIRTUAL_LIMIT','规格遍历未完成');
+}
+export async function collectForm(page,{precheck=false,originalRisk=false}={}){
+ let previous=null,lastError;
+ for(let attempt=0;attempt<5;attempt++){
+  try{
+   const value=await pass(page,precheck,originalRisk);
+   const key=fingerprint({products:value.products.map(p=>({productId:p.productId,offShelf:p.offShelf,skus:p.skus.map(r=>materialRow(r,precheck))})),
+    counts:value.snapshot.counts,page:value.snapshot.page,mode:value.snapshot.mode,...(!precheck?{title:value.snapshot.title,type:value.snapshot.type,rules:value.snapshot.rules,dates:value.snapshot.dates,byDiscount:value.snapshot.byDiscount,renew:value.snapshot.renew}: {})});
+   if(previous===key)return value;previous=key;
+  }catch(e){if(!['VIRTUAL_CHANGED','FORM_CHANGED','VIRTUAL_GAP'].includes(e.code))throw e;lastError=e;previous=null;}
+ }
+ throw lastError||new GuardError('FORM_UNSTABLE','两次完整采集未能一致');
+}
+export function bindFormProducts(products,plans){
+ requireThat(products.length===plans.length&&products.every(p=>plans.some(q=>q.productId===p.productId)),'DRAFT_MEMBERSHIP','草稿商品集合不一致');
+ return products.flatMap(p=>{
+  const plan=plans.find(q=>q.productId===p.productId);requireThat(!p.offShelf&&p.skus.length===plan.skus.length,'DRAFT_MEMBERSHIP','草稿规格集合变化');
+  return p.skus.map(s=>{const matches=plan.skus.filter(q=>normalizeName(q.name)===normalizeName(s.name));
+   requireThat(matches.length===1,'DRAFT_MAPPING','草稿规格不能唯一映射');
+   return {...s,productId:p.productId,id:matches[0].id,idSource:'mapped-from-verified-history'};
+  });
+ });
+}

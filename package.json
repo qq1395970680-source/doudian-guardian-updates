@@ -1,0 +1,29 @@
+{
+  "name": "doudian-guardian-service",
+  "version": "2.0.0-beta.2",
+  "description": "抖店折扣守护桌面程序与独立后台",
+  "author": "Guardian Local",
+  "main": "desktop/main.mjs",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node --test tests/browser/*.test.mjs",
+    "start": "node src/server.mjs",
+    "check": "node scripts/check.mjs",
+    "desktop": "electron .",
+    "test:desktop": "node --test tests/desktop/*.test.mjs",
+    "build:desktop": "node scripts/prepare-desktop.mjs && electron-builder --config electron-builder.json --win --x64",
+    "build:source": "pwsh.exe -NoLogo -File scripts/export-source.ps1"
+  },
+  "dependencies": {
+    "playwright": "1.64.1"
+  },
+  "devDependencies": {
+    "electron": "44.9.0",
+    "electron-builder": "26.15.3"
+  }
+}

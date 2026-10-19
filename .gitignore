@@ -1,0 +1,8 @@
+node_modules/
+runtime/
+.desktop/
+desktop-dist/
+build-assets/
+dist/
+artifacts/*
+!artifacts/node-v24.18.0-LICENSE.txt

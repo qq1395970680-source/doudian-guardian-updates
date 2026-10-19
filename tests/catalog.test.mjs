@@ -39,3 +39,23 @@ test('multiple active campaigns retain separate SKU facts and never silently cho
  const r=buildCatalog({...base(),inventory:{...inventory,listing:{...inventory.listing,campaigns:[campaign,second]},details:new Map([...inventory.details,[second.id,{complete:true,observedAt:now,products:[{productId:'300001',name:'商品',skus:[{...sku,discount:40,saleFen:4000}]}]}]])}});
  assert.equal(r.products[0].current.length,2);assert.deepEqual(r.products[0].current.map(c=>c.skus[0].saleFen),[5000,4000]);assert.equal(r.counts.observedCurrentProducts,1);
 });
+
+test('a freshly read active product is visible while unrelated activity details are still loading',()=>{
+ const unread={...campaign,id:'400099'};
+ const r=buildCatalog({...base(),inventory:{...inventory,activeComplete:false,listing:{...inventory.listing,campaigns:[campaign,unread]}}});
+ assert.equal(r.complete,false);assert.equal(r.products[0].state,'active');assert.equal(r.counts.observedCurrentProducts,1);
+ const absent=buildCatalog({...base(),histories:[baseline,{...baseline,productId:'300099'}],inventory:{...inventory,activeComplete:false}});
+ assert.equal(absent.products.find(p=>p.productId==='300099').state,'unconfirmed');assert.equal(absent.counts.missingProducts,0);
+});
+
+test('one old detail does not hide another freshly observed product or prove an absent product',()=>{
+ const second={...campaign,id:'400003'};
+ const r=buildCatalog({...base(),histories:[baseline,{...baseline,productId:'300099'}],inventory:{...inventory,listing:{...inventory.listing,campaigns:[campaign,second]},details:new Map([...inventory.details,[second.id,{complete:true,observedAt:now-6*60000,products:[{productId:'300002',name:'旧读取',skus:[sku]}]}]])}});
+ assert.equal(r.stale,true);assert.equal(r.products.find(p=>p.productId==='300001').state,'active');assert.equal(r.products.find(p=>p.productId==='300002').state,'unconfirmed');
+ assert.equal(r.products.find(p=>p.productId==='300099').state,'unconfirmed');assert.equal(r.counts.observedCurrentProducts,1);assert.equal(r.counts.missingProducts,0);
+});
+
+test('a stale activity listing cannot claim a fresh current status from detail rows alone',()=>{
+ const r=buildCatalog({...base(),inventory:{...inventory,listing:{...inventory.listing,observedAt:now-6*60000}}});
+ assert.equal(r.products[0].state,'unconfirmed');assert.equal(r.counts.observedCurrentProducts,0);
+});

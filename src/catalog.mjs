@@ -22,7 +22,7 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
  const listing=inventory?.listing,complete=listing?.complete===true&&inventory?.activeComplete===true;
  const campaigns=(listing?.campaigns||[]).filter(active),details=inventory?.details||new Map();
  const times=[listing?.observedAt,...campaigns.map(c=>details.get(c.id)?.observedAt)].filter(x=>Number.isFinite(x)&&x>0);
- const observedAt=times.length?Math.min(...times):null,stale=!fresh(observedAt,now);
+ const observedAt=times.length?Math.min(...times):null,stale=!fresh(observedAt,now),listingFresh=listing?.complete===true&&fresh(listing.observedAt,now);
  const products=new Map(),ensure=(id,name='')=>{
   if(!products.has(id))products.set(id,{productId:id,name,current:[],scheduled:[],removed:[],history:null,pending:false,excluded:excluded.includes(id),ambiguous:false,reason:null,observedAt:null});
   const p=products.get(id);if(name&&!p.name)p.name=name;return p;
@@ -52,10 +52,13 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
  }}
  for(const p of products.values()){
   p.stale=!fresh(p.observedAt||observedAt,now);
-  p.state=p.excluded?'excluded':p.pending?'pending':p.ambiguous||stale||!complete?'unconfirmed':p.current.length?'active':p.scheduled.length?'scheduled':p.history?'missing':'unconfirmed';
+  // A fresh positive observation is useful even while an unrelated activity is
+  // loading. Absence still needs complete, fresh coverage of every activity.
+  const positiveFresh=listingFresh&&!p.stale&&!p.ambiguous;
+  p.state=p.excluded?'excluded':p.pending?'pending':p.ambiguous?'unconfirmed':p.current.length&&positiveFresh?'active':p.scheduled.length&&positiveFresh?'scheduled':stale||!complete?'unconfirmed':p.history?'missing':'unconfirmed';
  }
  const rows=[...products.values()].sort((a,b)=>a.productId.localeCompare(b.productId));
- const counts={products:rows.length,observedCurrentProducts:rows.filter(p=>p.current.length&&!p.stale&&!p.ambiguous).length,
+ const counts={products:rows.length,observedCurrentProducts:rows.filter(p=>p.current.length&&listingFresh&&!p.stale&&!p.ambiguous).length,
   missingProducts:rows.filter(p=>p.state==='missing').length,pendingProducts:rows.filter(p=>p.pending).length,
   unconfirmedProducts:rows.filter(p=>p.state==='unconfirmed').length,excludedProducts:rows.filter(p=>p.excluded).length,
   historicalProducts:rows.filter(p=>p.history).length};

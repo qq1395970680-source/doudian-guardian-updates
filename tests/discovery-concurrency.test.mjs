@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Journal} from '../src/journal.mjs';
 import {DoudianPlatform} from '../src/platform.mjs';
+import {buildCatalog} from '../src/catalog.mjs';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const campaign=(n,status='进行中')=>({id:String(400000+n),name:'活动'+n,type:'限时抢购',status,startAt:Date.now()-n*1000});
 const detail=c=>({complete:true,observedAt:Date.now(),rules:{noLimit:true,noPerUserLimit:true,noWarmup:true,orderMinutes:5},
@@ -25,4 +26,17 @@ test('stopping discovery drains its in-flight reads without starting more pages'
  platform.detail=async c=>{reads++;await blocked;finished++;return detail(c);};
  const action=platform.discover();await pause(10);const started=reads;platform.stopping=true;release();
  try{await assert.rejects(action,{code:'STOPPED'});assert.equal(started,2);assert.equal(reads,2);assert.equal(finished,2);}finally{journal.close();}
+});
+
+test('a completed detail reaches the live catalog before the other readers finish, without authorizing a loss',async()=>{
+ const campaigns=[campaign(1),campaign(2)],{journal,platform}=setup(campaigns);let finishSecond,firstDone;
+ const second=new Promise(r=>{finishSecond=r;}),first=new Promise(r=>{firstDone=r;});
+ platform.detail=async c=>{if(c.id===campaigns[1].id)await second;else firstDone();return detail(c);};
+ const action=platform.discover();await first;await pause(5);
+ try{
+  assert.ok(platform.inventory,'读取进度必须可见');assert.equal(platform.inventory.activeComplete,false);
+  const view=buildCatalog({shopId:'900001',inventory:platform.inventory});assert.equal(view.counts.observedCurrentProducts,1);assert.equal(view.products[0].state,'active');
+  assert.equal(journal.settings('catalog-view:900001').details.length,1);
+  await assert.rejects(platform.loss({productId:'999999'}),{code:'ACTIVE_UNKNOWN'});
+ }finally{finishSecond();await action;journal.close();}
 });

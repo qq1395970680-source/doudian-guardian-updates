@@ -42,11 +42,23 @@ export class DoudianPlatform {
   if(page&&!page.isClosed())await this.fault(page,task.id,phase==='queued'?'prepare':'submit',error);
  }
  async ready(page){await until(async()=>{this.check();return await page.locator('.ecom-mcenter-spin-spinning:visible').count()===0;},'平台持续加载');}
- async list({productId=null}={}){
+ async list({productId=null,title=null,status=null}={}){
+  requireThat(status===null||['进行中','未开始'].includes(status),'QUERY_SCOPE','不支持的活动状态筛选');
+  requireThat(title===null||typeof title==='string'&&title.length>0&&title.length<=120,'QUERY_SCOPE','活动名称筛选无效');
   const page=await this.open(LIST);
   try{
    await page.locator('input[placeholder="请输入商品ID"]').waitFor();await button(page,'重置').click();await delay(1000);await this.ready(page);
-   if(productId){id(productId);await page.locator('input[placeholder="请输入商品ID"]').fill(productId);await button(page,'查询').click();await delay(1000);}
+   const statusSelect=page.locator('.ecom-mcenter-select').filter({has:page.locator('.ecom-mcenter-select-selection-item').filter({hasText:/^(?:全部|进行中|未开始)$/})});
+   if(productId){id(productId);await page.locator('input[placeholder="请输入商品ID"]').fill(productId);}
+   if(title)await page.locator('input[placeholder="请输入活动名称"]').fill(title);
+   if(status){
+    requireThat(await statusSelect.count()===1,'QUERY_SCOPE','活动状态筛选不唯一');
+    await statusSelect.locator('.ecom-mcenter-select-selector').click();
+    const option=page.locator('.ecom-mcenter-select-dropdown:visible .ecom-mcenter-select-item-option').filter({hasText:new RegExp('^'+status+'$')});
+    requireThat(await option.count()===1,'QUERY_SCOPE','活动状态选项不唯一');await option.click();
+    await until(async()=>(await statusSelect.locator('.ecom-mcenter-select-selection-item').innerText()).trim()===status,'活动状态尚未选中');
+   }
+   if(productId||title||status){await button(page,'查询').click();await delay(1000);}
    const campaigns=[],seen=new Set();
    for(let n=1;n<=100;n++){
     this.check();await this.ready(page);
@@ -55,18 +67,31 @@ export class DoudianPlatform {
     requireThat(pager.activeCount<=1&&(!pager.page||pager.page===n)&&pager.nextCount<=1,'LIST_PAGING','活动列表分页不明确');
     for(const r of rows){
      requireThat(r.ids.length===1&&r.cells===9&&r.times?.length===2&&r.status&&!seen.has(r.ids[0]),'LIST_INCOMPLETE','活动行不完整或重复');
+     requireThat(!status||r.status===status,'QUERY_CHANGED','活动状态筛选结果不符');
      seen.add(r.ids[0]);campaigns.push({...r,id:r.ids[0],startAt:parseDate(r.times[0]),endAt:parseDate(r.times[1])});
     }
     this.progress={stage:'读取全店活动列表',campaigns:campaigns.length,page:n,at:Date.now()};
     if(pager.disabled||!rows.length&&pager.nextCount===0){await this.identity(page);
      requireThat((await page.locator('input[placeholder="请输入商品ID"]').inputValue()).trim()===(productId||''),'QUERY_CHANGED','列表查询条件变化');
-     return {complete:true,campaigns,observedAt:Date.now()};}
+     if(title)requireThat((await page.locator('input[placeholder="请输入活动名称"]').inputValue()).trim()===title,'QUERY_CHANGED','活动名称筛选变化');
+     if(status)requireThat(await statusSelect.count()===1&&(await statusSelect.locator('.ecom-mcenter-select-selection-item').innerText()).trim()===status,'QUERY_CHANGED','活动状态筛选变化');
+     return {complete:true,campaigns,observedAt:Date.now(),query:{productId,title,status}};}
     requireThat(pager.nextCount===1&&rows.length,'LIST_PAGING','未取得活动列表完整性证明');
     const before=fingerprint(rows);await page.locator('li[title="下一页"] button:visible').click();
     await until(async()=>fingerprint(await page.evaluate(listSlice))!==before,'活动列表翻页停滞');
    }
    throw new GuardError('LIST_LIMIT','活动列表超过已核验页数');
   }catch(e){await this.fault(page,'inventory','list',e);throw e;}finally{await page.close();}
+ }
+ async listActive(){
+  // Both status queries use independent read pages and must finish. A partial
+  // result or a status transition producing duplicates cannot prove absence.
+  await this.ensure();
+  const results=await Promise.allSettled(['进行中','未开始'].map(status=>this.list({status})));
+  const failure=results.find(r=>r.status==='rejected');if(failure)throw failure.reason;
+  const lists=results.map(r=>r.value),campaigns=lists.flatMap(r=>r.campaigns);
+  requireThat(lists.every(r=>r.complete===true)&&campaigns.every(active)&&new Set(campaigns.map(c=>c.id)).size===campaigns.length,'ACTIVE_UNKNOWN','当前活动筛选不完整或发生交叉变化');
+  return{complete:true,campaigns,observedAt:Math.min(...lists.map(r=>r.observedAt)),scope:'current-statuses',queriedStatuses:['进行中','未开始']};
  }
  async detail(campaign){
   id(campaign.id);const page=await this.open(LIST+`/view?refer=view&id=${campaign.id}&is_new_limit=1&operate_use_mode=0`);
@@ -116,7 +141,7 @@ export class DoudianPlatform {
  async discover({readOnlyReuseMaxAgeMs=0,historyReadLimit=20}={}){
   requireThat(Number.isInteger(historyReadLimit)&&historyReadLimit>=0&&historyReadLimit<=20,'HISTORY_BUDGET','历史读取预算无效');
   requireThat(Number.isSafeInteger(readOnlyReuseMaxAgeMs)&&readOnlyReuseMaxAgeMs>=0&&readOnlyReuseMaxAgeMs<=900000,'READ_CACHE_SCOPE','只读证据复用时间无效');
-  const listing=await this.list(),details=new Map(),baselines=[],errors=[];
+  const listing=historyReadLimit===0?await this.listActive():await this.list(),details=new Map(),baselines=[],errors=[];
   const campaigns=[...listing.campaigns].sort((a,b)=>Number(active(b))-Number(active(a))||b.startAt-a.startAt);
   let historyReads=0,activeRead=0;
   const activeJobs=[],historyJobs=[],activeTotal=campaigns.filter(active).length;
@@ -132,6 +157,13 @@ export class DoudianPlatform {
     (active(c)?activeJobs:historyJobs).push({c,key});
    }else if(detail){details.set(c.id,detail);if(active(c))activeRead++;}
   }
+  const publish=()=>{
+   this.inventory={listing,details,activeComplete:campaigns.filter(active).every(c=>details.has(c.id)),readOnlyReuseMaxAgeMs};
+   this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
+  };
+  // Publish completed reads as they arrive. This display snapshot does not
+  // authorize a loss while any active activity remains unread.
+  publish();
   const readGroup=async(jobs,stage)=>{
    let cursor=0;const inFlight=new Set();
    const progress=()=>{this.progress={stage,read:details.size,total:campaigns.length,activeRead,activeTotal,inFlight:[...inFlight],at:Date.now()};};
@@ -140,7 +172,7 @@ export class DoudianPlatform {
      this.check();const {c,key}=jobs[cursor++];inFlight.add(c.id);progress();
      try{
       const detail=await this.detail(c);requireThat(detail?.complete===true,'DETAIL_INCOMPLETE','活动详情未完整读取');
-      this.cache.set(key,detail);this.journal?.putSettings('campaign:'+c.id,{key,detail});details.set(c.id,detail);
+      this.cache.set(key,detail);this.journal?.putSettings('campaign:'+c.id,{key,detail});details.set(c.id,detail);publish();
      }catch(e){
       if(e.code==='STOPPED')throw e;
       const error={campaignId:c.id,code:e.code||'READ_ERROR',message:e.message};errors.push(error);
@@ -167,8 +199,7 @@ export class DoudianPlatform {
    }
   }
   const activeComplete=campaigns.filter(active).every(c=>details.has(c.id));
-  this.inventory={listing,details,activeComplete,readOnlyReuseMaxAgeMs};
-  this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
+  publish();
   this.progress={stage:activeComplete?'全店当前活动核对完成':'当前活动仍有读取失败，暂停恢复',campaigns:campaigns.length,details:details.size,
    historiesPending:campaigns.filter(c=>!details.has(c.id)).length,errors,at:Date.now()};
   return {baselines,complete:details.size===campaigns.length,activeComplete,errors};
@@ -191,8 +222,12 @@ export class DoudianPlatform {
    if(p)related.push(c.id+':removed');
   }
   const previous=listing.campaigns.find(c=>c.id===baseline.campaignId);
-  return {complete,active:false,observedAt:Date.now(),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,status:previous?.status||'absent',related,
-   ...(productScoped?{campaigns:listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt,c.risk]).sort((a,b)=>a[0].localeCompare(b[0]))}: {})})};
+  // Routine full/current-only listings describe the same missing product even
+  // when ended history is omitted or rows reorder. Keep its retry budget stable.
+  // Fresh product-scoped evidence retains campaign history to distinguish a
+  // later platform removal from a previously verified restoration.
+  return {complete,active:false,observedAt:Date.now(),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,related:related.sort(),
+   ...(productScoped?{status:previous?.status||'absent',campaigns:listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt,c.risk]).sort((a,b)=>a[0].localeCompare(b[0]))}: {})})};
  }
  async selectProduct(page,productId){
   await button(page,'添加商品').click();const picker=page.locator('.ecom-mcenter-drawer-open[class*="index-goodsDrawer--"]:visible');await picker.waitFor();
@@ -335,7 +370,7 @@ export class DoudianPlatform {
  }
  async readback(task){
   this.progress={stage:'独立页面逐规格回读',taskId:task.id,at:Date.now()};
-  const listing=await this.list(),matches=listing.campaigns.filter(c=>c.name===task.title);
+  const listing=await this.list({title:task.title}),matches=listing.campaigns.filter(c=>c.name===task.title);
   requireThat(matches.length<=1,'DUPLICATE_CAMPAIGN','同任务出现多个活动，保留记录并停止自动处理');if(!matches.length)return null;
   const campaign=matches[0];if(!active(campaign))return null;const d=await this.detail(campaign);
   requireThat(d.products.every(p=>!p.removalConfirmed&&!p.removalAmbiguous),'READBACK_REMOVED','新活动已有商品或规格退出，不能记为恢复成功');

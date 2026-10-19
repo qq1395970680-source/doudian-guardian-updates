@@ -21,7 +21,7 @@ document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>navigate(b.dat
 function range(values,format){const a=values.filter(Number.isSafeInteger);if(!a.length)return'—';const lo=Math.min(...a),hi=Math.max(...a);return lo===hi?format(lo):format(lo)+' – '+format(hi);}
 function renderCatalog(force=false){
  if(!catalog)return;const signature=JSON.stringify([catalog,filter,query,pageIndex]);if(!force&&signature===catalogSignature)return;catalogSignature=signature;
- const c=catalog.counts;text('active-count',catalog.observedAt?c.observedCurrentProducts:'—');text('missing-count',catalog.complete&&!catalog.stale?c.missingProducts:'—');
+ const c=catalog.counts;text('active-count',c.observedCurrentProducts>0||catalog.complete&&!catalog.stale?c.observedCurrentProducts:'—');text('missing-count',catalog.complete&&!catalog.stale?c.missingProducts:'—');
  text('active-foot',catalog.stale?'读取时间较早，等待更新':catalog.complete?'当前活动已完整读取':'仍有活动待核对');
  text('catalog-observation',catalog.observedAt?`读取于 ${time(catalog.observedAt)}${catalog.stale?' · 等待本轮更新':''}${!catalog.complete?' · 全店数据尚未完整':''}`:'登录后自动读取当前活动');
  const needle=query.trim().toLocaleLowerCase(),rows=catalog.products.filter(p=>(filter==='all'||filter==='pending'?filter==='all'||p.pending||p.state==='unconfirmed':p.state===filter)&&(!needle||(p.name+' '+p.productId).toLocaleLowerCase().includes(needle)));

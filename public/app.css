@@ -7,3 +7,5 @@
 
 /* Reading contrast */
 :root{--muted:#7c899d}.product-title strong{font-size:13px;color:#465870}.price{font-size:13px;color:#496581}.discount{font-size:12px;color:#70849e}.table-head{font-size:11px;color:#8292a8}.metric-label{font-size:12px;color:#718198}.metric-card small{font-size:11px;color:#8c9aaf}.patrol-body strong{font-size:12px;color:#64758e}.patrol-body small{font-size:11px;color:#8d9cb1}.hero p{font-size:13px;color:#6e88a9}.section-head p,.section-head small{color:#8998ad}.sku-table{font-size:12px}.sku-table td{color:#637791}.record strong{font-size:12px;color:#627792}.badge{font-size:11px}.hero-symbol img{animation-duration:.28s}.product-summary>.badge{justify-self:start}.search input{font-size:12px}.segments button{font-size:12px}.helper{color:#8b9ab0}.sidebar-foot p{color:#8796ac}.detail-note{color:#889bb4}.pagination{font-size:11px}
+/* Previous observations stay visible without looking like a fresh live quote. */
+.last-price-note{display:block;margin-top:4px;color:var(--muted,#868b96);font-size:10px;font-weight:400;line-height:1.45;white-space:normal}

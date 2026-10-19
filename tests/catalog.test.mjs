@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildCatalog} from '../src/catalog.mjs';
+import {buildCatalog,catalogObservation} from '../src/catalog.mjs';
 const now=1792437600000,shopId='900001';
 const sku={id:'500001',name:'PP棉',baseFen:10000,discount:50,saleFen:5000,saleSource:'computed-from-verified-base-and-discount'};
 const baseline={shopId,productId:'300001',name:'历史商品',campaignId:'400001',historyAt:now-100000,skus:[{...sku,discount:60,saleFen:6000}]};
@@ -74,4 +74,30 @@ test('recycle checks cannot hide current activity or an unknown submit',()=>{
  assert.equal(buildCatalog({...base(),checks:[recycledCheck()]}).products[0].state,'active');
  const r=buildCatalog({...base(),inventory:null,checks:[recycledCheck()],tasks:[{shopId,phase:'unknown',plans:[{productId:'300001'}]}]});
  assert.equal(r.products[0].state,'pending');assert.equal(r.products[0].pending,true);
+});
+
+test('a new scan retains separately labeled last-read prices without proving current activity or loss',()=>{
+ const previous=catalogObservation(shopId,inventory),unread={listing:{...inventory.listing,observedAt:now+1000},activeComplete:false,details:new Map()};
+ const saved=catalogObservation(shopId,unread,previous),r=buildCatalog({...base(),inventory:unread,observation:saved,now:now+1000}),p=r.products[0];
+ assert.equal(p.current.length,0);assert.equal(p.state,'unconfirmed');assert.equal(r.counts.observedCurrentProducts,0);assert.equal(r.counts.missingProducts,0);
+ assert.equal(p.lastObserved[0].skus[0].saleFen,5000);assert.equal(p.lastObserved[0].observedAt,now-1000);assert.equal(p.history.skus[0].saleFen,6000);
+ const restarted=buildCatalog({...base(),inventory:null,observation:saved,now:now+1000});assert.equal(restarted.products[0].state,'unconfirmed');assert.equal(restarted.products[0].lastObserved.length,1);
+});
+test('last-read display cannot cross stores, changed campaigns or override a new removal observation',()=>{
+ const previous=catalogObservation(shopId,inventory),unread={listing:{...inventory.listing,observedAt:now+1000},activeComplete:false,details:new Map()};
+ const other=catalogObservation(shopId,unread,{...previous,shopId:'900002'});assert.equal(buildCatalog({...base(),inventory:unread,observation:other}).products[0].lastObserved.length,0);
+ const changed={...unread,listing:{...unread.listing,campaigns:[{...campaign,risk:true}]}};
+ assert.equal(buildCatalog({...base(),inventory:changed,observation:catalogObservation(shopId,changed,previous)}).products[0].lastObserved.length,0);
+ const removed={...inventory,details:new Map([[campaign.id,{complete:true,observedAt:now,products:[{productId:'300001',name:'商品',removalConfirmed:true,skus:[sku]}]}]])};
+ const r=buildCatalog({...base(),inventory:removed,observation:catalogObservation(shopId,removed,previous)});assert.equal(r.products[0].lastObserved.length,0);assert.equal(r.products[0].state,'missing');
+});
+
+test('last-read prices cannot override pending submissions, exclusions or fresh recycle observations',()=>{
+ const unread={listing:{...inventory.listing,observedAt:now+1000},activeComplete:false,details:new Map()};
+ const observation=catalogObservation(shopId,unread,catalogObservation(shopId,inventory));
+ const params={...base(),inventory:unread,observation,now:now+1000};
+ for(const [extra,state] of [[{tasks:[{shopId,phase:'unknown',plans:[{productId:'300001'}]}]},'pending'],[{excluded:['300001']},'excluded'],[{checks:[recycledCheck()]},'recycled']]){
+  const result=buildCatalog({...params,...extra}),p=result.products[0];
+  assert.equal(p.state,state);assert.equal(p.current.length,0);assert.equal(p.lastObserved.length,1);assert.equal(result.counts.observedCurrentProducts,0);assert.equal(result.counts.missingProducts,0);
+ }
 });

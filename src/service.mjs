@@ -3,20 +3,33 @@ import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat} fr
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {applyPriceTarget,makePriceReviews} from './price-review.mjs';
 
+const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
+ {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
+
 export class GuardianService {
   constructor({journal,platform,policy,now=()=>Date.now()}) {
     this.journal=journal;this.platform=platform;this.policy=policy;this.now=now;this.owner=randomUUID();
-    this.running=false;this.busy=false;this.timer=null;this.lastRun=null;this.nextAt=null;this.stopRequested=false;
+    this.running=false;this.busy=false;this.timer=null;this.lastRun=null;this.lastSuccessfulRun=null;this.nextAt=null;this.stopRequested=false;
+    const patrol=policy.shopId?journal.settings('patrol-display:'+policy.shopId):null;
+    if(patrol?.schema===1&&patrol.shopId===policy.shopId&&patrol.source==='completed-program-patrol'){
+      this.lastRun=displayRun(patrol.lastRun,this.now());const success=displayRun(patrol.lastSuccessfulRun,this.now());this.lastSuccessfulRun=success?.ok?success:null;
+    }
     this.recovered=false;this.lastHistoryRead=this.now();
     this.priorityWatch=null;this.priorityListing=null;this.lastPriorityPoll=0;this.priorityPoll=null;this.priorityResume=false;this.lastPriorityCheck=null;
     this.platform.assertWrite=()=>{requireThat(!this.stopRequested&&this.policy.liveEnabled&&this.policy.cutoverConfirmed,'STOPPED','后台写入已停止');this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
   }
   status() {
     const tasks=this.policy.shopId?this.journal.list(this.policy.shopId):[];
-    return {shopId:this.policy.shopId,running:this.running,busy:this.busy,nextAt:this.nextAt,lastRun:this.lastRun,lastPriorityCheck:this.lastPriorityCheck,
+    return {shopId:this.policy.shopId,running:this.running,busy:this.busy,nextAt:this.nextAt,lastRun:this.lastRun,lastSuccessfulRun:this.lastSuccessfulRun,lastPriorityCheck:this.lastPriorityCheck,
       verified:tasks.filter(t=>t.phase==='verified').reduce((n,t)=>n+t.plans.length,0),unknown:tasks.filter(t=>['submitting','unknown','verifying'].includes(t.phase)).length,
       blocked:tasks.filter(t=>t.phase==='blocked').length,
       tasks:tasks.slice(0,100).map(t=>({id:t.id,title:t.title,phase:t.phase,products:t.plans.map(p=>p.productId),updatedAt:t.updatedAt,reason:t.reason||null,receipt:t.receipt||null}))};
+  }
+  recordRun(run){
+    this.lastRun=run;if(run.ok)this.lastSuccessfulRun=run;
+    // This record is presentation only; it cannot start a task, grant consent
+    // or turn incomplete inventory into evidence of a missing discount.
+    this.journal.putSettings('patrol-display:'+this.policy.shopId,{schema:1,shopId:this.policy.shopId,source:'completed-program-patrol',lastRun:this.lastRun,lastSuccessfulRun:this.lastSuccessfulRun});
   }
   latestHistories() {
     const latest=new Map(),histories=this.journal.histories(this.policy.shopId).sort((a,b)=>Number(!!a.generatedByGuardian)-Number(!!b.generatedByGuardian)||(b.historyAt||0)-(a.historyAt||0));
@@ -272,8 +285,9 @@ export class GuardianService {
         if(task.phase==='queued')await this.execute(task);
       }
       if(leaseError)throw leaseError;
-      this.lastRun={startedAt,finishedAt:this.now(),ok:true};
-    }catch(error){this.lastRun={startedAt,finishedAt:this.now(),ok:false,code:error.code||'ERROR',message:String(error.message).slice(0,1000)};}
+      requireThat(!this.stopRequested,'STOPPED','本轮巡检已暂停，尚未完成');
+      this.recordRun({startedAt,finishedAt:this.now(),ok:true});
+    }catch(error){this.recordRun({startedAt,finishedAt:this.now(),ok:false,code:error.code||'ERROR',message:String(error.message).slice(0,1000)});}
     finally{
       // A stop or failed detail read must also drain the read-only monitor;
       // otherwise the next shop, maintenance handoff or write could overlap it.
@@ -284,7 +298,7 @@ export class GuardianService {
   start() {
     requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed,'CUTOVER_REQUIRED','首次切换尚未确认');
     if(this.running)return;this.running=true;this.stopRequested=false;
-    const run=async()=>{if(!this.running)return;try{await this.tick();}catch(error){this.lastRun={ok:false,finishedAt:this.now(),code:error.code||'ERROR',message:error.message};}if(this.running){const delay=this.priorityResume?1000:60000;this.nextAt=this.now()+delay;this.timer=setTimeout(run,delay);}};
+    const run=async()=>{if(!this.running)return;try{await this.tick();}catch(error){const at=this.now();this.recordRun({ok:false,startedAt:at,finishedAt:at,code:error.code||'ERROR',message:error.message});}if(this.running){const delay=this.priorityResume?1000:60000;this.nextAt=this.now()+delay;this.timer=setTimeout(run,delay);}};
     this.timer=setTimeout(run,0);
   }
   stop() {this.running=false;this.stopRequested=true;this.nextAt=null;clearTimeout(this.timer);}

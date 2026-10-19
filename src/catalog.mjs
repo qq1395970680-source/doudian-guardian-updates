@@ -2,17 +2,24 @@ import {fingerprint} from './policy.mjs';
 
 const active=c=>['进行中','未开始'].includes(c.status);
 const fresh=(at,now)=>Number.isFinite(at)&&at>0&&now-at>=-5000&&now-at<=5*60000;
+const sameCampaign=(a,b)=>!!a&&!!b&&fingerprint([a.id,a.name,a.type,a.status,a.startAt,a.endAt,a.risk===true])===fingerprint([b.id,b.name,b.type,b.status,b.startAt,b.endAt,b.risk===true]);
 const skuRows=skus=>(skus||[]).map(s=>({id:String(s.id||''),name:String(s.name||''),
  baseFen:Number.isSafeInteger(s.baseFen)?s.baseFen:null,discount:Number.isSafeInteger(s.discount)?s.discount:null,
  saleFen:Number.isSafeInteger(s.saleFen)?s.saleFen:null,saleSource:s.saleSource||'historical'}));
 
 // A display snapshot only. Neither the planner nor any write path loads this
 // key; execution continues to require fresh platform observations.
-export function catalogObservation(shopId,inventory){
+export function catalogObservation(shopId,inventory,previous=null){
  if(!inventory?.listing)return null;
  const campaigns=inventory.listing.campaigns||[],ids=new Set(campaigns.filter(active).map(c=>c.id));
+ const retained=new Map();
+ if(previous?.shopId===shopId){
+  for(const [id,item] of previous.previousDetails||[])retained.set(id,item);
+  for(const [id,detail] of previous.details||[]){const campaign=previous.listing?.campaigns.find(c=>c.id===id);if(campaign)retained.set(id,{campaign,detail});}
+ }
+ const previousDetails=[...retained].filter(([id,item])=>ids.has(id)&&!inventory.details.has(id)&&item.detail?.complete===true&&sameCampaign(item.campaign,campaigns.find(c=>c.id===id)));
  return{shopId,listing:{complete:inventory.listing.complete,observedAt:inventory.listing.observedAt,currentObservedAt:inventory.listing.currentObservedAt,campaigns},activeComplete:inventory.activeComplete,
-  details:[...inventory.details].filter(([id])=>ids.has(id))};
+  details:[...inventory.details].filter(([id])=>ids.has(id)),previousDetails};
 }
 export function buildCatalog({shopId,inventory=null,observation=null,histories=[],tasks=[],checks=[],excluded=[],now=Date.now()}){
  let restoredObservation=false;
@@ -25,7 +32,7 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
  const times=[listingObservedAt,...campaigns.map(c=>details.get(c.id)?.observedAt)].filter(x=>Number.isFinite(x)&&x>0);
  const observedAt=times.length?Math.min(...times):null,stale=!fresh(observedAt,now),listingFresh=listing?.complete===true&&fresh(listingObservedAt,now);
  const products=new Map(),ensure=(id,name='')=>{
-  if(!products.has(id))products.set(id,{productId:id,name,current:[],scheduled:[],removed:[],history:null,pending:false,excluded:excluded.includes(id),ambiguous:false,reason:null,observedAt:null});
+  if(!products.has(id))products.set(id,{productId:id,name,current:[],scheduled:[],removed:[],lastObserved:[],history:null,pending:false,excluded:excluded.includes(id),ambiguous:false,reason:null,observedAt:null});
   const p=products.get(id);if(name&&!p.name)p.name=name;return p;
  };
  for(const h of histories.filter(h=>h.shopId===shopId).sort((a,b)=>Number(!!a.generatedByGuardian)-Number(!!b.generatedByGuardian)||(b.historyAt||0)-(a.historyAt||0))){
@@ -42,6 +49,17 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
    else if(c.status==='未开始')p.scheduled.push(activity);
    else if(c.endAt&&c.endAt<=now)p.ambiguous=true;
    else p.current.push(activity);
+  }
+ }
+ // Separately retained display values do not populate current/scheduled or
+ // observedAt, do not affect completeness, and never authorize a missing item.
+ if(observation?.shopId===shopId)for(const [id,item] of observation.previousDetails||[]){
+  const c=campaigns.find(c=>c.id===id),detail=item.detail;
+  if(details.has(id)||!sameCampaign(c,item.campaign)||detail?.complete!==true||!Number.isFinite(detail.observedAt)||detail.observedAt<=0||detail.observedAt>now+5000)continue;
+  for(const member of detail.products||[]){
+   if(member.removalConfirmed||member.removalAmbiguous)continue;
+   const p=ensure(member.productId,member.name);
+   p.lastObserved.push({campaignId:c.id,name:c.name,status:c.status,observedAt:detail.observedAt,skus:skuRows(member.skus)});
   }
  }
  for(const id of excluded)ensure(id);

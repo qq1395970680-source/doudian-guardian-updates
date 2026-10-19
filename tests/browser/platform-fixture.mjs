@@ -20,8 +20,9 @@ export async function fixtureServer({corruptPrice=false,dropAfterSubmit=false,ab
   if(url.pathname==='/fixture/stats'){let text='';for await(const c of req)text+=c;const data=JSON.parse(text);for(const [k,v]of Object.entries(data)){if(k==='seenPrices')state.seenPrices.push(...v);else state[k]=(state[k]||0)+v;}res.end('ok');return;}
   const route=url.pathname.split('/').at(-1),isCreate=route==='create',isDetail=route==='view';
   const data=isDetail?state.campaigns.find(c=>c.id===url.searchParams.get('id')):null;
+  let hideIdentity=false;if(isDetail){state.detailLoads=(state.detailLoads||0)+1;if(state.hideShopIdForDetailLoads>0){state.hideShopIdForDetailLoads--;hideIdentity=true;}}
   const base=`<!doctype html><meta charset="utf-8"><style>body{font:15px sans-serif;color:#111;background:#fff}button,label{display:inline-block;padding:8px;margin:4px}input{padding:8px}table{border-collapse:collapse}td{min-width:100px;padding:5px}#scroll{height:280px;overflow-y:auto}.ReactVirtualized__Grid__innerScrollContainer{position:relative}[role=gridcell]{position:absolute;left:0;right:0}tr.index-skuRow--x td{height:40px}[role=dialog]{position:fixed;inset:20%;z-index:99;background:white;border:2px solid #222;padding:30px}.exit{animation:out .2s forwards}@keyframes out{to{opacity:0}}.index-goodsDrawer--x{position:fixed;inset:5%;background:white;z-index:50;overflow:auto}</style>
-  <div class="index_shopTitle__x"><span class="index_userName__x" title="独立测试店铺">独立测试店铺</span><div label="店铺ID" value="900001"><span class="index_descValueText__x">900001</span></div></div>`;
+  <div class="index_shopTitle__x"><span class="index_userName__x" title="独立测试店铺">独立测试店铺</span>${hideIdentity?'':'<div label="店铺ID" value="900001"><span class="index_descValueText__x">900001</span></div>'}</div>`;
   if(isDetail){
    res.end(base+`<h1>${data.name}</h1><p>商品数量 ${data.products.length} 个</p><p>是否设置活动限量 不设置 每人限购 不限购 是否预热 不预热 订单取消时间 30分钟</p>
    ${detailExpandable&&detailGlobalSwitch?'<button id="expand-detail" role="switch" aria-checked="false">展开规格</button>':''}

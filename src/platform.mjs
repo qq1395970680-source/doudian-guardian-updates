@@ -109,10 +109,15 @@ export class DoudianPlatform {
    return{complete:true,campaigns,observedAt:Math.min(...lists.map(r=>r.observedAt)),scope:'current-statuses',queriedStatuses:['进行中','未开始']};
   }catch(e){if(monitor)await this.closeMonitorPages();throw e;}
  }
+ publishCatalog(){
+  if(!this.journal)return;
+  const key='catalog-view:'+this.policy.shopId;
+  this.journal.putSettings(key,catalogObservation(this.policy.shopId,this.inventory,this.journal.settings(key)));
+ }
  invalidateInventory(listing){
   requireThat(listing?.complete===true,'ACTIVE_UNKNOWN','更新后的活动列表不完整');
   this.inventory={listing,details:new Map(),activeComplete:false,readOnlyReuseMaxAgeMs:0};
-  this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
+  this.publishCatalog();
  }
  refreshCurrentEvidence(listing){
   const original=this.inventory?.listing;
@@ -121,7 +126,7 @@ export class DoudianPlatform {
   // A matching list only renews current membership for display. Keep the
   // original list and every SKU observation time intact for execution proofs.
   original.currentObservedAt=listing.observedAt;
-  this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
+  this.publishCatalog();
   return true;
  }
  async detail(campaign){
@@ -195,7 +200,7 @@ export class DoudianPlatform {
   let priorityRefreshRequired=false,priorityListing=null;
   const publish=()=>{
    this.inventory={listing,details,activeComplete:campaigns.filter(active).every(c=>details.has(c.id)),readOnlyReuseMaxAgeMs};
-   this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
+   this.publishCatalog();
   };
   // Publish completed reads as they arrive. This display snapshot does not
   // authorize a loss while any active activity remains unread.
@@ -215,7 +220,18 @@ export class DoudianPlatform {
    const worker=async({c,key})=>{
      this.check();inFlight.add(c.id);progress();
      try{
-      const detail=await this.detail(c);requireThat(detail?.complete===true,'DETAIL_INCOMPLETE','活动详情未完整读取');
+      let detail,retried=false;
+      try{detail=await this.detail(c);}catch(error){
+       if(!active(c)||(error.code!=='LOAD_TIMEOUT'&&error.name!=='TimeoutError'))throw error;
+       this.check();retried=true;
+       this.journal?.event(null,'detail-read-retry',{shopId:this.policy.shopId,campaignId:c.id,code:error.code||'READ_TIMEOUT',message:String(error.message).slice(0,1000)},Date.now());
+       // detail() closes its own page even on failure. Retry only a current
+       // activity read on a new page with a new identity check. Historical
+       // failures retain their read budget; prepare and submit never retry.
+       detail=await this.detail(c);
+      }
+      requireThat(detail?.complete===true,'DETAIL_INCOMPLETE','活动详情未完整读取');
+      if(retried)this.journal?.event(null,'detail-read-recovered',{shopId:this.policy.shopId,campaignId:c.id,message:'页面已重新读取并核对完整'},Date.now());
       this.cache.set(key,detail);this.journal?.putSettings('campaign:'+c.id,{key,detail});details.set(c.id,detail);publish();
       return {campaign:c,detail};
      }catch(e){

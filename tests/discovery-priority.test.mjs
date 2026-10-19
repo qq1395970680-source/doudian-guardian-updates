@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DoudianPlatform} from '../src/platform.mjs';
 import {Journal} from '../src/journal.mjs';
+import {PriorityWatch} from '../src/priority-watch.mjs';
 const campaigns=Array.from({length:8},(_,n)=>({id:String(400001+n),name:'活动'+n,type:'限时抢购',status:'进行中',startAt:Date.now()-n*1000}));
 function fixture(){
  const journal=new Journal(':memory:'),platform=new DoudianPlatform({browser:{context:{}},policy:{shopId:'900001'},journal});
@@ -36,5 +37,23 @@ test('unchanged priority checks preserve a full discovery and stable historical 
   const result=await f.platform.discover({historyReadLimit:0,onReadBoundary:async()=>{boundaries++;assert.equal(f.counts().opened,f.counts().closed);}});
   assert.equal(boundaries,5);assert.equal(result.activeComplete,true);assert.equal(result.priorityRefreshRequired,false);
   assert.deepEqual(result.baselines.map(b=>b.campaignId),campaigns.map(c=>c.id));
+ }finally{f.journal.close();}
+});
+
+test('an older newly risk-marked activity is read in the first pair while baseline ordering stays stable',async()=>{
+ const f=fixture(),readIds=[],watch=new PriorityWatch(f.journal,'900001'),oldest=campaigns.at(-1);
+ watch.observe({...oldest,risk:false},{complete:true,observedAt:Date.now()-1000,products:[{productId:'500008'}]});
+ f.listing.campaigns=campaigns.map(c=>({...c,risk:c.id===oldest.id}));
+ const read=f.platform.detail.bind(f.platform);f.platform.detail=async c=>{readIds.push(c.id);return read(c);};
+ try{
+  const result=await f.platform.discover({historyReadLimit:0,onReadBoundary:async({reads})=>{
+   assert.equal(f.counts().opened,f.counts().closed);
+   for(const {campaign,detail} of reads)watch.observe(campaign,detail);
+  }});
+  assert.equal(readIds[0],oldest.id);
+  assert.equal(result.activeComplete,true);
+  assert.deepEqual(result.baselines.map(b=>b.campaignId),campaigns.map(c=>c.id),'read priority must not change which historical baseline wins');
+  readIds.length=0;await f.platform.discover({historyReadLimit:0});
+  assert.equal(readIds[0],campaigns[0].id,'known unchanged risk must not perpetually jump the queue');
  }finally{f.journal.close();}
 });

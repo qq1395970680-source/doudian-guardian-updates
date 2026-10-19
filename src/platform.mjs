@@ -3,7 +3,7 @@ import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice} from './platfor
 import {until,delay,parseDate,collectForm,bindFormProducts} from './collector.mjs';
 import {makeWorkbook} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
-import {currentListingKey} from './priority-watch.mjs';
+import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {inspectRecycledProduct} from './product-state.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
@@ -188,6 +188,10 @@ export class DoudianPlatform {
     (active(c)?activeJobs:historyJobs).push({c,key});
    }else if(detail){details.set(c.id,detail);if(active(c))activeRead++;}
   }
+  // Reorder reads, not baselines. A still-active older campaign may acquire a
+  // platform removal warning while unrelated newer activities remain healthy.
+  const priorityIds=new Set(this.journal?new PriorityWatch(this.journal,this.policy.shopId).priorityCampaignIds(listing):[]);
+  activeJobs.sort((a,b)=>Number(priorityIds.has(b.c.id))-Number(priorityIds.has(a.c.id)));
   let priorityRefreshRequired=false,priorityListing=null;
   const publish=()=>{
    this.inventory={listing,details,activeComplete:campaigns.filter(active).every(c=>details.has(c.id)),readOnlyReuseMaxAgeMs};

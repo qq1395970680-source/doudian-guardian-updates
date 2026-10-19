@@ -20,7 +20,7 @@ export class PriorityWatch {
   // An older receipt must not undo a later explicit removal observation.
   if(row.observedAt>observedAt)return;
   const products=row.products.filter(p=>p.productId!==productId);products.push({productId,removed:false,ambiguous:false});
-  this.records.set(campaignId,{campaignId,observedAt,products});
+  this.records.set(campaignId,{...row,campaignId,observedAt,products});
  }
  observe(campaign,detail){
   requireThat(active(campaign)&&detail?.complete===true&&Number.isFinite(detail.observedAt)&&detail.observedAt>0,'WATCH_PROOF','优先监测只接受独立核对的当前活动');
@@ -31,7 +31,13 @@ export class PriorityWatch {
   const present=new Set(products.map(p=>p.productId));
   for(const prior of this.records.get(campaign.id)?.products||[])
    if(!present.has(prior.productId))products.push({...prior,absentFromDetail:true});
-  this.records.set(campaign.id,{campaignId:campaign.id,observedAt:detail.observedAt,products});this.save();
+  this.records.set(campaign.id,{campaignId:campaign.id,observedAt:detail.observedAt,risk:campaign.risk===true,products});this.save();
+ }
+ priorityCampaignIds(listing){
+  requireThat(listing?.complete===true,'ACTIVE_UNKNOWN','优先读取的当前活动列表不完整');
+  // A changed list warning only orders fresh detail reads. It cannot prove
+  // product removal or contribute prices/permission to a restoration plan.
+  return listing.campaigns.filter(c=>active(c)&&c.risk===true&&this.records.get(c.id)?.risk!==true).map(c=>id(c.id));
  }
  hints(listing){
   requireThat(listing?.complete===true,'ACTIVE_UNKNOWN','优先监测的当前活动列表不完整');

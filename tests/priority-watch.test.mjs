@@ -45,3 +45,29 @@ test('a disappearing detail row remains a hint across restart and is cleared by 
   restarted.observe(c,detail(['300001','300002']));assert.deepEqual(restarted.hints(listing([c])),[]);
  }finally{j.close();}
 });
+
+test('a newly risk-marked active campaign is prioritized for reading, never treated as a missing product',()=>{
+ const j=new Journal(':memory:');try{
+  const w=new PriorityWatch(j,'900001');w.observe({...c,risk:false},detail(['300001','300002']));
+  const changed=listing([{...c,risk:true}]);
+  assert.deepEqual(w.priorityCampaignIds(changed),[c.id]);
+  assert.deepEqual(w.hints(changed),[],'risk alone cannot establish which product lost its discount');
+  assert.deepEqual(new PriorityWatch(j,'900001').priorityCampaignIds(changed),[c.id]);
+  w.observe({...c,risk:true},detail(['300001',{productId:'300002',removalConfirmed:true}]));
+  assert.deepEqual(w.priorityCampaignIds(changed),[]);
+  assert.deepEqual(w.hints(changed).map(p=>p.productId),['300002']);
+  w.recordOne('300001',c.id,Date.now()+1);w.save();
+  assert.deepEqual(new PriorityWatch(j,'900001').priorityCampaignIds(changed),[],'a receipt must preserve the risk flag already read');
+ }finally{j.close();}
+});
+
+test('risk reading priority requires a complete listing, respects shop isolation and ignores ended campaigns',()=>{
+ const j=new Journal(':memory:');try{
+  const w=new PriorityWatch(j,'900001');w.observe({...c,risk:true},detail(['300001']));
+  assert.deepEqual(new PriorityWatch(j,'900002').priorityCampaignIds(listing([{...c,risk:true}])),[c.id]);
+  assert.deepEqual(w.priorityCampaignIds(listing([{...c,status:'已失效',risk:true}])),[]);
+  assert.throws(()=>w.priorityCampaignIds({...listing([{...c,risk:true}]),complete:false}),{code:'ACTIVE_UNKNOWN'});
+  w.observe({...c,risk:false},detail(['300001']));
+  assert.deepEqual(w.priorityCampaignIds(listing([{...c,risk:true}])),[c.id],'a new risk transition must be read again');
+ }finally{j.close();}
+});

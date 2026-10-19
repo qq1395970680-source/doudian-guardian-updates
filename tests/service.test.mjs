@@ -26,6 +26,8 @@ test('no live execution until explicit cutover is enabled',async()=>{
 test('successful create is counted only after independent exact readback and later patrol never duplicates it',async()=>{
  const f=fixture(),j=new Journal(':memory:');try{const s=new GuardianService({journal:j,...f,now:()=>now});await s.tick();
   assert.equal(s.status().verified,1);assert.equal(f.counts.submitted,1);assert.equal(f.counts.reads,1);await s.tick();assert.equal(f.counts.submitted,1);
+  const index=j.settings('priority-watch:900001');assert.equal(index.source,'verified-activity-membership');
+  assert.ok(index.records.some(([id,row])=>id==='4000000000000000002'&&row.products.some(p=>p.productId===f.baseline.productId)));
  }finally{j.close();}
 });
 test('transport loss after submit never causes a second submit on the next tick',async()=>{

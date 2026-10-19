@@ -3,6 +3,7 @@ import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice} from './platfor
 import {until,delay,parseDate,collectForm,bindFormProducts} from './collector.mjs';
 import {makeWorkbook} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
+import {currentListingKey} from './priority-watch.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -13,7 +14,7 @@ export class DoudianPlatform {
  constructor({browser,policy,journal,base=PLATFORM}){
   requireThat(base===PLATFORM||browser.test&&/^http:\/\/127\.0\.0\.1:\d+$/.test(base),'HOST_SCOPE','平台地址不受支持');
   this.browser=browser;this.policy=policy;this.journal=journal;this.base=base;this.inventory=null;this.progress={stage:'尚未连接'};
-  this.cache=new Map();this.drafts=new Map();this.stopping=false;
+  this.cache=new Map();this.drafts=new Map();this.monitorPages=new Map();this.peekPending=null;this.stopping=false;
  }
  check(){requireThat(!this.stopping,'STOPPED','后台已停止');}
  async ensure(){this.check();if(!this.browser.context)await this.browser.open(this.policy.shopId,{profileKey:this.policy.profileKey});requireThat(!this.browser.loginMode,'LOGIN_OPEN','专用登录窗口尚未结束');}
@@ -42,11 +43,15 @@ export class DoudianPlatform {
   if(page&&!page.isClosed())await this.fault(page,task.id,phase==='queued'?'prepare':'submit',error);
  }
  async ready(page){await until(async()=>{this.check();return await page.locator('.ecom-mcenter-spin-spinning:visible').count()===0;},'平台持续加载');}
- async list({productId=null,title=null,status=null}={}){
+ async list({productId=null,title=null,status=null,monitor=false}={}){
   requireThat(status===null||['进行中','未开始'].includes(status),'QUERY_SCOPE','不支持的活动状态筛选');
   requireThat(title===null||typeof title==='string'&&title.length>0&&title.length<=120,'QUERY_SCOPE','活动名称筛选无效');
-  const page=await this.open(LIST);
+  requireThat(!monitor||status&&!productId&&!title,'QUERY_SCOPE','固定监测页仅用于当前活动状态查询');
+  let page=monitor?this.monitorPages.get(status):null;
+  if(page?.isClosed()){this.monitorPages.delete(status);page=null;}
+  if(!page){page=await this.open(LIST);if(monitor)this.monitorPages.set(status,page);}
   try{
+   if(monitor){requireThat(page.url()===this.base+LIST,'QUERY_CHANGED','固定监测页地址已变化');await this.identity(page);}
    await page.locator('input[placeholder="请输入商品ID"]').waitFor();await button(page,'重置').click();await delay(1000);await this.ready(page);
    const statusSelect=page.locator('.ecom-mcenter-select').filter({has:page.locator('.ecom-mcenter-select-selection-item').filter({hasText:/^(?:全部|进行中|未开始)$/})});
    if(productId){id(productId);await page.locator('input[placeholder="请输入商品ID"]').fill(productId);}
@@ -73,25 +78,50 @@ export class DoudianPlatform {
     this.progress={stage:'读取全店活动列表',campaigns:campaigns.length,page:n,at:Date.now()};
     if(pager.disabled||!rows.length&&pager.nextCount===0){await this.identity(page);
      requireThat((await page.locator('input[placeholder="请输入商品ID"]').inputValue()).trim()===(productId||''),'QUERY_CHANGED','列表查询条件变化');
-     if(title)requireThat((await page.locator('input[placeholder="请输入活动名称"]').inputValue()).trim()===title,'QUERY_CHANGED','活动名称筛选变化');
-     if(status)requireThat(await statusSelect.count()===1&&(await statusSelect.locator('.ecom-mcenter-select-selection-item').innerText()).trim()===status,'QUERY_CHANGED','活动状态筛选变化');
+     requireThat((await page.locator('input[placeholder="请输入活动名称"]').inputValue()).trim()===(title||''),'QUERY_CHANGED','活动名称筛选变化');
+     requireThat(await statusSelect.count()===1&&(await statusSelect.locator('.ecom-mcenter-select-selection-item').innerText()).trim()===(status||'全部'),'QUERY_CHANGED','活动状态筛选变化');
      return {complete:true,campaigns,observedAt:Date.now(),query:{productId,title,status}};}
     requireThat(pager.nextCount===1&&rows.length,'LIST_PAGING','未取得活动列表完整性证明');
     const before=fingerprint(rows);await page.locator('li[title="下一页"] button:visible').click();
     await until(async()=>fingerprint(await page.evaluate(listSlice))!==before,'活动列表翻页停滞');
    }
    throw new GuardError('LIST_LIMIT','活动列表超过已核验页数');
-  }catch(e){await this.fault(page,'inventory','list',e);throw e;}finally{await page.close();}
+  }catch(e){await this.fault(page,'inventory','list',e);if(monitor){this.monitorPages.delete(status);await page.close().catch(()=>{});}throw e;}finally{if(!monitor)await page.close();}
  }
- async listActive(){
+ async listActive(){return this.currentListings(false);}
+ async peekActive(){
+  if(this.peekPending)return this.peekPending;
+  this.peekPending=this.currentListings(true);try{return await this.peekPending;}finally{this.peekPending=null;}
+ }
+ async closeMonitorPages(){
+  const pages=[...this.monitorPages.values()];this.monitorPages.clear();await Promise.allSettled(pages.map(page=>page.close()));
+ }
+ async currentListings(monitor){
   // Both status queries use independent read pages and must finish. A partial
   // result or a status transition producing duplicates cannot prove absence.
   await this.ensure();
-  const results=await Promise.allSettled(['进行中','未开始'].map(status=>this.list({status})));
-  const failure=results.find(r=>r.status==='rejected');if(failure)throw failure.reason;
+  const results=await Promise.allSettled(['进行中','未开始'].map(status=>this.list({status,monitor})));
+  const failure=results.find(r=>r.status==='rejected');if(failure){if(monitor)await this.closeMonitorPages();throw failure.reason;}
   const lists=results.map(r=>r.value),campaigns=lists.flatMap(r=>r.campaigns);
-  requireThat(lists.every(r=>r.complete===true)&&campaigns.every(active)&&new Set(campaigns.map(c=>c.id)).size===campaigns.length,'ACTIVE_UNKNOWN','当前活动筛选不完整或发生交叉变化');
-  return{complete:true,campaigns,observedAt:Math.min(...lists.map(r=>r.observedAt)),scope:'current-statuses',queriedStatuses:['进行中','未开始']};
+  try{
+   requireThat(lists.every(r=>r.complete===true)&&campaigns.every(active)&&new Set(campaigns.map(c=>c.id)).size===campaigns.length,'ACTIVE_UNKNOWN','当前活动筛选不完整或发生交叉变化');
+   return{complete:true,campaigns,observedAt:Math.min(...lists.map(r=>r.observedAt)),scope:'current-statuses',queriedStatuses:['进行中','未开始']};
+  }catch(e){if(monitor)await this.closeMonitorPages();throw e;}
+ }
+ invalidateInventory(listing){
+  requireThat(listing?.complete===true,'ACTIVE_UNKNOWN','更新后的活动列表不完整');
+  this.inventory={listing,details:new Map(),activeComplete:false,readOnlyReuseMaxAgeMs:0};
+  this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
+ }
+ refreshCurrentEvidence(listing){
+  const original=this.inventory?.listing;
+  if(original?.complete!==true||listing?.complete!==true||!Number.isFinite(listing.observedAt)||listing.observedAt<=0||
+   listing.observedAt<(original.currentObservedAt??original.observedAt)||currentListingKey(original)!==currentListingKey(listing))return false;
+  // A matching list only renews current membership for display. Keep the
+  // original list and every SKU observation time intact for execution proofs.
+  original.currentObservedAt=listing.observedAt;
+  this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
+  return true;
  }
  async detail(campaign){
   id(campaign.id);const page=await this.open(LIST+`/view?refer=view&id=${campaign.id}&is_new_limit=1&operate_use_mode=0`);
@@ -138,7 +168,7 @@ export class DoudianPlatform {
    throw new GuardError('DETAIL_LIMIT','活动详情超过页数上限');
   }catch(e){await this.fault(page,campaign.id,'detail',e);throw e;}finally{await page.close();}
  }
- async discover({readOnlyReuseMaxAgeMs=0,historyReadLimit=20}={}){
+ async discover({readOnlyReuseMaxAgeMs=0,historyReadLimit=20,onReadBoundary=null}={}){
   requireThat(Number.isInteger(historyReadLimit)&&historyReadLimit>=0&&historyReadLimit<=20,'HISTORY_BUDGET','历史读取预算无效');
   requireThat(Number.isSafeInteger(readOnlyReuseMaxAgeMs)&&readOnlyReuseMaxAgeMs>=0&&readOnlyReuseMaxAgeMs<=900000,'READ_CACHE_SCOPE','只读证据复用时间无效');
   const listing=historyReadLimit===0?await this.listActive():await this.list(),details=new Map(),baselines=[],errors=[];
@@ -157,6 +187,7 @@ export class DoudianPlatform {
     (active(c)?activeJobs:historyJobs).push({c,key});
    }else if(detail){details.set(c.id,detail);if(active(c))activeRead++;}
   }
+  let priorityRefreshRequired=false,priorityListing=null;
   const publish=()=>{
    this.inventory={listing,details,activeComplete:campaigns.filter(active).every(c=>details.has(c.id)),readOnlyReuseMaxAgeMs};
    this.journal?.putSettings('catalog-view:'+this.policy.shopId,catalogObservation(this.policy.shopId,this.inventory));
@@ -164,27 +195,37 @@ export class DoudianPlatform {
   // Publish completed reads as they arrive. This display snapshot does not
   // authorize a loss while any active activity remains unread.
   publish();
+  const boundary=async reads=>{
+   if(!onReadBoundary)return;
+   this.check();const result=await onReadBoundary({listing,reads});this.check();
+   if(result?.refreshRequired){
+    requireThat(result.listing?.complete===true,'ACTIVE_UNKNOWN','优先核对后的活动列表不完整');
+    priorityRefreshRequired=true;priorityListing=result.listing;
+   }
+  };
+  await boundary([]);
   const readGroup=async(jobs,stage)=>{
-   let cursor=0;const inFlight=new Set();
+   const inFlight=new Set();
    const progress=()=>{this.progress={stage,read:details.size,total:campaigns.length,activeRead,activeTotal,inFlight:[...inFlight],at:Date.now()};};
-   const worker=async()=>{
-    while(cursor<jobs.length){
-     this.check();const {c,key}=jobs[cursor++];inFlight.add(c.id);progress();
+   const worker=async({c,key})=>{
+     this.check();inFlight.add(c.id);progress();
      try{
       const detail=await this.detail(c);requireThat(detail?.complete===true,'DETAIL_INCOMPLETE','活动详情未完整读取');
       this.cache.set(key,detail);this.journal?.putSettings('campaign:'+c.id,{key,detail});details.set(c.id,detail);publish();
+      return {campaign:c,detail};
      }catch(e){
       if(e.code==='STOPPED')throw e;
       const error={campaignId:c.id,code:e.code||'READ_ERROR',message:e.message};errors.push(error);
       this.journal?.putSettings('campaign-attempt:'+c.id,{key,retryAt:Date.now()+15*60000,error});
      }finally{inFlight.delete(c.id);if(active(c))activeRead++;progress();}
-    }
    };
-   // Each detail owns a separate read-only page. Drain all readers before
-   // returning, including cancellation, so they cannot overlap later writes.
-   const results=await Promise.allSettled(Array.from({length:Math.min(2,jobs.length)},()=>worker()));
-   const rejected=results.find(r=>r.status==='rejected');if(rejected)throw rejected.reason;
-   this.check();
+   // Priority checks may create a recovery. Close both independent detail pages
+   // before entering that boundary or launching the next pair of readers.
+   for(let cursor=0;cursor<jobs.length&&!priorityRefreshRequired;cursor+=2){
+    const results=await Promise.allSettled(jobs.slice(cursor,cursor+2).map(worker));
+    const rejected=results.find(r=>r.status==='rejected');if(rejected)throw rejected.reason;
+    this.check();await boundary(results.map(r=>r.value).filter(Boolean));
+   }
   };
   await readGroup(activeJobs,'核对当前活动');
   await readGroup(historyJobs,'补读完整历史');
@@ -198,11 +239,15 @@ export class DoudianPlatform {
     try{validateHistorical(baseline);baselines.push(baseline);}catch(e){errors.push({campaignId:c.id,productId:p.productId,code:e.code,message:e.message});}
    }
   }
-  const activeComplete=campaigns.filter(active).every(c=>details.has(c.id));
-  publish();
-  this.progress={stage:activeComplete?'全店当前活动核对完成':'当前活动仍有读取失败，暂停恢复',campaigns:campaigns.length,details:details.size,
+  const activeComplete=!priorityRefreshRequired&&campaigns.filter(active).every(c=>details.has(c.id));
+  if(priorityRefreshRequired){
+   // A changed inventory is a new observation, never a complete copy of the old
+   // one. The next scan will populate its freshly verified positive details.
+   this.invalidateInventory(priorityListing);
+  }else publish();
+  this.progress={stage:priorityRefreshRequired?'优先核对已完成，继续同步当前活动':activeComplete?'全店当前活动核对完成':'当前活动仍有读取失败，暂停恢复',campaigns:campaigns.length,details:details.size,
    historiesPending:campaigns.filter(c=>!details.has(c.id)).length,errors,at:Date.now()};
-  return {baselines,complete:details.size===campaigns.length,activeComplete,errors};
+  return {baselines,complete:!priorityRefreshRequired&&details.size===campaigns.length,activeComplete,priorityRefreshRequired,errors};
  }
  async loss(baseline,{fresh=false}={}){
   if(fresh){
@@ -218,7 +263,7 @@ export class DoudianPlatform {
   for(const c of listing.campaigns.filter(active)){
    const d=details.get(c.id);requireThat(d?.complete,'ACTIVE_UNKNOWN','有效活动规格未完整读取');
    const p=d.products.find(p=>p.productId===baseline.productId);
-   if(p&&!p.removalConfirmed)return {complete,active:true,campaignId:c.id,observedAt:Date.now()};
+   if(p&&!p.removalConfirmed)return {complete,active:true,ambiguous:p.removalAmbiguous===true,campaignId:c.id,observedAt:Date.now()};
    if(p)related.push(c.id+':removed');
   }
   const previous=listing.campaigns.find(c=>c.id===baseline.campaignId);

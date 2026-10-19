@@ -11,7 +11,7 @@ const skuRows=skus=>(skus||[]).map(s=>({id:String(s.id||''),name:String(s.name||
 export function catalogObservation(shopId,inventory){
  if(!inventory?.listing)return null;
  const campaigns=inventory.listing.campaigns||[],ids=new Set(campaigns.filter(active).map(c=>c.id));
- return{shopId,listing:{complete:inventory.listing.complete,observedAt:inventory.listing.observedAt,campaigns},activeComplete:inventory.activeComplete,
+ return{shopId,listing:{complete:inventory.listing.complete,observedAt:inventory.listing.observedAt,currentObservedAt:inventory.listing.currentObservedAt,campaigns},activeComplete:inventory.activeComplete,
   details:[...inventory.details].filter(([id])=>ids.has(id))};
 }
 export function buildCatalog({shopId,inventory=null,observation=null,histories=[],tasks=[],excluded=[],now=Date.now()}){
@@ -21,8 +21,9 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
  }
  const listing=inventory?.listing,complete=listing?.complete===true&&inventory?.activeComplete===true;
  const campaigns=(listing?.campaigns||[]).filter(active),details=inventory?.details||new Map();
- const times=[listing?.observedAt,...campaigns.map(c=>details.get(c.id)?.observedAt)].filter(x=>Number.isFinite(x)&&x>0);
- const observedAt=times.length?Math.min(...times):null,stale=!fresh(observedAt,now),listingFresh=listing?.complete===true&&fresh(listing.observedAt,now);
+ const listingObservedAt=listing?.currentObservedAt??listing?.observedAt;
+ const times=[listingObservedAt,...campaigns.map(c=>details.get(c.id)?.observedAt)].filter(x=>Number.isFinite(x)&&x>0);
+ const observedAt=times.length?Math.min(...times):null,stale=!fresh(observedAt,now),listingFresh=listing?.complete===true&&fresh(listingObservedAt,now);
  const products=new Map(),ensure=(id,name='')=>{
   if(!products.has(id))products.set(id,{productId:id,name,current:[],scheduled:[],removed:[],history:null,pending:false,excluded:excluded.includes(id),ambiguous:false,reason:null,observedAt:null});
   const p=products.get(id);if(name&&!p.name)p.name=name;return p;
@@ -62,6 +63,6 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
   missingProducts:rows.filter(p=>p.state==='missing').length,pendingProducts:rows.filter(p=>p.pending).length,
   unconfirmedProducts:rows.filter(p=>p.state==='unconfirmed').length,excludedProducts:rows.filter(p=>p.excluded).length,
   historicalProducts:rows.filter(p=>p.history).length};
- const result={shopId,observedAt,listingObservedAt:listing?.observedAt||null,complete,stale,restoredObservation,counts,products:rows};
+ const result={shopId,observedAt,listingObservedAt:listingObservedAt||null,complete,stale,restoredObservation,counts,products:rows};
  return{...result,revision:fingerprint(result)};
 }

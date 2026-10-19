@@ -1,6 +1,6 @@
 # 开发与发布
 
-桌面与后台统一版本为 `2.0.0-beta.3`。完整可编辑工程随安装器提供，菜单可以导出；GitHub Release 同时提供源码 ZIP。
+桌面与后台统一版本为 `2.0.0-beta.4`。完整可编辑工程随安装器提供，菜单可以导出；GitHub Release 同时提供源码 ZIP。
 
 ## 模块
 
@@ -12,6 +12,7 @@
 | `src/accounts.mjs` | 本机店铺注册、独立资料与授权 |
 | `src/updates.mjs` | GitHub 版本选择、严格来源与 SHA256 校验 |
 | `src/catalog.mjs` | 只读商品视图，不供执行路径读取 |
+| `src/priority-watch.mjs` | 持久活动成员线索；只安排核对优先级，不证明缺失或批准价格 |
 | `src/platform.mjs` | 专用浏览器的平台读取与动作 |
 | `src/policy.mjs` | SKU 匹配、原价与折扣证明 |
 | `src/service.mjs` | 巡检、旧阻塞冷却、新失效优先与独立回读 |

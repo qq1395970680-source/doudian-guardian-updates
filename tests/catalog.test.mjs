@@ -59,3 +59,19 @@ test('a stale activity listing cannot claim a fresh current status from detail r
  const r=buildCatalog({...base(),inventory:{...inventory,listing:{...inventory.listing,observedAt:now-6*60000}}});
  assert.equal(r.products[0].state,'unconfirmed');assert.equal(r.counts.observedCurrentProducts,0);
 });
+
+const recycledCheck=()=>({shopId,productId:'300001',code:'PRODUCT_RECYCLED',at:now,message:'商品已在平台回收站',productState:{source:'live-platform-product-recycle',kind:'recycled',shopId,productId:'300001',observedAt:now,complete:true}});
+test('a live recycle observation is displayed separately from a missing discount',()=>{
+ const r=buildCatalog({...base(),inventory:null,checks:[recycledCheck()]});
+ assert.equal(r.products[0].state,'recycled');assert.equal(r.counts.missingProducts,0);assert.equal(r.counts.recycledProducts,1);assert.equal(r.products[0].history.skus.length,1);
+});
+test('stale and cross-shop recycle checks cannot claim a current recycled state',()=>{
+ const stale=buildCatalog({...base(),inventory:null,checks:[recycledCheck()],now:now+6*60000});
+ assert.equal(stale.products[0].state,'unconfirmed');assert.equal(stale.counts.recycledProducts,0);
+ const cross=buildCatalog({...base(),inventory:null,checks:[{...recycledCheck(),shopId:'900002'}]});assert.equal(cross.products[0].check,undefined);
+});
+test('recycle checks cannot hide current activity or an unknown submit',()=>{
+ assert.equal(buildCatalog({...base(),checks:[recycledCheck()]}).products[0].state,'active');
+ const r=buildCatalog({...base(),inventory:null,checks:[recycledCheck()],tasks:[{shopId,phase:'unknown',plans:[{productId:'300001'}]}]});
+ assert.equal(r.products[0].state,'pending');assert.equal(r.products[0].pending,true);
+});

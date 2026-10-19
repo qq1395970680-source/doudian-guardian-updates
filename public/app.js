@@ -4,7 +4,7 @@ const $=id=>document.getElementById(id),{token,instance}=window.guardianSession;
 import {createPriceReviews} from './price-reviews.js';
 import {createMigration} from './migration.js';
 const names={overview:'折扣概览',accounts:'店铺管理',prices:'价格确认',activity:'运行记录',updates:'软件更新'};
-const labels={active:'生效中',scheduled:'未开始',missing:'待恢复',pending:'待核实',unconfirmed:'待更新',excluded:'已排除'};
+const labels={active:'生效中',scheduled:'未开始',missing:'待恢复',pending:'待核实',unconfirmed:'待更新',excluded:'已排除',recycled:'商品已回收'};
 const phases={queued:'待准备',prepared:'草稿已核对',submitting:'提交已记录',verifying:'回读中',unknown:'待核实',verified:'回读通过',blocked:'受阻'};
 let state=null,catalog=null,view='overview',filter='all',query='',pageIndex=0,pending=false,polling=false,online=false,timer,catalogAt=0,catalogSignature='',activitySignature='',accountSignature='',toastTimer,updateBusy=false,lastUpdate={state:'idle'};
 const pageSize=16,expanded=new Set();

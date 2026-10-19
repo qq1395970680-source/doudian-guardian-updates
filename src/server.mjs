@@ -68,9 +68,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }
    if(req.method==='GET'&&path==='/api/products'){
     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,
-     histories:shopId?journal.histories(shopId):[],tasks:shopId?journal.list(shopId):[],excluded:policy.excludedProductIds||[]});
-    const checks=shopId?journal.productChecks(shopId):[];
-    for(const p of catalog.products){const c=checks.find(c=>c.productId===p.productId);if(c&&!p.current.length){p.check=c;p.reason=p.reason||c.message;}}
+     histories:shopId?journal.histories(shopId):[],tasks:shopId?journal.list(shopId):[],checks:shopId?journal.productChecks(shopId):[],excluded:policy.excludedProductIds||[]});
     json(200,catalog);return;
    }
    requireThat(req.method==='POST'&&req.headers.origin===origin&&req.headers['x-guardian-token']===token,'REQUEST_REJECTED','请求必须来自本机工作台');

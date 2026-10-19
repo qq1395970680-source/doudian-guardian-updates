@@ -14,7 +14,7 @@ export function catalogObservation(shopId,inventory){
  return{shopId,listing:{complete:inventory.listing.complete,observedAt:inventory.listing.observedAt,currentObservedAt:inventory.listing.currentObservedAt,campaigns},activeComplete:inventory.activeComplete,
   details:[...inventory.details].filter(([id])=>ids.has(id))};
 }
-export function buildCatalog({shopId,inventory=null,observation=null,histories=[],tasks=[],excluded=[],now=Date.now()}){
+export function buildCatalog({shopId,inventory=null,observation=null,histories=[],tasks=[],checks=[],excluded=[],now=Date.now()}){
  let restoredObservation=false;
  if(!inventory&&observation?.shopId===shopId&&Array.isArray(observation.details)){
   inventory={...observation,details:new Map(observation.details)};restoredObservation=true;
@@ -57,11 +57,20 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
   // loading. Absence still needs complete, fresh coverage of every activity.
   const positiveFresh=listingFresh&&!p.stale&&!p.ambiguous;
   p.state=p.excluded?'excluded':p.pending?'pending':p.ambiguous?'unconfirmed':p.current.length&&positiveFresh?'active':p.scheduled.length&&positiveFresh?'scheduled':stale||!complete?'unconfirmed':p.history?'missing':'unconfirmed';
+  const c=checks.find(c=>c.shopId===shopId&&c.productId===p.productId);
+  if(c&&!p.current.length&&!p.scheduled.length){
+   p.check=c;p.reason=p.reason||c.message;
+   const proof=c.productState,recycled=c.code==='PRODUCT_RECYCLED'&&proof?.kind==='recycled'&&proof.source==='live-platform-product-recycle'&&proof.complete===true&&proof.shopId===shopId&&proof.productId===p.productId;
+   if(recycled&&!p.pending&&!p.excluded&&!p.ambiguous){
+    const recent=fresh(proof.observedAt,now);p.state=recent?'recycled':'unconfirmed';p.observedAt=proof.observedAt;p.stale=!recent;
+    p.reason=recent?c.message:'上次核验商品位于平台回收站，当前状态待更新；历史折扣已保留';
+   }
+  }
  }
  const rows=[...products.values()].sort((a,b)=>a.productId.localeCompare(b.productId));
  const counts={products:rows.length,observedCurrentProducts:rows.filter(p=>p.current.length&&listingFresh&&!p.stale&&!p.ambiguous).length,
   missingProducts:rows.filter(p=>p.state==='missing').length,pendingProducts:rows.filter(p=>p.pending).length,
-  unconfirmedProducts:rows.filter(p=>p.state==='unconfirmed').length,excludedProducts:rows.filter(p=>p.excluded).length,
+  unconfirmedProducts:rows.filter(p=>p.state==='unconfirmed').length,excludedProducts:rows.filter(p=>p.excluded).length,recycledProducts:rows.filter(p=>p.state==='recycled').length,
   historicalProducts:rows.filter(p=>p.history).length};
  const result={shopId,observedAt,listingObservedAt:listingObservedAt||null,complete,stale,restoredObservation,counts,products:rows};
  return{...result,revision:fingerprint(result)};

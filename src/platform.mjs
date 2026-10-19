@@ -4,6 +4,7 @@ import {until,delay,parseDate,collectForm,bindFormProducts} from './collector.mj
 import {makeWorkbook} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
 import {currentListingKey} from './priority-watch.mjs';
+import {inspectRecycledProduct} from './product-state.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -307,6 +308,13 @@ export class DoudianPlatform {
  }
  async precheck(baseline){
   this.progress={stage:'读取当前完整规格',productId:baseline.productId,at:Date.now()};
+  const prior=this.journal?.productChecks?.(this.policy.shopId).find(c=>c.shopId===this.policy.shopId&&c.productId===baseline.productId&&['PRODUCT_RECYCLED','NOT_FOUND'].includes(c.code));
+  let recycleChecked=false;
+  const checkRecycle=async()=>{
+   recycleChecked=true;const proof=await inspectRecycledProduct(this,baseline.productId);
+   if(proof)throw new GuardError('PRODUCT_RECYCLED','商品已在平台回收站，跳过折扣恢复并保留完整历史',{productState:proof});
+  };
+  if(prior)await checkRecycle();
   const page=await this.open(LIST+'/create');
   try{
    await page.locator('#title').waitFor();const initial=await page.evaluate(formSlice);
@@ -315,7 +323,10 @@ export class DoudianPlatform {
    const {products,snapshot}=await collectForm(page,{precheck:true});
    requireThat(products.length===1&&products[0].productId===baseline.productId&&snapshot.counts.length&&snapshot.counts.every(n=>n===1),'PRECHECK_MEMBERSHIP','预查商品集合不一致');
    await this.identity(page);return {shopId:this.policy.shopId,productId:baseline.productId,complete:true,observedAt:Date.now(),offShelf:products[0].offShelf,skus:products[0].skus};
-  }catch(e){await this.fault(page,baseline.productId,'precheck',e);throw e;}finally{await page.close();}
+  }catch(e){
+   if(e.code==='NOT_FOUND'&&!recycleChecked){await page.close();await checkRecycle();}
+   await this.fault(page,baseline.productId,'precheck',e);throw e;
+  }finally{if(!page.isClosed())await page.close();}
  }
  async radio(page,label){
   const control=page.locator('label').filter({hasText:new RegExp('^'+label+'$')}).filter({has:page.locator('input[type="radio"]')});

@@ -52,3 +52,13 @@ test('incomplete active inventory is a failed patrol before per-product work',as
   assert.equal(j.events().filter(e=>e.kind==='product-blocked').length,0);assert.equal(j.histories('900001').length,1);
  }finally{j.close();}
 });
+
+test('recycled products preserve history and proof without enqueueing a discount or restoring the product',async()=>{
+ const f=fixture(),j=new Journal(':memory:'),proof={kind:'recycled',source:'live-platform-product-recycle',shopId:f.policy.shopId,productId:f.baseline.productId,observedAt:now,enteredAt:now-60000,complete:true};
+ f.platform.precheck=async()=>{f.counts.prechecks++;throw Object.assign(new Error('商品已在平台回收站'),{code:'PRODUCT_RECYCLED',detail:{productState:proof}});};
+ try{
+  const s=new GuardianService({journal:j,...f,now:()=>now});await s.tick();await s.tick();
+  assert.equal(s.lastRun.ok,true);assert.equal(j.list(f.policy.shopId).length,0);assert.equal(f.counts.prepared,0);assert.equal(f.counts.submitted,0);assert.equal(f.counts.prechecks,1);
+  assert.equal(j.histories(f.policy.shopId).length,1);assert.deepEqual(j.productChecks(f.policy.shopId)[0].productState,proof);
+ }finally{j.close();}
+});

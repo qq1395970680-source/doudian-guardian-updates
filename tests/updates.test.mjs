@@ -25,3 +25,13 @@ test('download hash is checked before exposing an installable path',async()=>{
   await assert.rejects(downloadUpdate(update,dir,{fetcher:async()=>new Response('bad installer')}),/校验|大小/);
  }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('direct downloads reject an invalid redirect before making the next request',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'guardian-redirect-'));
+ try{
+  const update=selectRelease([release()],'2.0.0-beta.2').release;
+  for(const target of ['http://github.com/setup.exe','https://github.com:8443/setup.exe','https://evil.example/setup.exe','https://user:password@github.com/setup.exe']){
+   let calls=0;await assert.rejects(downloadUpdate(update,dir,{fetcher:async()=>{calls++;return new Response(null,{status:302,headers:{Location:target}});}}),/来源无效/);assert.equal(calls,1);
+  }
+ }finally{await rm(dir,{recursive:true,force:true});}
+});

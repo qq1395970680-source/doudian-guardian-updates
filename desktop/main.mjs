@@ -1,11 +1,11 @@
-import {app,BrowserWindow,Menu,Tray,nativeImage,dialog,shell,session,ipcMain,net} from 'electron';
+import {app,BrowserWindow,Menu,Tray,nativeImage,dialog,shell,session,ipcMain} from 'electron';
 import {readFile,mkdir,writeFile,cp,access} from 'node:fs/promises';
 import {join,resolve,dirname} from 'node:path';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {checkForUpdates,downloadUpdate,verifyInstaller} from '../src/updates.mjs';
 import {runtimeDirectory} from './runtime-directory.mjs';
-import {createUpdateFetcher} from './update-network.mjs';
+import {createUpdateFetcher,createSystemUpdateFetcher} from './update-network.mjs';
 import {tmpdir} from 'node:os';
 import {ensureService,probeService,shutdownService,isAllowedNavigation,upgradeService} from './service-controller.mjs';
 import {prepareBackend,launchBackend} from './backend.mjs';
@@ -22,7 +22,7 @@ app.setName(product);app.setAppUserModelId('cn.doudian.guardian.desktop');app.se
 const single=app.requestSingleInstanceLock();
 let window,tray,exiting=false,stopping=false,refreshTimer,launchPromise,shownCloseTip=false,refreshing=false,expectedBuild;
 let updateState={state:'idle'},updateBusy=false;
-const updateFetch=createUpdateFetcher({systemFetch:net.fetch});
+const updateFetch=createUpdateFetcher({systemFetch:createSystemUpdateFetcher({getSession:()=>session.fromPartition('guardian-update-network',{cache:false})})});
 const resources=app.isPackaged?process.resourcesPath:resolve(import.meta.dirname,'..','.desktop');
 const icon=join(import.meta.dirname,'assets','guardian.ico');
 const message=(text,detail='')=>dialog.showMessageBox(window,{type:'info',title:product,message:text,detail});

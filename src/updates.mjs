@@ -29,7 +29,7 @@ export async function checkForUpdates(currentVersion,{fetcher=fetch}={}){
 async function githubDownload(url,fetcher){
  let next=url;
  for(let n=0;n<5;n++){
-  const u=new URL(next);if(u.protocol!=='https:'||u.username||u.password||!['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(u.hostname))throw Error('更新下载重定向来源无效');
+  const u=new URL(next);if(u.protocol!=='https:'||u.username||u.password||u.port||!['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(u.hostname))throw Error('更新下载重定向来源无效');
   const r=await fetcher(next,{redirect:'manual',signal:AbortSignal.timeout(180000),headers:{'User-Agent':'DoudianGuardian'}});
   if([301,302,303,307,308].includes(r.status)){const location=r.headers.get('location');await r.body?.cancel();if(!location)throw Error('下载重定向缺少地址');next=new URL(location,next).href;continue;}
   if(!r.ok)throw Error('下载更新失败（'+r.status+'）');return r;

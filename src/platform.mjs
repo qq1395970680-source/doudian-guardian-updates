@@ -380,6 +380,9 @@ export class DoudianPlatform {
   requireThat(baselines.length>0&&baselines.length<=50&&baselines.every(b=>b.shopId===this.policy.shopId)&&
    new Set(baselines.map(b=>b.productId)).size===baselines.length,'LOSS_UNPROVEN','批量失效核对范围无效');
   await this.ensure();
+  // Store size, not this discount group's size, decides whether to share
+  // bounded reads. A large shop can have many groups of only 1–5 products.
+  if((this.inventory?.listing.campaigns.filter(active).length||0)>8)return this.scopedLossBatch(baselines);
   // Small queues benefit from exact product queries. Large queues share one
   // complete current inventory instead of reopening it for every product.
   if(baselines.length<=5){
@@ -393,7 +396,6 @@ export class DoudianPlatform {
   // Reading every unrelated activity can outlive the evidence budget on a
   // large store. Use exact product queries before this happens, with shared
   // origin/detail reads scoped to this one batch.
-  if((this.inventory?.listing.campaigns.filter(active).length||0)>8)return this.scopedLossBatch(baselines);
   let inventory;
   try{inventory=await this.readFreshCurrentInventory();}
   catch(error){if(error.code==='BATCH_PROOF_EXPIRED')return this.scopedLossBatch(baselines);throw error;}
@@ -413,17 +415,20 @@ export class DoudianPlatform {
  }
  async scopedLossBatch(baselines){
   await this.closeMonitorPages();
-  const cache=new Map(),results=new Array(baselines.length);let cursor=0,stopError=null;
+  const startedAt=Date.now(),cache=new Map(),results=new Array(baselines.length);
+  let cursor=0,stopError=null,listReads=0,detailReads=0,cacheHits=0;
   const shared=async(key,read,refresh=true)=>{
    let pending=cache.get(key);
+   if(pending)cacheHits++;
    if(!pending){
     pending=Promise.resolve().then(async()=>{
-     try{return await read();}
+     const actualRead=()=>{if(key.startsWith('list:'))listReads++;else detailReads++;return read();};
+     try{return await actualRead();}
      catch(error){
       if(error.name!=='TimeoutError'&&error.code!=='LOAD_TIMEOUT')throw error;
       // Only this read is retried, on the new page opened by list/detail.
       // Their finally blocks have closed the timed-out page before returning.
-      this.check();return read();
+      this.check();return actualRead();
      }
     });cache.set(key,pending);
    }
@@ -464,6 +469,9 @@ export class DoudianPlatform {
   // Only readers run concurrently. All six finish/close before any write.
   await Promise.all(Array.from({length:Math.min(6,baselines.length)},worker));
   if(stopError)throw stopError;
+  this.journal?.event?.(null,'scoped-loss-batch-read',{shopId:this.policy.shopId,
+   productIds:baselines.map(b=>b.productId),productCount:baselines.length,workerLimit:Math.min(6,baselines.length),
+   listReads,detailReads,cacheHits,errors:results.filter(r=>r.error).length,elapsedMs:Date.now()-startedAt},Date.now());
   return results;
  }
  async readFreshCurrentInventory(){

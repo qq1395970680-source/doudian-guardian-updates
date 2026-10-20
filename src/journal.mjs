@@ -24,7 +24,8 @@ export class Journal {
       CREATE TABLE IF NOT EXISTS leases(shop TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS product_checks(shop TEXT NOT NULL, product TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(shop,product));`);
     this.db.exec(`CREATE TABLE IF NOT EXISTS price_reviews(id TEXT PRIMARY KEY, shop TEXT NOT NULL, product TEXT NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS price_targets(shop TEXT NOT NULL, product TEXT NOT NULL, review TEXT NOT NULL, PRIMARY KEY(shop,product));`);
+      CREATE TABLE IF NOT EXISTS price_targets(shop TEXT NOT NULL, product TEXT NOT NULL, review TEXT NOT NULL, PRIMARY KEY(shop,product));
+      CREATE INDEX IF NOT EXISTS price_reviews_shop_state_updated ON price_reviews(shop,state,updated DESC);`);
   }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -109,7 +110,19 @@ export class Journal {
   }
   histories(shopId) { return this.db.prepare('SELECT body FROM baselines WHERE shop=? ORDER BY at DESC').all(shopId).map(r => JSON.parse(r.body)); }
   priceReview(reviewId) {const r=this.db.prepare('SELECT body FROM price_reviews WHERE id=?').get(reviewId);return r?JSON.parse(r.body):null;}
-  priceReviews(shopId) {return this.db.prepare('SELECT body FROM price_reviews WHERE shop=? ORDER BY updated DESC,rowid DESC LIMIT 200').all(shopId).map(r=>JSON.parse(r.body));}
+  priceReviews(shopId) {return this.db.prepare('SELECT body FROM price_reviews WHERE shop=? ORDER BY updated DESC,rowid DESC').all(shopId).map(r=>JSON.parse(r.body));}
+  priceReviewCounts(shopId) {
+    const row=this.db.prepare("SELECT COUNT(*) AS total,COALESCE(SUM(state='pending'),0) AS pending FROM price_reviews WHERE shop=?").get(shopId);
+    return {total:row.total,pending:row.pending};
+  }
+  priceReviewPage(shopId,{page=0,pageSize=10}={}) {
+    const bounded=(value,fallback)=>Number.isSafeInteger(Number(value))?Number(value):fallback;
+    const size=Math.min(20,Math.max(1,bounded(pageSize,10))),counts=this.priceReviewCounts(shopId);
+    const pages=Math.max(1,Math.ceil(counts.total/size)),current=Math.min(pages-1,Math.max(0,bounded(page,0)));
+    const reviews=this.db.prepare("SELECT body FROM price_reviews WHERE shop=? ORDER BY (state='pending') DESC,updated DESC,rowid DESC LIMIT ? OFFSET ?")
+      .all(shopId,size,current*size).map(r=>JSON.parse(r.body));
+    return {shopId,...counts,page:current,pageSize:size,pages,reviews};
+  }
   priceTarget(shopId,productId) {const r=this.db.prepare('SELECT review FROM price_targets WHERE shop=? AND product=?').get(shopId,productId);return r?this.priceReview(r.review):null;}
   supersedePriceReviews(shopId,productId,reason,now=Date.now()) {
     return this.transaction(()=>{

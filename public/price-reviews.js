@@ -2,11 +2,12 @@
 // unchecked checkbox and explicit button below; prices are never sent by UI.
 export function createPriceReviews({getState,post,toast,node,money,discount,time}) {
  const $=id=>document.getElementById(id),cards=new Map(),pageSize=10,skuPageSize=25;
- let shop=null,reviews=[],pageIndex=0,loading=false,readAt=0,action=null,visibleIds='';
+ let shop=null,reviews=[],pageIndex=0,total=0,pages=1,loading=false,readAt=0,action=null,visibleIds='',loadVersion=0;
  const labels={pending:'等待确认',approved:'已确认',declined:'暂不调整',superseded:'已失效'};
  const current=()=>getState();
  const setText=(el,value)=>{if(el.textContent!==value)el.textContent=value;};
- function reset(next){shop=next;reviews=[];pageIndex=0;readAt=0;cards.clear();visibleIds='';$('price-reviews').replaceChildren(node('div','empty','正在读取价格建议'));}
+ function reset(next){shop=next;reviews=[];pageIndex=0;total=0;pages=1;readAt=0;loadVersion++;cards.clear();visibleIds='';$('price-reviews').replaceChildren(node('div','empty','正在读取价格建议'));pagination();}
+ function pagination(){$('price-page-label').textContent=total?`${total} 份记录 · 第 ${pageIndex+1} / ${pages} 页`:'0 份记录';$('price-prev').disabled=loading||!!action||pageIndex===0;$('price-next').disabled=loading||!!action||pageIndex===pages-1;}
  function eligible(r){const s=current();return s.online&&s.state?.shopId===r.shopId&&s.state?.connection?.shopId===r.shopId&&Date.now()-readAt<15000&&!action;}
  function updateControls(card){
   const {r}=card,expired=r.expiresAt<=Date.now(),ready=eligible(r);
@@ -19,7 +20,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
  async function decide(card,decision){
   const r=card.r;if(!eligible(r))return;
   if(decision==='approve'&&(!card.checkbox?.checked||r.expiresAt<=Date.now()))return;
-  action=r.id;for(const c of cards.values())updateControls(c);
+  action=r.id;loadVersion++;for(const c of cards.values())updateControls(c);pagination();
   try{
    const args={shopId:r.shopId,reviewId:r.id,key:r.key,decision};
    if(decision==='approve')Object.assign(args,{confirmedSkuIds:r.rows.map(row=>row.id),acceptPriceAndRisk:true});
@@ -28,7 +29,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
    reviews=reviews.map(row=>row.id===r.id?result.review:row);render();
    toast(decision==='approve'?'表内价格已确认。开启守护时，后台会重新核对后执行。':decision==='decline'?'已保留原设置，不采用这份调价建议。':'已请求重新核对；新的建议仍需你确认。');
   }catch(e){toast(e.message);readAt=0;}
-  finally{action=null;for(const c of cards.values())updateControls(c);}
+  finally{action=null;loadVersion++;readAt=0;for(const c of cards.values())updateControls(c);pagination();void refresh();}
  }
  function buildCard(r,previous,first){
   const el=node('details','panel price-review'),summary=node('summary','price-review-heading'),title=node('div');
@@ -77,22 +78,25 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
   el.addEventListener('toggle',()=>{if(el.open)populate();});if(el.open)populate();updateControls(card);return card;
  }
  function render(){
-  const sorted=[...reviews].sort((a,b)=>Number(b.status==='pending')-Number(a.status==='pending')||b.createdAt-a.createdAt),pages=Math.max(1,Math.ceil(sorted.length/pageSize));pageIndex=Math.min(pageIndex,pages-1);
-  const rows=sorted.slice(pageIndex*pageSize,(pageIndex+1)*pageSize);let replaced=false;
+  const rows=reviews;let replaced=false;
   for(const [i,r] of rows.entries()){const previous=cards.get(r.id);if(previous?.signature!==JSON.stringify(r)){const c=buildCard(r,previous,i===0);cards.set(r.id,c);if(previous?.el.isConnected)previous.el.replaceWith(c.el);else replaced=true;}}
   const ids=JSON.stringify(rows.map(r=>r.id));if(ids!==visibleIds||replaced){$('price-reviews').replaceChildren(...rows.map(r=>cards.get(r.id).el));visibleIds=ids;}
   if(!rows.length)$('price-reviews').replaceChildren(node('div','empty',shop?'当前没有价格确认事项。平台出现明确的规格价格限制后，建议会显示在这里。':'连接店铺后，这里会显示需要你确认的价格建议。'));
   for(const [id,c] of cards){if(!reviews.some(r=>r.id===id))cards.delete(id);else updateControls(c);}
-  $('price-page-label').textContent=sorted.length?`${sorted.length} 份记录 · 第 ${pageIndex+1} / ${pages} 页`:'0 份记录';$('price-prev').disabled=pageIndex===0;$('price-next').disabled=pageIndex===pages-1;
+  pagination();
  }
- $('price-prev').onclick=()=>{pageIndex--;render();};$('price-next').onclick=()=>{pageIndex++;render();};
+ function changePage(delta){if(loading||action)return;pageIndex=Math.max(0,Math.min(pages-1,pageIndex+delta));readAt=0;loadVersion++;for(const c of cards.values())updateControls(c);void refresh();}
+ $('price-prev').onclick=()=>changePage(-1);$('price-next').onclick=()=>changePage(1);
+ async function refresh(){if(loading||action)return;loading=true;pagination();const expectedShop=shop,expectedVersion=loadVersion;
+   try{const response=await fetch(`/api/price-reviews?page=${pageIndex}&size=${pageSize}`,{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('价格建议暂时无法读取');const result=await response.json();
+    if(shop!==expectedShop||result.shopId!==shop||loadVersion!==expectedVersion||action)return;
+    if(!Array.isArray(result.reviews)||result.reviews.length>pageSize||!Number.isSafeInteger(result.total)||!Number.isSafeInteger(result.pages)||!Number.isSafeInteger(result.page))throw Error('价格建议分页待重新读取');
+    reviews=result.reviews;total=result.total;pages=result.pages;pageIndex=result.page;readAt=Date.now();render();
+   }catch{readAt=0;if(!reviews.length)$('price-reviews').replaceChildren(node('div','empty','价格建议暂时无法读取，正在重新连接。'));for(const c of cards.values())updateControls(c);}
+   finally{loading=false;pagination();if(loadVersion!==expectedVersion&&!action)void refresh();}
+  }
  return {
   sync(){if(shop!==current().state?.shopId)reset(current().state?.shopId||null);for(const c of cards.values())updateControls(c);},
-  async refresh(){if(loading)return;loading=true;const expectedShop=shop;
-   try{const response=await fetch('/api/price-reviews',{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('价格建议暂时无法读取');const result=await response.json();
-    if(shop!==expectedShop||result.shopId!==shop)return;reviews=result.reviews;readAt=Date.now();render();
-   }catch{readAt=0;if(!reviews.length)$('price-reviews').replaceChildren(node('div','empty','价格建议暂时无法读取，正在重新连接。'));for(const c of cards.values())updateControls(c);}
-   finally{loading=false;}
-  }
+  refresh
  };
 }

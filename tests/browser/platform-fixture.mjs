@@ -5,9 +5,15 @@ export const fixtureProducts=Array.from({length:7},(_,i)=>({productId:String(300
 const history={id:'4000000000000000001',name:'历史活动',type:'限时抢购',status:'已结束',startAt:Date.now()-5*86400000,endAt:Date.now()-3*86400000,products:fixtureProducts};
 function date(n){const d=new Date(n+8*3600000);return d.toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');}
 export async function fixtureServer({corruptPrice=false,dropAfterSubmit=false,abortBeforeHeaders=false,selectionLoadDelayMs=0,submitLabel='创建',extraSubmitButton=false,emptyLiveAlert=false,globalError='',riskGlobalSpinner=false,riskFormSpinner=false,rememberedPriceMode=false,detailExpandable=false,detailGlobalSwitch=true,skuPriceCaps={}}={}){
- const state={campaigns:[structuredClone(history)],submits:0,risks:0,uploads:0,prechecks:0,creates:0,modeWarnings:0,seenPrices:[],skuPriceCaps};
+ const rootState={campaigns:[structuredClone(history)],submits:0,risks:0,uploads:0,prechecks:0,creates:0,modeWarnings:0,seenPrices:[],skuPriceCaps,identity:{shopId:'900001',shopName:'独立测试店铺'}};
  const server=createServer(async(req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');res.setHeader('content-type','text/html;charset=utf-8');
+  const fixtureCookie=String(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith('guardian-fixture-account='))?.slice('guardian-fixture-account='.length);
+  const state=rootState.accounts?.get(fixtureCookie)||rootState;
+  if(rootState.accounts&&!rootState.accounts.has(fixtureCookie)){
+   if(url.pathname!=='/fixture/login'){res.writeHead(302,{Location:'/fixture/login'});res.end();return;}
+   res.end('<!doctype html><p>Local fixture authentication has not been supplied.</p>');return;
+  }
   if(url.pathname==='/fixture/submit'){
    let text='';for await(const c of req)text+=c;const data=JSON.parse(text);state.submits++;
    if(data.risk)state.risks++;const campaign={...history,id:String(4000000000000000001n+BigInt(state.submits)),name:data.title,status:'进行中',startAt:data.startAt,endAt:data.endAt,
@@ -22,7 +28,7 @@ export async function fixtureServer({corruptPrice=false,dropAfterSubmit=false,ab
   const data=isDetail?state.campaigns.find(c=>c.id===url.searchParams.get('id')):null;
   let hideIdentity=false;if(isDetail){state.detailLoads=(state.detailLoads||0)+1;if(state.hideShopIdForDetailLoads>0){state.hideShopIdForDetailLoads--;hideIdentity=true;}}
   const base=`<!doctype html><meta charset="utf-8"><style>body{font:15px sans-serif;color:#111;background:#fff}button,label{display:inline-block;padding:8px;margin:4px}input{padding:8px}table{border-collapse:collapse}td{min-width:100px;padding:5px}#scroll{height:280px;overflow-y:auto}.ReactVirtualized__Grid__innerScrollContainer{position:relative}[role=gridcell]{position:absolute;left:0;right:0}tr.index-skuRow--x td{height:40px}[role=dialog]{position:fixed;inset:20%;z-index:99;background:white;border:2px solid #222;padding:30px}.exit{animation:out .2s forwards}@keyframes out{to{opacity:0}}.index-goodsDrawer--x{position:fixed;inset:5%;background:white;z-index:50;overflow:auto}</style>
-  <div class="index_shopTitle__x"><span class="index_userName__x" title="独立测试店铺">独立测试店铺</span>${hideIdentity?'':'<div label="店铺ID" value="900001"><span class="index_descValueText__x">900001</span></div>'}</div>`;
+  <div class="index_shopTitle__x"><span class="index_userName__x" title="${state.identity.shopName}">${state.identity.shopName}</span>${hideIdentity?'':`<div label="店铺ID" value="${state.identity.shopId}"><span class="index_descValueText__x">${state.identity.shopId}</span></div>`}</div>`;
   if(isDetail){
    res.end(base+`<h1>${data.name}</h1><p>商品数量 ${data.products.length} 个</p><p>是否设置活动限量 不设置 每人限购 不限购 是否预热 不预热 订单取消时间 30分钟</p>
    ${detailExpandable&&detailGlobalSwitch?'<button id="expand-detail" role="switch" aria-checked="false">展开规格</button>':''}
@@ -78,5 +84,5 @@ export async function fixtureServer({corruptPrice=false,dropAfterSubmit=false,ab
   render();</script>`);
  });
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
- return {state,base:'http://127.0.0.1:'+server.address().port,close:()=>new Promise(r=>server.close(r))};
+ return {state:rootState,base:'http://127.0.0.1:'+server.address().port,close:()=>new Promise(r=>server.close(r))};
 }

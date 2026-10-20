@@ -24,7 +24,11 @@ function navigate(next){if(!names[next]||view===next)return;view=next;for(const 
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>navigate(b.dataset.view));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));
 function range(values,format){const a=values.filter(Number.isSafeInteger);if(!a.length)return'—';const lo=Math.min(...a),hi=Math.max(...a);return lo===hi?format(lo):format(lo)+' – '+format(hi);}
 function renderCatalog(force=false){
- if(!catalog)return;const signature=JSON.stringify([catalog,filter,query,pageIndex]);if(!force&&signature===catalogSignature)return;catalogSignature=signature;
+ // The server already fingerprints the complete display observation. Searching
+ // or changing pages must not stringify every SKU in the store again.
+ if(!catalog)return;const signature=JSON.stringify([catalog.revision||catalog,filter,query,pageIndex]);if(!force&&signature===catalogSignature)return;catalogSignature=signature;
+ const focused=document.activeElement,focusedProduct=focused?.closest('.product');
+ const focusTarget=focused?.tagName==='SUMMARY'&&focusedProduct?{shopId:focusedProduct.dataset.shopId,productId:focusedProduct.dataset.productId,index:[...focusedProduct.querySelectorAll('summary')].indexOf(focused)}:null;
  const c=catalog.counts;text('active-count',c.observedCurrentProducts>0||catalog.complete&&!catalog.stale?c.observedCurrentProducts:'—');text('missing-count',catalog.complete&&!catalog.stale?c.missingProducts:'—');
  text('active-foot',catalog.stale?'读取时间较早，等待更新':catalog.complete?'当前活动已完整读取':'仍有活动待核对');
  text('catalog-observation',catalog.observedAt?`读取于 ${time(catalog.observedAt)}${catalog.stale?' · 等待本轮更新':''}${!catalog.complete?' · 全店数据尚未完整':''}`:'登录后自动读取当前活动');
@@ -32,7 +36,7 @@ function renderCatalog(force=false){
  const pageCount=Math.max(1,Math.ceil(rows.length/pageSize));pageIndex=Math.min(pageIndex,pageCount-1);text('total-label',rows.length+' 件商品');text('page-label',rows.length?`第 ${pageIndex+1} / ${pageCount} 页 · 每页 ${pageSize} 件`:'0 件商品');$('prev-page').disabled=pageIndex===0;$('next-page').disabled=pageIndex===pageCount-1;
  const fragment=document.createDocumentFragment();
  for(const p of rows.slice(pageIndex*pageSize,(pageIndex+1)*pageSize)){
-  const detail=node('details','product'),summary=node('summary','product-summary');detail.dataset.productId=p.productId;
+  const detail=node('details','product'),summary=node('summary','product-summary');detail.dataset.productId=p.productId;detail.dataset.shopId=catalog.shopId;
   const title=node('div','product-title'),initial=node('span','product-mark',(p.name||'商品').replace(/^适配|适用/,'').slice(0,1)),titleBody=node('div');titleBody.append(node('strong','',p.name||'商品 '+p.productId),node('small','',p.productId));title.append(initial,titleBody);
   const lastOnly=!p.current.length&&p.state==='unconfirmed'&&p.lastObserved?.length>0,shown=lastOnly?p.lastObserved:p.current,skus=shown.flatMap(a=>a.skus),price=node('span','price',range(skus.map(s=>s.saleFen),money));
   if(lastOnly)price.append(node('small','last-price-note','上次读取 '+time(Math.min(...shown.map(a=>a.observedAt)))));
@@ -50,6 +54,12 @@ function renderCatalog(force=false){
  }
  if(!rows.length){const empty=node('div','empty');empty.append(node('strong','',catalog.products.length?'没有符合条件的商品':state?.shopId?'正在同步店铺折扣':'连接你的第一家店铺'),node('span','',catalog.products.length?'试试其他搜索词或状态。':'完成登录后，商品、折扣和规格价格会自动显示在这里。'));fragment.append(empty);}
  $('products').replaceChildren(fragment);
+ // Refreshing observations can replace the focused summary. Restore only the
+ // same shop/product control, without stealing focus from search or scrolling.
+ if(focusTarget?.shopId===catalog.shopId){
+  const replacement=[...$('products').children].find(p=>p.dataset.productId===focusTarget.productId);
+  replacement?.querySelectorAll('summary')[focusTarget.index]?.focus({preventScroll:true});
+ }
 }
 document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;pageIndex=0;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('selected',x===b));renderCatalog();});
 let searchTimer;$('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{query=$('search').value;pageIndex=0;renderCatalog();},120);};

@@ -39,9 +39,15 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
   function populate(){if(populated)return;populated=true;
    const body=node('div','price-review-body'),caption=node('p','helper','下表包含本商品全部规格。已有守护价与建议价由已核对原价 × 折扣计算；未调整的规格保持原设置。');
    body.append(caption);
+   if(r.kind==='sku-price-ratio'&&r.ratio){
+    const rule=r.ratio,limit=rule.numerator/rule.denominator;
+    body.append(node('p','detail-note',`平台要求最高规格价不超过最低价的 ${limit} 倍。已有价格倍率 ${(rule.previousMaxFen/rule.previousMinFen).toFixed(2)}，本表建议倍率 ${(rule.proposedMaxFen/rule.proposedMinFen).toFixed(2)}。`));
+    body.append(node('p','helper','依据本轮平台剔除明细和当前规格计算，优先选择不降价方案，再减少各规格调价金额的总和（各规格等权）。倍率推算不属于自动提价授权；确认后仍需核对平台其他价格要求。'));
+    if(rule.lowerSkuCount>0)body.append(node('p','detail-note',`仅提价无法同时满足已读价格限制。本表包含 ${rule.lowerSkuCount} 个规格降价，请逐项核对；确认前程序不会填入这些价格。`));
+   }
    if(r.skippedSkuIds?.length)body.append(node('p','detail-note',`${r.skippedSkuIds.length} 个历史规格当前缺失，本次未包含；完整历史仍保留。`));
    const scroll=node('div','price-table-scroll'),table=node('table','price-table'),head=node('thead'),tr=node('tr'),tbody=node('tbody');
-   for(const h of ['规格 / 原价','已有守护价','建议守护价','价格变化','平台依据'])tr.append(node('th','',h));head.append(tr);table.append(head,tbody);scroll.append(table);body.append(scroll);
+   for(const h of ['规格 / 原价','已有守护价','建议守护价','价格变化',r.kind==='sku-price-ratio'?'平台倍率依据':'平台依据'])tr.append(node('th','',h));head.append(tr);table.append(head,tbody);scroll.append(table);body.append(scroll);
    const pagination=node('div','pagination sku-pagination'),label=node('span'),buttons=node('div'),prev=node('button','button small secondary','上一页规格'),next=node('button','button small secondary','下一页规格');
    buttons.append(prev,next);pagination.append(label,buttons);body.append(pagination);
    const drawRows=()=>{const pages=Math.max(1,Math.ceil(r.rows.length/skuPageSize));card.skuPage=Math.min(card.skuPage,pages-1);const fragment=document.createDocumentFragment();

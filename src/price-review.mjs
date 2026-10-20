@@ -1,5 +1,6 @@
 import {fingerprint,normalizeName,requireThat,saleFen,proveDraft} from './policy.mjs';
 import {combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
+import {validateRemovalPriceEvidence,selectRatioPrices,describeRatio} from './ratio-prices.mjs';
 export {parsePriceConstraint,combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
 
 export function makePriceReviews(task,probe,now=Date.now()) {
@@ -13,18 +14,26 @@ export function makePriceReviews(task,probe,now=Date.now()) {
     'PRICE_RULE_UNKNOWN','存在未能对应具体规格的平台提示');
   const reviews=[];
   for(const plan of task.plans){
-    const rows=plan.skus.map(sku=>{
-      const observed=probe.rows.find(r=>r.productId===plan.productId&&r.id===sku.id),evidence=[...(observed.errors||[])],bounds=combinePriceConstraints(evidence);
+    const sourceLosses=(task.lossEvidence?.priceRules||[]).filter(l=>l.removal?.productId===plan.productId);
+    requireThat(sourceLosses.length<=1,'PRICE_REVIEW_EVIDENCE','商品倍率来源重复');
+    const sourceLoss=sourceLosses[0],ratio=sourceLoss?validateRemovalPriceEvidence(plan,sourceLoss,now):null;
+    const statements=plan.skus.map(sku=>[...(probe.rows.find(r=>r.productId===plan.productId&&r.id===sku.id).errors||[])]);
+    const limits=statements.map(combinePriceConstraints);
+    const joint=ratio?selectRatioPrices(plan.skus,ratio,limits):null;
+    const rows=plan.skus.map((sku,i)=>{
+      const evidence=statements[i],bounds=limits[i];
       let discount;
-      try{({discount}=selectClosestPriceStep(sku,bounds));}catch(error){error.message=`${sku.name}：${error.message}`;throw error;}
-      if(discount<sku.discount)requireThat(bounds.maxFen!=null||bounds.maxDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格上限');
-      if(discount>sku.discount)requireThat(bounds.minFen!=null||bounds.minDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格下限');
+      try{({discount}=joint?joint[i]:selectClosestPriceStep(sku,bounds));}catch(error){error.message=`${sku.name}：${error.message}`;throw error;}
+      if(discount<sku.discount)requireThat(ratio||bounds.maxFen!=null||bounds.maxDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格上限');
+      if(discount>sku.discount)requireThat(ratio||bounds.minFen!=null||bounds.minDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格下限');
       return {id:sku.id,name:normalizeName(sku.name),baseFen:sku.baseFen,historicalDiscount:sku.originalDiscount??sku.discount,
-        previousDiscount:sku.discount,previousFen:sku.saleFen,discount,saleFen:saleFen(sku.baseFen,discount),bounds,evidence};
+        previousDiscount:sku.discount,previousFen:sku.saleFen,discount,saleFen:saleFen(sku.baseFen,discount),bounds,
+        evidence:ratio?[...evidence,sourceLoss.removal.reason]:evidence};
     });
     if(!rows.some(r=>r.discount!==r.previousDiscount))continue;
     const value={shopId:task.shopId,productId:plan.productId,name:plan.name,historicalFingerprint:plan.historicalFingerprint,
-      previousApprovalId:plan.priceApprovalId||null,type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows};
+      previousApprovalId:plan.priceApprovalId||null,type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows,
+      ...(ratio?{kind:'sku-price-ratio',ratio:describeRatio(plan.skus,rows,ratio)}:{})};
     reviews.push({...value,key:fingerprint(value),source:'live-platform-draft',taskId:task.id,createdAt:now,expiresAt:now+30*60000,status:'pending'});
   }
   requireThat(reviews.length,'PRICE_RULE_UNKNOWN','当前提示未得到明确的调价建议');

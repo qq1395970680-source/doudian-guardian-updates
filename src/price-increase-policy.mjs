@@ -32,7 +32,7 @@ export function setPriceIncreasePolicy(journal,shopId,{enabled,acceptHigherPrice
 // lower step, unknown statement, or gratuitous increase requires human review.
 export function isAutomaticPriceIncrease(review){
  try{
-  if(!Array.isArray(review?.rows)||!review.rows.length)return false;
+  if(review?.source!=='live-platform-draft'||review.kind==='sku-price-ratio'||!Array.isArray(review.rows)||!review.rows.length)return false;
   let higher=false;const ids=new Set();
   for(const row of review.rows){
    if(ids.has(row.id))return false;ids.add(row.id);

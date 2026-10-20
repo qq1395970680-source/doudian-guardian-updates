@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft, proveOriginalRisk } from './policy.mjs';
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease,validAutomaticPriceApproval} from './price-increase-policy.mjs';
 import {assertCampaignPolicy} from './campaign-policy.mjs';
+import {makeRemovalPriceReview} from './ratio-prices.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -123,12 +124,28 @@ export class Journal {
     const task=this.get(review.taskId);
     requireThat(task&&task.shopId===review.shopId&&['queued','prepared'].includes(task.phase)&&task.submitAttempts===0&&review.source==='live-platform-draft',
       'PRICE_REVIEW_EVIDENCE','只有本次未提交草稿的直接读取能生成调价建议');
+    return this.savePriceReview(review,now,{refreshPending});
+  }
+  recordRemovalPriceReview(plan,loss,now=Date.now()){
+    const history=this.histories(plan.shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
+    requireThat(history?.shopId===plan.shopId&&history.productId===plan.productId&&plan.skus.every(s=>{
+      const original=history.skus.find(r=>r.id===s.id);
+      return original&&original.baseFen===s.baseFen&&normalizeName(original.name)===s.name&&
+       original.discount===(s.originalDiscount??s.discount)&&
+       (plan.priceApprovalId||s.discount===original.discount);
+    }),'PRICE_REVIEW_CHANGED','倍率建议的原价、历史折扣或规格已变化');
+    requireThat(!this.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),
+      'PENDING','商品已有未完成或结果未知的任务，只能先核实');
+    this.assertPricePlans(plan.shopId,[plan]);
+    return this.savePriceReview(makeRemovalPriceReview(plan,loss,now),now);
+  }
+  savePriceReview(review,now,{refreshPending=false}={}){
     const prior=this.db.prepare('SELECT body FROM price_reviews WHERE shop=? AND product=? ORDER BY updated DESC,rowid DESC').all(review.shopId,review.productId).map(r=>JSON.parse(r.body)).find(r=>r.key===review.key);
     if(prior&&(['approved','declined'].includes(prior.status)||prior.status==='pending'&&prior.expiresAt>now&&!refreshPending))return prior;
     this.supersedePriceReviews(review.shopId,review.productId,'新的平台价格要求已读取',now);
     const saved={...structuredClone(review),id:randomUUID(),status:'pending'};
     this.db.prepare('INSERT INTO price_reviews VALUES(?,?,?,?,?,?)').run(saved.id,saved.shopId,saved.productId,saved.status,JSON.stringify(saved),now);
-    this.event(task.id,'price-review-pending',{shopId:saved.shopId,productId:saved.productId,reviewId:saved.id},now);return saved;
+    this.event(saved.taskId,'price-review-pending',{shopId:saved.shopId,productId:saved.productId,reviewId:saved.id},now);return saved;
   }
   decidePriceReview(shopId,reviewId,key,decision,{confirmedSkuIds=[],acceptPriceAndRisk=false,historicalFingerprint=null}={},now=Date.now()) {
     return this.transaction(()=>{

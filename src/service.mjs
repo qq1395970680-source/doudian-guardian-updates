@@ -16,6 +16,9 @@ const blockerDelay=code=>unavailableProduct(code)?86400000:15*60000;
 const knownBlockerCoolingDown=(prior,baseline,now)=>prior?.contextKey===fingerprint(baseline)&&
  ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED'].includes(prior.code)&&
  Math.max(prior.retryAt||0,unavailableProduct(prior.code)?(prior.at||0)+blockerDelay(prior.code):0)>now;
+const lossEvidenceFor=losses=>({complete:true,observedAt:Math.min(...losses.map(l=>l.observedAt)),
+ lossKey:fingerprint(losses.map(l=>l.lossKey)),
+ ...(losses.some(l=>l.removalEvidence)?{priceRules:losses.filter(l=>l.removalEvidence).map(l=>structuredClone(l))}:{})});
 
 export class GuardianService {
   constructor({journal,platform,policy,now=()=>Date.now()}) {
@@ -50,6 +53,17 @@ export class GuardianService {
   }
   restorePlan(baseline,current) {
     return applyCampaignPolicy(applyPriceTarget(planOriginalRestore(baseline,current,this.policy,this.now()),this.journal.priceTarget(this.policy.shopId,baseline.productId)),this.journal);
+  }
+  checkPriceRules(plan,loss){
+    try{checkRemovalPrices(plan,loss.removal);}
+    catch(error){
+      if(error.code==='SKU_RATIO_REVIEW_REQUIRED'){
+        try{this.journal.recordRemovalPriceReview(plan,loss,this.now());}
+        catch(proposalError){this.journal.event(null,'price-review-unavailable',{shopId:plan.shopId,productId:plan.productId,
+          code:proposalError.code||'ERROR',message:String(proposalError.message).slice(0,1000)},this.now());}
+      }
+      throw error;
+    }
   }
   decidePriceReview(args) {
     const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
@@ -158,8 +172,8 @@ export class GuardianService {
         requireThat(loss?.complete&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','自动提价前尚未确认当前活动');
         if(loss.active){this.journal.clearProductCheck(this.policy.shopId,productId);continue;}
         const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
-        checkRemovalPrices(plan,loss.removal);
-        const proof={complete:true,observedAt:loss.observedAt,lossKey:fingerprint([loss.lossKey])};
+        this.checkPriceRules(plan,loss);
+        const proof=lossEvidenceFor([loss]);
         requireThat(loss.lossKey,'LOSS_UNPROVEN','自动提价缺少当前失效证明');
         let next=this.journal.enqueue(this.policy.shopId,[plan],proof,this.now());
         if(next.phase==='blocked'&&next.submitAttempts===0&&next.retryAfter<=this.now())next=this.journal.transition(next.id,'blocked','queued',{plans:[plan],lossEvidence:proof,reason:null},this.now());
@@ -226,14 +240,14 @@ export class GuardianService {
           const refresh=refreshed.find(r=>r.member.baseline.productId===member.baseline.productId);
           if(refresh?.error)throw refresh.error;
           const plan=this.restorePlan(member.baseline,refresh?.current||member.current);
-          checkRemovalPrices(plan,member.loss.removal);
+          this.checkPriceRules(plan,member.loss);
           requireThat(restorationGroupKey(plan)===restorationGroupKey(member.plan),'BATCH_CHANGED','刷新后的折扣组发生变化，等待重新分组');
           requireThat(this.now()-member.loss.observedAt<=120000,'LOSS_UNPROVEN','批量预查期间失效证明已过期');
           plans.push(plan);proofs.push(member.loss);
         }catch(error){blocked(member,error);}
       }
       if(!plans.length)continue;
-      const lossEvidence={complete:true,observedAt:Math.min(...proofs.map(p=>p.observedAt)),lossKey:fingerprint(proofs.map(p=>p.lossKey))};
+      const lossEvidence=lossEvidenceFor(proofs);
       let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
       if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
       if(task.phase==='queued')await this.execute(task);
@@ -307,7 +321,7 @@ export class GuardianService {
         }
         requireThat(loss.lossKey&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','优先恢复缺少新鲜的独立失效证明');
         const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
-        checkRemovalPrices(plan,loss.removal);
+        this.checkPriceRules(plan,loss);
         const key=restorationGroupKey(plan);if(!groups.has(key))groups.set(key,[]);
         groups.get(key).push({baseline,hint,loss,plan});
       }catch(error){blocked(baseline,hint,error);}
@@ -316,7 +330,7 @@ export class GuardianService {
       if(this.stopRequested)break;
       try{
         requireThat(members.every(m=>this.now()-m.plan.observedAt<=120000&&this.now()-m.loss.observedAt<=120000),'PROOF_EXPIRED','优先恢复的逐商品证据已过期');
-        const plans=members.map(m=>m.plan),lossEvidence={complete:true,observedAt:Math.min(...members.map(m=>m.loss.observedAt)),lossKey:fingerprint(members.map(m=>m.loss.lossKey))};
+        const plans=members.map(m=>m.plan),lossEvidence=lossEvidenceFor(members.map(m=>m.loss));
         let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
         if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
         if(task.phase==='queued')await this.execute(task);
@@ -461,13 +475,13 @@ export class GuardianService {
             // prepare/submit still independently prove exact draft contents.
             const age=this.now()-(member.current?.observedAt||0);
             const current=member.current&&age>=0&&age<=30000?member.current:await this.platform.precheck(baseline);
-            const plan=this.restorePlan(baseline,current);checkRemovalPrices(plan,loss.removal);
+            const plan=this.restorePlan(baseline,current);this.checkPriceRules(plan,loss);
             plans.push(plan);losses.push(loss);
           }catch(error){this.journal.event(null,'product-blocked',{productId:member.plan.productId,code:error.code||'ERROR',message:error.message},this.now());}
         }
         if(!plans.length)continue;
         requireThat(plans.every(p=>this.now()-p.observedAt<=120000),'PROOF_EXPIRED','本批预查已过期');
-        const lossEvidence={complete:true,observedAt:Math.min(...losses.map(loss=>loss.observedAt)),lossKey:fingerprint(losses.map(loss=>loss.lossKey))};
+        const lossEvidence=lossEvidenceFor(losses);
         let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
         if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
         if(task.phase==='queued')await this.execute(task);

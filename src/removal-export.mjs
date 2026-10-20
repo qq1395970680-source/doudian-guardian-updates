@@ -69,9 +69,9 @@ export function readRemovalWorkbook(bytes){
  requireThat(new Set(records.map(r=>r.productId)).size===records.length,'REMOVAL_EXPORT_FORMAT','剔除明细商品重复');return records;
 }
 
-export function checkRemovalPrices(plan,removal){
- if(!removal)return;
- const lines=removal.reason.split(/\r?\n/).map(s=>s.trim()).filter(Boolean),ratios=[];
+export function parseRemovalPriceRatio(reason){
+ requireThat(typeof reason==='string','REMOVAL_RULE_UNKNOWN','平台剔除原因未完整读取');
+ const lines=reason.split(/\r?\n/).map(s=>s.trim()).filter(Boolean),ratios=[];
  for(const line of lines){
   const match=line.match(/^该商品各SKU售卖价[，,]最高价需在最低价的(\d+(?:\.\d{1,3})?)倍以内[，,]请修改后再提交[。.;；]/);
   requireThat(match,'REMOVAL_RULE_UNKNOWN','平台已剔除该商品，退出原因尚无可验证的价格约束，保留原价待核实');
@@ -80,7 +80,12 @@ export function checkRemovalPrices(plan,removal){
   ratios.push({numerator,denominator});
  }
  requireThat(ratios.length,'REMOVAL_RULE_UNKNOWN','平台剔除原因未完整读取');
- const ratio=ratios.reduce((a,b)=>a.numerator*b.denominator<=b.numerator*a.denominator?a:b);
+ return ratios.reduce((a,b)=>a.numerator*b.denominator<=b.numerator*a.denominator?a:b);
+}
+
+export function checkRemovalPrices(plan,removal){
+ if(!removal)return;
+ const ratio=parseRemovalPriceRatio(removal.reason);
  const prices=plan.skus.map(s=>s.saleFen),min=Math.min(...prices),max=Math.max(...prices);
  if(max*ratio.denominator<=min*ratio.numerator)return;
  const floor=Math.ceil(max*ratio.denominator/ratio.numerator),increaseOnlyPossible=plan.skus.every(s=>saleFen(s.baseFen,95)>=floor);

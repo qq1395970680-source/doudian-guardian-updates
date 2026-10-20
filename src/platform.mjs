@@ -502,7 +502,7 @@ export class DoudianPlatform {
    if(p)related.push(c.id+':removed');
   }
   const previous=listing.campaigns.find(c=>c.id===baseline.campaignId);
-  const reference=this.limitedReference(baseline);let removal=null;
+  const reference=this.limitedReference(baseline);let removal=null,removalEvidence=null;
   if(reference.limited){
    const detail=details.get(reference.campaignId),p=detail?.products.find(p=>p.productId===baseline.productId);
    const source=detail?.removalExport,campaign=listing.campaigns.find(c=>c.id===reference.campaignId),now=Date.now();
@@ -510,6 +510,8 @@ export class DoudianPlatform {
     source.campaignId===reference.campaignId&&source.observedAt>0&&now-source.observedAt<=120000&&source.observedAt<=now+5000&&
     campaign?.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)&&!p?.soldOut)
     removal=source.records.find(r=>r.productId===baseline.productId)||null;
+   if(removal)removalEvidence={source:source.source,complete:true,shopId:source.shopId,campaignId:source.campaignId,
+    observedAt:source.observedAt,sha256:source.sha256,record:structuredClone(removal)};
    requireThat(p?.removalConfirmed===true&&p.removalRiskConfirmed===true&&!p.soldOut||removal,
     'LIMITED_LOSS_UNPROVEN','限量活动尚无本商品被异常剔除的明确证据；售罄、到期或不明消失不自动补量');
   }
@@ -517,7 +519,7 @@ export class DoudianPlatform {
   // when ended history is omitted or rows reorder. Keep its retry budget stable.
   // Fresh product-scoped evidence retains campaign history to distinguish a
   // later platform removal from a previously verified restoration.
-  return {complete,active:false,observedAt:Date.now(),...(removal?{removal}:{}),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,related:related.sort(),...(removal?{removal}:{}),
+  return {complete,active:false,observedAt:Date.now(),...(removal?{removal,removalEvidence}:{}),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,related:related.sort(),...(removal?{removal}:{}),
    ...(productScoped?{status:previous?.status||'absent',campaigns:listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt,c.risk]).sort((a,b)=>a[0].localeCompare(b[0]))}: {})})};
  }
  async selectProduct(page,productId){return this.selectProducts(page,[productId]);}

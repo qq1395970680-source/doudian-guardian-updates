@@ -356,7 +356,22 @@ export class DoudianPlatform {
    // independently rather than treating an omitted row as a lost promotion.
    if(!previous||!this.inventory.details.has(previous.id))return this.loss(baseline,{fresh:true});
   }
-  return this.lossFrom(baseline,this.inventory.listing,this.inventory.details,true);
+  try{return this.lossFrom(baseline,this.inventory.listing,this.inventory.details,true);}
+  catch(error){
+   // Earlier reads can age while the remaining store is scanned. This is a
+   // request for a new batch read, never an absence or execution proof.
+   const campaign=this.inventory.listing.campaigns.find(c=>c.id===reference.campaignId);
+   const detail=this.inventory.details.get(reference.campaignId),source=detail?.removalExport;
+   const product=detail?.products.find(p=>p.productId===baseline.productId),now=Date.now();
+   if(error.code==='LIMITED_LOSS_UNPROVEN'&&reference.limited&&detail?.complete===true&&!product?.soldOut&&
+    source?.source==='live-platform-removal-export'&&source.complete===true&&source.shopId===this.policy.shopId&&
+    source.campaignId===reference.campaignId&&source.observedAt>0&&now-source.observedAt>120000&&
+    campaign?.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)&&
+    source.records.some(r=>r.productId===baseline.productId))
+    throw new GuardError('LOSS_EVIDENCE_EXPIRED','早先读取的本商品退出明细已过期，需要重新批量核对',
+     {productId:baseline.productId,campaignId:reference.campaignId});
+   throw error;
+  }
  }
  async lossBatch(baselines){
   requireThat(baselines.length>0&&baselines.length<=50&&baselines.every(b=>b.shopId===this.policy.shopId)&&

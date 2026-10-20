@@ -230,3 +230,33 @@ test('scoped lookup retries one closed read page timeout but does not loop or re
  calls=0;p.list=async()=>{calls++;throw Object.assign(Error('signed out'),{code:'LOGIN_REQUIRED'});};
  await assert.rejects(()=>p.scopedLossBatch(bs),{code:'LOGIN_REQUIRED'});assert.equal(calls,1);
 });
+
+for(const fresh of [true,false])
+test('patrol-aged hints enter fresh batched proof before any task exists: '+fresh,async()=>{
+ const journal=new Journal(':memory:'),bs=Array.from({length:100},(_,i)=>baseline(i));
+ const policy={shopId:'900001',liveEnabled:true,cutoverConfirmed:true,originalRiskAllowed:true},sizes=[],submitted=[];
+ bs.forEach(b=>journal.remember(b));
+ const platform={
+  discover:async()=>({activeComplete:true,baselines:[]}),
+  loss:async b=>{throw Object.assign(Error('earlier exact export needs a fresh read'),{
+   code:'LOSS_EVIDENCE_EXPIRED',detail:{productId:b.productId,campaignId:'400001'}});},
+  precheckBatch:async rows=>rows.map(b=>({...b,observedAt:now})),
+  lossBatch:async rows=>{
+   sizes.push(rows.length);
+   return rows.map(b=>({productId:b.productId,...(fresh?{loss:{complete:true,active:false,observedAt:now,lossKey:'fresh-'+b.productId}}:
+    {error:Object.assign(Error('fresh source missing'),{code:'LIMITED_LOSS_UNPROVEN'})})}));
+  }
+ };
+ const service=new GuardianService({journal,platform,policy,now:()=>now});
+ service.execute=async task=>{
+  assert.equal(task.lossEvidence.complete,true);assert.equal(task.lossEvidence.observedAt,now);
+  submitted.push(...task.plans.map(p=>p.productId));
+ };
+ try{
+  await service.tick();
+  assert.deepEqual(sizes,[50,50]);
+  assert.equal(submitted.length,fresh?100:0);
+  if(!fresh)assert.equal(journal.list(policy.shopId).length,0,'old hints never enqueue a task without fresh proof');
+  assert.equal(service.lastRun.ok,true);
+ }finally{journal.close();}
+});

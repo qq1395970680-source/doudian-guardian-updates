@@ -52,3 +52,28 @@ test('origin lookup is fresh evidence, not permission to infer loss: '+mode,asyn
   shopId:'900001',campaignId:found.id,complete:true,observedAt:now,records:[{productId:baseline.productId,reason:'退出'}]}});
  await assert.rejects(()=>adapter.loss(baseline,{fresh:true}));
 });
+
+test('an exact export that aged during a full patrol asks for fresh evidence without authorizing loss',async()=>{
+ const now=Date.now(),c={...campaign,status:'进行中',endAt:now+86400000};
+ const exported={source:'live-platform-removal-export',shopId:baseline.shopId,campaignId:c.id,complete:true,
+  observedAt:now-180000,records:[{productId:baseline.productId,reason:'明确风险退出'}]};
+ const p=new DoudianPlatform({browser:{},policy:{shopId:baseline.shopId}});
+ p.inventory={activeComplete:true,listing:{complete:true,campaigns:[c]},details:new Map([[c.id,{complete:true,products:[],removalExport:exported}]])};
+ await assert.rejects(()=>p.loss(baseline),e=>e.code==='LOSS_EVIDENCE_EXPIRED'&&e.detail?.campaignId===c.id);
+ assert.throws(()=>p.lossFrom(baseline,p.inventory.listing,p.inventory.details,true),{code:'LIMITED_LOSS_UNPROVEN'},
+  'an old export remains insufficient execution proof');
+});
+
+for(const mode of ['expired-activity','sold-out','wrong-shop','wrong-campaign','diagnostic','other-product','partial'])
+test('invalid old export does not request automatic fresh-loss planning: '+mode,async()=>{
+ const now=Date.now(),c={...campaign,status:'进行中',endAt:now+86400000};
+ if(mode==='expired-activity')c.endAt=now-1;
+ const exported={source:mode==='diagnostic'?'diagnostic':'live-platform-removal-export',
+  shopId:mode==='wrong-shop'?'900002':baseline.shopId,campaignId:mode==='wrong-campaign'?'400009':c.id,
+  complete:mode!=='partial',observedAt:now-180000,
+  records:[{productId:mode==='other-product'?'300009':baseline.productId,reason:'风险退出'}]};
+ const p=new DoudianPlatform({browser:{},policy:{shopId:baseline.shopId}});
+ p.inventory={activeComplete:true,listing:{complete:true,campaigns:[c]},
+  details:new Map([[c.id,{complete:true,products:mode==='sold-out'?[{productId:baseline.productId,soldOut:true,removalConfirmed:true}]:[],removalExport:exported}]])};
+ await assert.rejects(()=>p.loss(baseline),{code:'LIMITED_LOSS_UNPROVEN'});
+});

@@ -400,7 +400,17 @@ export class GuardianService {
           const prior=checks.get(baseline.productId),same=prior?.lossKey===loss.lossKey&&prior?.contextKey===fingerprint(baseline);
           if(same&&prior.retryAt>this.now())continue;
           candidates.push({baseline,loss,retry:same,priorAt:prior?.at||0});
-        }catch(error){blocked(baseline,null,error);}
+        }catch(error){
+          if(error.code==='LOSS_EVIDENCE_EXPIRED'&&this.platform.precheckBatch&&this.platform.lossBatch&&
+            error.detail?.productId===baseline.productId&&error.detail.campaignId){
+            // This placeholder only groups and schedules a new read. The
+            // native recoverBatch path must obtain fresh complete lossBatch
+            // proofs before enqueueing any task; it never submits this hint.
+            const loss={complete:false,lossKey:fingerprint({kind:'fresh-read-needed',productId:baseline.productId,campaignId:error.detail.campaignId})};
+            const prior=checks.get(baseline.productId),same=prior?.lossKey===loss.lossKey&&prior?.contextKey===fingerprint(baseline);
+            if(!same||prior.retryAt<=this.now())candidates.push({baseline,loss,retry:same,priorAt:prior?.at||0});
+          }else blocked(baseline,null,error);
+        }
       }
       if(this.platform.precheckBatch&&this.platform.lossBatch){
         let retries=0;

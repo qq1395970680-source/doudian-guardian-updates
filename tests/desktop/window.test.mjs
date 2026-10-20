@@ -38,7 +38,24 @@ test('native desktop window, tray hide, single instance, isolated renderer, and 
   assert.equal(await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().length),1);assert.equal(starts,0);
   await page.locator('#app-tools-toggle').click();const closed=desktop.waitForEvent('close');await page.locator('[data-desktop-action="quit-window"]').click();await closed;desktop=null;
   assert.equal((await(await fetch(backend.url+'/api/status')).json()).running,true);
-  const reopened=await launch();await reopened.locator('#app-tools-toggle').click();const exited=desktop.waitForEvent('close');await reopened.locator('[data-desktop-action="stop-quit"]').click();await exited;desktop=null;
+  await launch();
+  // A crashed renderer must recover through the ordinary desktop shortcut,
+  // without quitting the application or touching the business service.
+  await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
+  const reopen=spawn(executablePath,args,{env,windowsHide:true,stdio:'ignore'});
+  assert.equal(await new Promise((ok,no)=>{reopen.once('error',no);reopen.once('exit',ok);}),0);
+  const recoveryDeadline=Date.now()+15000;
+  while(Date.now()<recoveryDeadline){
+   const ready=await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];return !w.webContents.isCrashed()&&!w.webContents.isLoading();});
+   if(ready)break;await new Promise(r=>setTimeout(r,100));
+  }
+  assert.equal(await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.isCrashed()),false);
+  const rendered=await desktop.evaluate(async({BrowserWindow})=>await BrowserWindow.getAllWindows()[0].webContents.executeJavaScript('document.body.innerText'));
+  assert.ok(rendered.includes('桌面隔离验收 · 900001'));
+  assert.equal(service.running,true);assert.equal(stops,0);
+  const exited=desktop.waitForEvent('close');
+  await desktop.evaluate(({BrowserWindow})=>{void BrowserWindow.getAllWindows()[0].webContents.executeJavaScript('window.guardianDesktop.action("stop-quit")');});
+  await exited;desktop=null;
   assert.ok(stops>=1);assert.equal(service.running,false);assert.deepEqual(errors,[]);
  }finally{await desktop?.close().catch(()=>{});await backend.close();await rm(runtime,{recursive:true,force:true});}
 });

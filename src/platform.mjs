@@ -40,6 +40,7 @@ export class DoudianPlatform {
  async fault(page,task,stage,error){
   let observation=null;
   if(['prepare','submit'].includes(stage))try{const s=await page.evaluate(formSlice);observation={warnings:s.warnings,warningDetails:s.warningDetails,dialogs:s.dialogs,busy:s.busy,counts:s.counts,title:s.title,type:s.type,rules:s.rules,mode:s.mode,priceModes:s.priceModes,byDiscount:s.byDiscount,renew:s.renew};}catch{}
+  if(error.code==='DRAFT_PRICE'&&error.detail?.mismatches)observation={...observation,mismatches:error.detail.mismatches};
   await this.browser.failure(page,task,stage,error,observation).catch(()=>{});
  }
  async captureFailure(task,draft,phase,error){

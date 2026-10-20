@@ -15,12 +15,20 @@ export function formSlice() {
     if(clone)for(const n of all('[title][aria-hidden="true"]',clone))n.textContent=n.getAttribute('title');
     const labels=all('[role="status"],[class*="-tag"],[class*="index-status"],[class*="index-errorInfo--"]',row).filter(visible).map(text);
     const input=row.querySelector('input[role="spinbutton"]'),name=(clone?.textContent||infoText).split(/原价[：:]/)[0].trim();
+    const errors=all(warningSelector,row).filter(visible).map(text).filter(Boolean);
+    const displayedSale=money(text(row.cells[2]).match(/折后价[：:]\s*[¥￥]([\d,.]+)/)?.[1]);
+    // A rejected SKU can replace its ordinary sale label with an explicit
+    // current-price constraint. Read that observed amount, never the bound or
+    // a computed fallback. Conflicting evidence must remain unprovable.
+    const errorSales=errors.map(s=>s.match(/^单品活动价\s*[¥￥]([\d,.]+)\s*[，,]\s*需[≤≥<>]/)?.[1]).filter(s=>s!==undefined).map(money);
+    const prices=[...(displayedSale!==null?[displayedSale]:[]),...errorSales];
+    const observedSale=prices.length&&prices.every(p=>p!==null&&p===prices[0])?prices[0]:null;
     return {kind,productId:kind==='product'?infoText.match(/ID[：:]\s*(\d+)/)?.[1]||null:null,name,
       baseFen:money(infoText.match(/原价[：:]\s*[¥￥]([\d,.]+)/)?.[1]),
       discount:input?.value?Math.round(Number(input.value)*10):null,
-      saleFen:money(text(row.cells[2]).match(/折后价[：:]\s*[¥￥]([\d,.]+)/)?.[1]),
+      saleFen:observedSale,
       ...(kind==='product'&&quotaColumn>=0?{activityLimit:(()=>{const inputs=all('input[role="spinbutton"]',row.cells[quotaColumn]);return inputs.length===1&&/^\d+$/.test(inputs[0].value)?Number(inputs[0].value):null;})()}:{}),
-      errors:all(warningSelector,row).filter(visible).map(text).filter(Boolean),
+      errors,
       offShelf:labels.some(s=>/^(?:商品状态[：:]\s*)?(?:商品)?已下架[。！!]?\s*$/.test(s))};
   };
   const grids=all('.ReactVirtualized__Grid').filter(visible);

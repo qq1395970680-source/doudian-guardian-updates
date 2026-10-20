@@ -149,11 +149,15 @@ function checkDraft(task, observation, now, continuation) {
   const rows = observation.rows || [];
   requireThat(rows.length === expected.length && new Set(rows.map(r=>`${r.productId}:${r.id}`)).size === rows.length,
     'DRAFT_MEMBERSHIP', '草稿商品规格数量不一致或重复');
+  const mismatches=[];
   for (const row of expected) {
     const actual = rows.find(r=>r.productId===row.productId&&r.id===row.id);
-    requireThat(actual && normalizeName(actual.name)===normalizeName(row.name) && actual.baseFen===row.baseFen && actual.discount===row.discount && actual.saleFen===row.saleFen,
-      'DRAFT_PRICE', '草稿规格、原价、折扣或活动价不一致');
+    const values=value=>value?{name:normalizeName(value.name),baseFen:value.baseFen,discount:value.discount,saleFen:value.saleFen}:null;
+    const wanted=values(row),observed=values(actual);
+    const fields=Object.keys(wanted).filter(k=>!observed||observed[k]!==wanted[k]);
+    if(fields.length)mismatches.push({productId:row.productId,skuId:row.id,fields,expected:wanted,actual:observed,errors:actual?.errors||[]});
   }
+  if(mismatches.length)throw new GuardError('DRAFT_PRICE','草稿规格、原价、折扣或活动价不一致',{mismatches});
   for(const plan of task.plans) requireThat(observation.type===plan.type&&fingerprint(observation.rules)===fingerprint(plan.rules),
     'DRAFT_RULES','草稿活动规则与历史不一致');
   proveProductLimits(task.plans, observation);

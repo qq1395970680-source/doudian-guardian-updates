@@ -21,7 +21,7 @@ if(testMode&&(!runtime.startsWith(resolve(tmpdir())+'\\')||!/^http:\/\/127\.0\.0
 const shopId=testMode?'900001':undefined;
 app.setName(product);app.setAppUserModelId('cn.doudian.guardian.desktop');app.setPath('userData',join(runtime,'desktop-ui'));
 const single=app.requestSingleInstanceLock();
-let window,tray,exiting=false,stopping=false,refreshTimer,launchPromise,shownCloseTip=false,refreshing=false,expectedBuild;
+let window,tray,exiting=false,stopping=false,refreshTimer,launchPromise,shownCloseTip=false,refreshing=false,expectedBuild,rendererNeedsReconnect=false;
 let updateState={state:'idle'},updateBusy=false;
 const updateFetch=createUpdateFetcher({systemFetch:createSystemUpdateFetcher({getSession:()=>session.fromPartition('guardian-update-network',{cache:false})})});
 const resources=app.isPackaged?process.resourcesPath:resolve(import.meta.dirname,'..','.desktop');
@@ -44,7 +44,14 @@ async function installUpdate(){
  }catch(e){return update({state:'error',message:e.message,release});}finally{updateBusy=false;}
 }
 async function log(error){await mkdir(runtime,{recursive:true});await writeFile(join(runtime,'desktop-last-error.txt'),new Date().toISOString()+'\n'+String(error.stack||error),'utf8');}
-function show(){if(window){if(window.isMinimized())window.restore();window.show();window.focus();}}
+function show(){
+ if(window&&!window.isDestroyed()){
+  if(window.isMinimized())window.restore();window.show();window.focus();
+  if(rendererNeedsReconnect||window.webContents.isCrashed()||!window.webContents.getURL()){
+   void connect().catch(e=>log(e));
+  }
+ }
+}
 async function connect(){
  if(launchPromise)return launchPromise;
  launchPromise=(async()=>{
@@ -52,7 +59,7 @@ async function connect(){
    if(testMode)throw Error('测试不会启动正式后台');
    window?.setTitle(product+' · 正在启动后台');
    const root=await prepareBackend({bundleRoot:join(resources,'service'),runtime});await launchBackend({root,runtime,shopId});
-  }});await window.loadURL(url+'/');return result;
+  }});await window.loadURL(url+'/');rendererNeedsReconnect=false;return result;
  })();try{return await launchPromise;}finally{launchPromise=null;}
 }
 async function stopAndQuit(){
@@ -108,6 +115,7 @@ async function refresh(){
   }
   const label=s?(s.running?(s.unknown?'守护中 · 有结果待核实':'后台守护中'):'守护已停止'):'后台未启动';
   window?.setTitle(product+' · '+label);tray?.setToolTip(product+'：'+label);
+  if(s&&rendererNeedsReconnect)await connect();
  }catch(e){tray?.setToolTip(product+'：后台连接待核实');await log(e);}finally{refreshing=false;}
 }
 if(!single){app.quit();}else{
@@ -130,11 +138,14 @@ if(!single){app.quit();}else{
   const action=input.key==='0'?'zoom-reset':['+','='].includes(input.key)?'zoom-in':input.key==='-'?'zoom-out':null;
   if(action){event.preventDefault();void desktopAction(action);}else if(input.key.toLowerCase()==='r'){event.preventDefault();window.webContents.reload();}});
  window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
+ window.webContents.on('render-process-gone',(_event,details)=>{rendererNeedsReconnect=true;void log(new Error('工作台渲染中断，将重新连接：'+details.reason));});
+ window.webContents.on('did-fail-load',(_event,code,_description,_url,isMainFrame)=>{if(isMainFrame&&code!==-3)rendererNeedsReconnect=true;});
  window.webContents.on('will-navigate',(e,target)=>{if(!isAllowedNavigation(target,url))e.preventDefault();});
  window.webContents.on('will-attach-webview',e=>e.preventDefault());
  window.on('close',e=>{if(!exiting){e.preventDefault();window.hide();if(!shownCloseTip&&!testMode){shownCloseTip=true;tray.displayBalloon({title:product,content:'窗口已收起，后台继续守护。双击托盘图标可打开。',respectQuietTime:true});}}});
  tray=new Tray(nativeImage.createFromPath(icon));tray.setToolTip(product);tray.on('double-click',show);menus();
- try{await connect();show();}catch(e){await log(e);show();await message('后台连接未完成',e.message+'\n可以在托盘菜单中选择“重新连接后台”。');}
+ show();
+ try{await connect();show();}catch(e){rendererNeedsReconnect=true;await log(e);show();await message('后台连接未完成',e.message+'\n程序会自动重连，也可再次点击桌面图标。');}
  refreshTimer=setInterval(()=>void refresh(),5000);await refresh();
  }).catch(async error=>{await log(error);dialog.showErrorBox(product+'启动失败',error.message);app.quit();});
 }

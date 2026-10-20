@@ -6,6 +6,7 @@ import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease,validAutomaticPriceApproval} from './price-increase-policy.mjs';
 import {assertCampaignPolicy} from './campaign-policy.mjs';
 import {makeRemovalPriceReview} from './ratio-prices.mjs';
+import {priceOptions} from './price-options.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -127,8 +128,17 @@ export class Journal {
     const total=mode==='all'?counts.total:directionCounts[mode];
     const condition=mode==='all'?'':` AND state='pending' AND ${mode==='increase'?'NOT ':''}${lower}`;
     const pages=Math.max(1,Math.ceil(total/size)),current=Math.min(pages-1,Math.max(0,bounded(page,0)));
+    const reviewTasks=this.list(shopId);
     const reviews=this.db.prepare(`SELECT body FROM price_reviews WHERE shop=?${condition} ORDER BY (state='pending') DESC,updated DESC,rowid DESC LIMIT ? OFFSET ?`)
-      .all(shopId,size,current*size).map(r=>JSON.parse(r.body));
+      .all(shopId,size,current*size).map(r=>{
+        const review=JSON.parse(r.body);if(review.status!=='pending')return review;
+        const attempts=reviewTasks.filter(task=>task.plans.some(p=>p.productId===review.productId));
+        const activityChecks=['限量抢购','限时抢购'].flatMap(type=>{
+          const task=attempts.find(t=>t.plans.some(p=>p.productId===review.productId&&p.type===type));
+          return task?[{type,at:task.updatedAt,reason:task.phase==='verified'?'该次创建已独立回读，不代表当前仍有效':task.reason||'该次任务仍在处理'}]:[];
+        });
+        return{...review,options:priceOptions(review),activityChecks};
+      });
     return {shopId,...counts,total,direction:mode,directionCounts,page:current,pageSize:size,pages,reviews};
   }
   priceTarget(shopId,productId) {const r=this.db.prepare('SELECT review FROM price_targets WHERE shop=? AND product=?').get(shopId,productId);return r?this.priceReview(r.review):null;}
@@ -168,7 +178,7 @@ export class Journal {
     this.db.prepare('INSERT INTO price_reviews VALUES(?,?,?,?,?,?)').run(saved.id,saved.shopId,saved.productId,saved.status,JSON.stringify(saved),now);
     this.event(saved.taskId,'price-review-pending',{shopId:saved.shopId,productId:saved.productId,reviewId:saved.id},now);return saved;
   }
-  decidePriceReview(shopId,reviewId,key,decision,{confirmedSkuIds=[],acceptPriceAndRisk=false,historicalFingerprint=null}={},now=Date.now()) {
+  decidePriceReview(shopId,reviewId,key,decision,{confirmedSkuIds=[],acceptPriceAndRisk=false,historicalFingerprint=null,optionId=null,optionKey=null}={},now=Date.now()) {
     return this.transaction(()=>{
       const r=this.priceReview(reviewId);
       requireThat(r&&r.shopId===shopId&&r.key===key,'PRICE_REVIEW_CHANGED','店铺或调价建议已变化');
@@ -182,6 +192,19 @@ export class Journal {
         requireThat(r.historicalFingerprint===historicalFingerprint,'PRICE_REVIEW_CHANGED','历史来源已变化，请重新核对');
         const target=this.priceTarget(shopId,r.productId),previous=target?.historicalFingerprint===r.historicalFingerprint?target.id:null;
         requireThat((r.previousApprovalId||null)===previous,'PRICE_REVIEW_CHANGED','此前已确认的价格已变化');
+        if(optionId!==null||optionKey!==null){
+          const option=priceOptions(r).find(o=>o.id===optionId);
+          requireThat(option?.available&&option.key===optionKey,'PRICE_OPTION_CHANGED','所选方案不可用或已经变化，请重新核对');
+          r.originalProposalRows=structuredClone(r.rows);
+          r.rows=structuredClone(option.rows);
+          if(option.ratio)r.ratio=structuredClone(option.ratio);
+          if(option.campaignTarget){
+            r.campaignTarget=structuredClone(option.campaignTarget);
+            r.type=option.campaignTarget.type;r.rules=structuredClone(option.campaignTarget.rules);
+            delete r.ratio;
+          }
+          r.selectedOption={id:option.id,key:option.key,label:option.label};
+        }
         r.status='approved';r.approvedAt=now;r.consent={exactPrices:true,matchedRiskConfirmation:true,continueGuardingExactPrices:true};
         this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(shopId,r.productId,r.id);
       }else{

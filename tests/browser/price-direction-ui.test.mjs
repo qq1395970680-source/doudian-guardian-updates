@@ -30,8 +30,15 @@ for(const width of [960,1440])test('separate increase and reduction workspaces r
   assert.equal(await page.locator('#price-increase-count').innerText(),'1');
   assert.equal(await page.locator('#price-decrease-count').innerText(),'1');
   await upCard.getByRole('checkbox').check();
+  await upCard.locator('[data-price-option="raise-low"]').click();
+  assert.equal(await upCard.getByRole('checkbox').isChecked(),false,'strategy switching clears consent');
+  assert.equal(await upCard.locator('[data-price-option]').count(),4);
   await page.locator('[data-price-direction="decrease"]').click();
   await downCard.waitFor();assert.equal(await upCard.count(),0);
+  assert.equal(await downCard.getByRole('checkbox').count(),0,'a reduction is never selected by default');
+  assert.equal(await downCard.locator('[data-price-option="raise-low"]').isDisabled(),true);
+  assert.match(await downCard.locator('[data-price-option="switch-original"]').innerText(),/尚未通过目标活动/);
+  await downCard.locator('[data-price-option="original"]').click();
   assert.equal(await downCard.locator('tbody tr').count(),2);
   assert.match(await downCard.locator('.price-lower-warning').innerText(),/¥95.57/);
   assert.equal(await downCard.getByRole('checkbox').isChecked(),false);
@@ -46,6 +53,7 @@ for(const width of [960,1440])test('separate increase and reduction workspaces r
   assert.equal(j.priceTarget(up.policy.shopId,increase.productId)?.id,increase.id);
   assert.equal(j.priceTarget(up.policy.shopId,decrease.productId),null);
   await page.locator('[data-price-direction="decrease"]').click();await downCard.waitFor();
+  await downCard.locator('[data-price-option="original"]').click();
   await downCard.getByRole('checkbox').check();
   await downCard.getByRole('button',{name:'确认表内价格并继续守护',exact:true}).click();
   await page.getByText('当前没有待确认的降价方案。',{exact:true}).waitFor();

@@ -88,7 +88,8 @@ export function makeRemovalPriceReview(plan,loss,now=Date.now()){
  const rule=describeRatio(plan.skus,rows,ratio);
  const value={kind:'sku-price-ratio',shopId:plan.shopId,productId:plan.productId,name:plan.name,
   historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,
-  type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows,ratio:rule};
+  type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows,ratio:rule,
+  ...(plan.campaignTarget?{campaignTarget:structuredClone(plan.campaignTarget)}:{})};
  return {...value,key:fingerprint(value),source:'live-platform-removal-export',taskId:null,
   sourceProof:{...structuredClone(proof),planFingerprint:planHash,lossKey:loss.lossKey},
   createdAt:now,expiresAt:now+30*60000,status:'pending'};

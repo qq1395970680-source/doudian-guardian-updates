@@ -14,7 +14,8 @@ export function makePriceReviews(task,probe,now=Date.now()) {
     'PRICE_RULE_UNKNOWN','存在未能对应具体规格的平台提示');
   const reviews=[];
   for(const plan of task.plans){
-    const sourceLosses=(task.lossEvidence?.priceRules||[]).filter(l=>l.removal?.productId===plan.productId);
+    const sourceLosses=(task.lossEvidence?.priceRules||[]).filter(l=>l.removal?.productId===plan.productId&&
+      (!l.removalEvidence?.activityType||l.removalEvidence.activityType===plan.type));
     requireThat(sourceLosses.length<=1,'PRICE_REVIEW_EVIDENCE','商品倍率来源重复');
     const sourceLoss=sourceLosses[0],ratio=sourceLoss?validateRemovalPriceEvidence(plan,sourceLoss,now):null;
     const statements=plan.skus.map(sku=>[...(probe.rows.find(r=>r.productId===plan.productId&&r.id===sku.id).errors||[])]);
@@ -33,6 +34,7 @@ export function makePriceReviews(task,probe,now=Date.now()) {
     if(!rows.some(r=>r.discount!==r.previousDiscount))continue;
     const value={shopId:task.shopId,productId:plan.productId,name:plan.name,historicalFingerprint:plan.historicalFingerprint,
       previousApprovalId:plan.priceApprovalId||null,type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows,
+      ...(plan.campaignTarget?{campaignTarget:structuredClone(plan.campaignTarget)}:{}),
       ...(ratio?{kind:'sku-price-ratio',ratio:describeRatio(plan.skus,rows,ratio)}:{})};
     reviews.push({...value,key:fingerprint(value),source:'live-platform-draft',taskId:task.id,createdAt:now,expiresAt:now+30*60000,status:'pending'});
   }

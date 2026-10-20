@@ -1,4 +1,5 @@
 import {fingerprint,requireThat,id,validateHistorical,validateLimited,isLimited} from './policy.mjs';
+import {approvedCampaignChoice} from './campaign-choice.mjs';
 
 const key=shopId=>'campaign-policy:'+id(shopId);
 const historyKey=baseline=>{const{observedAt,...stable}=baseline;return fingerprint(stable);};
@@ -41,6 +42,13 @@ export function preferCampaignBaselines(journal,shopId,latest){
  return latest;
 }
 export function applyCampaignPolicy(plan,journal){
+ const review=journal.priceTarget(plan.shopId,plan.productId),choice=approvedCampaignChoice(review,plan);
+ if(choice){
+  const {fingerprint:previous,...base}=plan;
+  const result={...base,...structuredClone(choice),campaignTarget:structuredClone(choice),productCampaignApprovalId:review.id};
+  delete result.campaignPolicyFingerprint;
+  return{...result,fingerprint:fingerprint(result)};
+ }
  const policy=campaignPolicy(journal,plan.shopId);if(!policy)return plan;
  const {fingerprint:previous,...base}=plan;
  const result={...base,...structuredClone(policy.target),campaignPolicyFingerprint:fingerprint(policy)};
@@ -49,6 +57,14 @@ export function applyCampaignPolicy(plan,journal){
 export function assertCampaignPolicy(journal,shopId,plans){
  const policy=campaignPolicy(journal,shopId);
  for(const plan of plans){
+  const review=journal.priceTarget(shopId,plan.productId),choice=approvedCampaignChoice(review,plan);
+  if(choice){
+   requireThat(plan.productCampaignApprovalId===review.id&&
+    fingerprint({type:plan.type,rules:plan.rules,activityLimit:plan.activityLimit,durationMs:plan.durationMs})===fingerprint(choice),
+    'CAMPAIGN_CHOICE_CHANGED','执行活动类型或规则与本商品确认方案不一致');
+   continue;
+  }
+  requireThat(!plan.productCampaignApprovalId&&!plan.campaignTarget,'CAMPAIGN_CHOICE_CHANGED','商品活动方案已变化');
   if(!policy){requireThat(!plan.campaignPolicyFingerprint,'CAMPAIGN_POLICY_CHANGED','活动规则授权已变化');continue;}
   requireThat(plan.shopId===shopId&&plan.campaignPolicyFingerprint===fingerprint(policy)&&
    fingerprint({type:plan.type,rules:plan.rules,activityLimit:plan.activityLimit,durationMs:plan.durationMs})===fingerprint(policy.target),

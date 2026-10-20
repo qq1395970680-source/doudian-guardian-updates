@@ -7,6 +7,7 @@ import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {inspectRecycledProduct} from './product-state.mjs';
 import {readRemovalWorkbook} from './removal-export.mjs';
 import {createHash} from 'node:crypto';
+import {draftPriceWarnings} from './draft-price-warnings.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -496,9 +497,9 @@ export class DoudianPlatform {
   return{listing,details,observedAt};
  }
  limitedReference(baseline){
-  const task=this.journal?.list(this.policy.shopId).filter(t=>t.phase==='verified'&&t.plans.some(p=>p.productId===baseline.productId&&isLimited(p)))
+  const task=this.journal?.list(this.policy.shopId).filter(t=>t.phase==='verified'&&t.plans.some(p=>p.productId===baseline.productId))
    .sort((a,b)=>b.receipt.verifiedAt-a.receipt.verifiedAt)[0];
-  if(task&&task.receipt.verifiedAt>=(baseline.historyAt||0))return{limited:true,campaignId:task.receipt.campaignId,title:task.title};
+  if(task&&task.receipt.verifiedAt>=(baseline.historyAt||0))return{limited:isLimited(task.plans.find(p=>p.productId===baseline.productId)),campaignId:task.receipt.campaignId,title:task.title};
   return{limited:isLimited(baseline),campaignId:baseline.campaignId};
  }
  lossFrom(baseline,listing,details,complete,productScoped=false){
@@ -518,7 +519,7 @@ export class DoudianPlatform {
     source.campaignId===reference.campaignId&&source.observedAt>0&&now-source.observedAt<=120000&&source.observedAt<=now+5000&&
     campaign?.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)&&!p?.soldOut)
     removal=source.records.find(r=>r.productId===baseline.productId)||null;
-   if(removal)removalEvidence={source:source.source,complete:true,shopId:source.shopId,campaignId:source.campaignId,
+   if(removal)removalEvidence={source:source.source,complete:true,shopId:source.shopId,campaignId:source.campaignId,activityType:campaign.type,
     observedAt:source.observedAt,sha256:source.sha256,record:structuredClone(removal)};
    requireThat(p?.removalConfirmed===true&&p.removalRiskConfirmed===true&&!p.soldOut||removal,
     'LIMITED_LOSS_UNPROVEN','限量活动尚无本商品被异常剔除的明确证据；售罄、到期或不明消失不自动补量');
@@ -682,10 +683,10 @@ export class DoudianPlatform {
   const {products,snapshot}=await collectForm(page,{originalRisk});
   requireThat(snapshot.counts.length&&snapshot.counts.every(n=>n===task.plans.length)&&snapshot.mode==='Excel批量导入'&&snapshot.byDiscount&&snapshot.renew===(isLimited(task.plans[0])&&task.plans[0].rules.autoRenew),'DRAFT_RULES',
    '导入数量、打折方式或续期规则未核对：'+JSON.stringify({expectedCount:task.plans.length,counts:snapshot.counts,mode:snapshot.mode,priceModes:snapshot.priceModes,byDiscount:snapshot.byDiscount,renew:snapshot.renew}));
-  requireThat(products.every(p=>!p.errors.length&&(priceReview||p.skus.every(s=>!s.errors.length))),'DRAFT_WARNING','商品或规格有未解决的价格提示');
+  const warnings=draftPriceWarnings(products,snapshot.warnings,{priceReview});
   const dates=snapshot.dates.map(parseDate);requireThat(dates.length===2,'DRAFT_TIME','草稿时间不完整');
   return {kind:'draft',shopId:this.policy.shopId,title:snapshot.title,type:snapshot.type,rules:snapshot.rules,startAt:dates[0],endAt:dates[1],
-   complete:true,observedAt:Date.now(),rows:bindFormProducts(products,task.plans),warnings:snapshot.warnings,dialogs:snapshot.dialogs,
+   complete:true,observedAt:Date.now(),rows:bindFormProducts(products,task.plans),warnings,dialogs:snapshot.dialogs,
    ...(isLimited(task.plans[0])?{productLimits:products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
  }
  async prepare(task){

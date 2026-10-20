@@ -55,6 +55,10 @@ export class GuardianService {
     return applyCampaignPolicy(applyPriceTarget(planOriginalRestore(baseline,current,this.policy,this.now()),this.journal.priceTarget(this.policy.shopId,baseline.productId)),this.journal);
   }
   checkPriceRules(plan,loss){
+    // Another activity's removal rule is evidence of that activity's loss,
+    // not proof that a newly selected type accepts or rejects these prices.
+    // The fresh target-type draft must still pass every price/rule check.
+    if(plan.campaignTarget&&loss.removalEvidence?.activityType&&loss.removalEvidence.activityType!==plan.type)return;
     try{checkRemovalPrices(plan,loss.removal);}
     catch(error){
       if(error.code==='SKU_RATIO_REVIEW_REQUIRED'){
@@ -68,7 +72,7 @@ export class GuardianService {
   decidePriceReview(args) {
     const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
     requireThat(review?.shopId===this.policy.shopId&&baseline&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','店铺、历史或排除设置已变化');
-    return this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline)},this.now());
+    return this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline),optionId:args.optionId??null,optionKey:args.optionKey??null},this.now());
   }
   async preview() {
     requireThat(!this.running&&!this.busy,'BUSY','只读预查不能与守护任务并行');

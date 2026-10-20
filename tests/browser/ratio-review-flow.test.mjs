@@ -16,7 +16,7 @@ for(const [mixed,capped] of [[false,false],[true,false],[false,true]])test('nati
   {id:'500001',name:'小规格',baseFen:mixed?4700:10000,discount:50},
   {id:'500002',name:'大规格',baseFen:mixed?50300:50000,discount:50}]};
  const other={productId:'300002',name:'正常商品',skus:[{id:'500003',name:'其他规格',baseFen:10000,discount:60}]};
- const fixture=await fixtureServer({catalogProducts:[product,other],limited:true,dropAfterSubmit:mixed,skuPriceCaps:capped?{'500001':7000}:{}});
+ const fixture=await fixtureServer({catalogProducts:[product,other],limited:true,dropAfterSubmit:mixed,skuPriceCaps:capped?{'500001':7000}:{},productPriceSummary:capped?'部分规格打折填写错误。\n立即收起':''});
  const browser=new DedicatedBrowser(join(dir,'browser'),{test:true,viewport:{width:960,height:600}});
  let j=new Journal(join(dir,'journal.sqlite'));
  const policy={shopId:'900001',excludedProductIds:[other.productId],allowMissingHistoricalSkus:true,

@@ -30,13 +30,14 @@ const materialRow=(r,precheck)=>r.kind==='sku'?{
  kind:r.kind,name:r.name,baseFen:r.baseFen,errors:r.errors,offShelf:r.offShelf,...(!precheck?{discount:r.discount,saleFen:r.saleFen}:{}),
 }:r.kind==='product'?{kind:r.kind,productId:r.productId,offShelf:r.offShelf,errors:r.errors,
  ...(!precheck&&Object.hasOwn(r,'activityLimit')?{activityLimit:r.activityLimit}:{})}:{kind:r.kind};
-async function pass(page,precheck,originalRisk){
+async function pass(page,precheck,originalRisk,deadline){
  const loading=s=>s.busy&&!(originalRisk&&s.originalRiskReady&&s.formBusy===false);
  await page.evaluate(scrollForm,0);await delay(250);
- const first=await until(async()=>{const s=await page.evaluate(formSlice);return !loading(s)&&s.cells.some(c=>c.rows.some(r=>r.kind==='product'))&&s;},'商品表单未完整加载');
+ const first=await until(async()=>{const s=await page.evaluate(formSlice);return !loading(s)&&s.cells.some(c=>c.rows.some(r=>r.kind==='product'))&&s;},'商品表单未完整加载',Math.max(1,Math.min(25000,deadline-Date.now())));
  requireThat(first.grids<=1&&first.total>0,'VIRTUAL_LAYOUT','商品网格不唯一或高度未知');
  const cells=new Map(),total=first.total;
  for(let step=0;step<4000;step++){
+  requireThat(Date.now()<deadline,'FORM_UNSTABLE','商品表单未能在限定时间内完整稳定读取');
   const s=await page.evaluate(formSlice);
   requireThat(s.total===total&&!loading(s),'VIRTUAL_CHANGED','读取中布局变化，重新完整采集');
   for(const cell of s.cells){
@@ -53,15 +54,23 @@ async function pass(page,precheck,originalRisk){
  throw new GuardError('VIRTUAL_LIMIT','规格遍历未完成');
 }
 export async function collectForm(page,{precheck=false,originalRisk=false}={}){
- let previous=null,lastError;
- for(let attempt=0;attempt<5;attempt++){
+ let previous=null,lastError,materialAttempts=0,layoutRestarts=0;
+ const deadline=Date.now()+60000;
+ // Virtual rows can measure their heights only when mounted. Those incomplete
+ // traversals do not consume the budget for two equal, complete content reads.
+ // Bound geometry convergence separately, without accepting partial coverage.
+ while(materialAttempts<5&&layoutRestarts<20&&Date.now()<deadline){
   try{
-   const value=await pass(page,precheck,originalRisk);
+   const value=await pass(page,precheck,originalRisk,deadline);materialAttempts++;
    const key=fingerprint({products:value.products.map(p=>({productId:p.productId,offShelf:p.offShelf,
     ...(!precheck&&Object.hasOwn(p,'activityLimit')?{activityLimit:p.activityLimit}:{}),skus:p.skus.map(r=>materialRow(r,precheck))})),
     counts:value.snapshot.counts,page:value.snapshot.page,mode:value.snapshot.mode,...(!precheck?{title:value.snapshot.title,type:value.snapshot.type,rules:value.snapshot.rules,dates:value.snapshot.dates,byDiscount:value.snapshot.byDiscount,renew:value.snapshot.renew}: {})});
    if(previous===key)return value;previous=key;
-  }catch(e){if(!['VIRTUAL_CHANGED','FORM_CHANGED','VIRTUAL_GAP'].includes(e.code))throw e;lastError=e;previous=null;}
+  }catch(e){
+   if(!['VIRTUAL_CHANGED','FORM_CHANGED','VIRTUAL_GAP'].includes(e.code))throw e;
+   if(e.code==='FORM_CHANGED')materialAttempts++;else layoutRestarts++;
+   lastError=e;previous=null;
+  }
  }
  throw lastError||new GuardError('FORM_UNSTABLE','两次完整采集未能一致');
 }

@@ -7,6 +7,12 @@ const importable=b=>{
  requireThat(new Set(b.skus.map(s=>normalizeName(s.name))).size===b.skus.length,'DUPLICATE_SKU','同名规格不能唯一回读，原活动尚未作废');
 };
 export const conversionKey=shopId=>'campaign-conversion:'+shopId;
+const cancellationConfirmationLimit=(state,entry)=>{
+ const grant=entry.retryAuthorization;
+ return grant?.source==='human-request'&&grant.confirmed===true&&grant.shopId===state.shopId&&
+  grant.campaignId===entry.campaign.id&&grant.material===entry.material&&grant.priorConfirmAttempts===1&&
+  grant.maxConfirmAttempts===2&&fingerprint(grant.productIds)===fingerprint([...entry.productIds].sort())?2:1;
+};
 export function conversionGroups(journal,shopId,baselines,productIds){
  const groups=new Map(),policy=campaignPolicy(journal,shopId);
  for(const productId of productIds){
@@ -78,6 +84,19 @@ export class CampaignConversion{
   return this.save({schema:1,shopId:this.shopId,requestId:consent.requestId,source:'live-platform-conversion',status:'captured',
    target:structuredClone(target),createdAt:Date.now(),campaigns,products:baselines.map(b=>({productId:b.productId,baselineFingerprint:policy.preferredBaselines[b.productId],sourceCampaignId:b.campaignId,phase:'pending'}))});
  }
+ authorizeCancellationRetry(campaignId,consent){
+  this.idle();const state=this.state(),entry=state?.campaigns.find(e=>e.campaign.id===campaignId);
+  requireThat(entry&&entry.phase!=='cancelled'&&entry.confirmAttempts===1&&!entry.retryAuthorization&&
+   consent?.confirmed===true&&consent.source==='human-request'&&typeof consent.requestId==='string'&&consent.requestId.length>0&&
+   consent.shopId===this.shopId&&consent.campaignId===campaignId&&Array.isArray(consent.productIds)&&
+   fingerprint([...consent.productIds].sort())===fingerprint([...entry.productIds].sort()),
+   'CONVERSION_CONSENT','再次作废须有本人针对该店铺、活动及全部商品的一次明确授权');
+  entry.retryAuthorization={source:'human-request',confirmed:true,requestId:consent.requestId,shopId:this.shopId,campaignId,
+   productIds:[...entry.productIds].sort(),material:entry.material,priorConfirmAttempts:entry.confirmAttempts,
+   maxConfirmAttempts:2,authorizedAt:Date.now()};
+  this.save(state);this.journal.event(null,'conversion-cancel-retry-authorized',{...entry.retryAuthorization},Date.now());
+  return entry;
+ }
  async cancel(campaignId){
   this.idle();const state=this.state(),entry=state?.campaigns.find(e=>e.campaign.id===campaignId);
   requireThat(entry,'CONVERSION_SCOPE','活动不在已备份迁移清单中');
@@ -95,13 +114,14 @@ export class CampaignConversion{
    requireThat(['已作废','已失效','已结束'].includes(c.status),'CONVERSION_UNKNOWN','活动状态未知');
    entry.phase='cancelled';entry.endedStatus=c.status;entry.cancelledAt=Date.now();this.save(state);return entry;
   }
-  requireThat(entry.confirmAttempts===0&&entry.cancelAttempts<3,'CONVERSION_UNKNOWN','此前已确认作废或入口重试次数已到上限，继续只读核实');
+  const confirmationLimit=cancellationConfirmationLimit(state,entry);
+  requireThat(entry.confirmAttempts<confirmationLimit&&entry.cancelAttempts<3,'CONVERSION_UNKNOWN','此前已确认作废或入口重试次数已到上限，继续只读核实');
   const d=await this.platform.detail(c);
   requireThat(d.complete===true&&campaignMaterial(c,d)===entry.material,'CONVERSION_CHANGED','原活动商品、折扣或规则已变化，未作废');
   try{
    await this.platform.cancelCampaign(c,async stage=>{
-    if(stage==='intent'){requireThat(entry.confirmAttempts===0&&entry.cancelAttempts<3,'CONVERSION_UNKNOWN','重复作废被阻止');entry.cancelAttempts++;entry.phase='cancelling';}
-    else if(stage==='confirm'){requireThat(entry.cancelAttempts>0&&entry.confirmAttempts===0,'CONVERSION_UNKNOWN','重复作废确认被阻止');entry.confirmAttempts=1;}
+    if(stage==='intent'){requireThat(entry.confirmAttempts<confirmationLimit&&entry.cancelAttempts<3,'CONVERSION_UNKNOWN','重复作废被阻止');entry.cancelAttempts++;entry.phase='cancelling';}
+    else if(stage==='confirm'){requireThat(entry.cancelAttempts>0&&entry.confirmAttempts<confirmationLimit,'CONVERSION_UNKNOWN','重复作废确认被阻止');entry.confirmAttempts++;}
     else throw Error('Unknown cancellation boundary');
     this.save(state);this.journal.event(null,'conversion-cancel-'+stage,{shopId:this.shopId,campaignId},Date.now());
    });

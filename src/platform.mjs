@@ -560,6 +560,12 @@ export class DoudianPlatform {
    requireThat(await confirm.count()===1,'CONVERSION_CONFIRM','作废确认入口不唯一');
    await confirm.click({trial:true});this.check();this.assertWrite();await beforeBoundary('confirm');await confirm.click();
    await dialog.waitFor({state:'hidden'});
+   // The confirmation can disappear before the request is sent or finishes.
+   // Keep this page alive until the same activity shows a terminal state.
+   await until(async()=>{
+    const rows=await page.evaluate(listSlice),row=rows.find(r=>r.ids.length===1&&r.ids[0]===campaign.id);
+    return row&&row.name===campaign.name&&row.type===campaign.type&&['已作废','已失效','已结束'].includes(row.status);
+   },'作废确认后尚未读到该活动的失效状态');
   }catch(error){await this.fault(page,campaign.id,'cancel',error);throw error;}
   finally{await page.close();}
  }

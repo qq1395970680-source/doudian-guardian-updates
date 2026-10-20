@@ -13,7 +13,7 @@ import {AccountRegistry} from '../../src/accounts.mjs';
 import {setPriceIncreasePolicy} from '../../src/price-increase-policy.mjs';
 for(const scenario of ['original','higher-floor','mixed-lower'])
 test(`current promotion conversion preserves authorized price rules: ${scenario}`,{timeout:180000},async()=>{
- const p=fixtureProducts[0],dir=await mkdtemp(join(tmpdir(),'guardian-conversion-')),fixture=await fixtureServer({limited:true,hideDetailRenewal:true,
+ const p=fixtureProducts[0],dir=await mkdtemp(join(tmpdir(),'guardian-conversion-')),fixture=await fixtureServer({limited:true,hideDetailRenewal:true,cancelDelayMs:scenario==='original'?1500:0,
   skuPriceFloors:scenario!=='original'?{[p.skus[0].id]:6100}:{},skuPriceCaps:scenario==='mixed-lower'?{[p.skus[1].id]:5900}:{}});
  const prior=fixture.state.campaigns[0];prior.status='进行中';prior.products=prior.products.slice(0,1);
  const browser=new DedicatedBrowser(dir,{test:true}),journal=new Journal(join(dir,'tasks.sqlite'));

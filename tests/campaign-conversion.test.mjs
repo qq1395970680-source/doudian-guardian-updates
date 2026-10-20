@@ -50,3 +50,37 @@ test('an unconfirmed dialog can reopen only after fresh unchanged-activity check
   await x.conversion.cancel('400001');assert.equal(x.cancels,2);assert.equal(x.conversion.state().campaigns[0].confirmAttempts,1);
  }finally{x.journal.close();}
 });
+
+const retryConsent={confirmed:true,source:'human-request',requestId:'one-explicit-retry',
+ shopId:'900001',campaignId:'400001',productIds:['300001']};
+test('an explicit scoped cancellation retry survives restart without resetting attempts',async()=>{
+ const x=example();try{
+  await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});
+  x.fail=true;await assert.rejects(()=>x.conversion.cancel('400001'));
+  x.conversion.authorizeCancellationRetry('400001',retryConsent);
+  assert.equal(x.conversion.state().campaigns[0].confirmAttempts,1);
+  const restarted=new CampaignConversion(x.conversion.service);
+  x.detail.products[0].skus[0].discount=55;
+  await assert.rejects(()=>restarted.cancel('400001'),{code:'CONVERSION_CHANGED'});
+  assert.equal(x.cancels,1);
+  x.detail.products[0].skus[0].discount=60;
+  await assert.rejects(()=>restarted.cancel('400001'));
+  assert.equal(x.cancels,2);assert.equal(restarted.state().campaigns[0].confirmAttempts,2);
+  await assert.rejects(()=>restarted.cancel('400001'),{code:'CONVERSION_UNKNOWN'});
+  assert.throws(()=>restarted.authorizeCancellationRetry('400001',{...retryConsent,requestId:'another'}),{code:'CONVERSION_CONSENT'});
+  assert.equal(x.cancels,2);
+  x.campaign.status='已作废';await restarted.cancel('400001');
+  assert.equal(restarted.state().campaigns[0].phase,'cancelled');
+ }finally{x.journal.close();}
+});
+test('cancellation retry rejects missing, automated or mismatched consent',async()=>{
+ const x=example();try{
+  await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});
+  x.fail=true;await assert.rejects(()=>x.conversion.cancel('400001'));
+  for(const patch of [{confirmed:false},{source:'diagnostic'},{shopId:'900002'},{campaignId:'400002'},{productIds:['300002']},{requestId:''}]){
+   assert.throws(()=>x.conversion.authorizeCancellationRetry('400001',{...retryConsent,...patch}),{code:'CONVERSION_CONSENT'});
+  }
+  await assert.rejects(()=>x.conversion.cancel('400001'),{code:'CONVERSION_UNKNOWN'});
+  assert.equal(x.cancels,1);
+ }finally{x.journal.close();}
+});

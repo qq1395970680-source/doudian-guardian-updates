@@ -75,7 +75,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }
    if(req.method==='GET'&&path==='/api/price-reviews'){
     const q=requestUrl.searchParams;
-    json(200,journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10}));return;
+    json(200,journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all'}));return;
    }
    if(req.method==='GET'&&path==='/api/products'){
     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,

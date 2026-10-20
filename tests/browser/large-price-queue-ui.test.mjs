@@ -21,6 +21,7 @@ test('500 pending products paginate past 200 with ten cards and no price approva
    const response=await route.fetch(),body=await response.json();sizes.push(body.reviews.length);await route.fulfill({json:body});
   });
   await page.goto(app.url);await page.locator('[data-view="prices"]').click();
+  await page.locator('[data-price-direction="all"]').click();
   await page.getByText('720 份记录 · 第 1 / 72 页',{exact:true}).waitFor();
   assert.equal(await page.locator('#price-count').innerText(),'500');
   for(let n=2;n<=22;n++){

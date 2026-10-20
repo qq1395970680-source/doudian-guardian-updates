@@ -24,6 +24,7 @@ for(const width of [960,1440])test('ratio UI exposes all prices and reductions a
   await browser.open(f.policy.shopId);const page=await browser.page(),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
   await page.goto(app.url);await page.locator('[data-view="prices"]').click();
+  await page.locator('[data-price-direction="all"]').click();
   const card=page.locator('.price-review');await card.waitFor();
   assert.match(await card.innerText(),/最高规格价不超过最低价的 3.5 倍/);
   assert.match(await card.innerText(),/1 个规格降价/);

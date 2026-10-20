@@ -115,13 +115,21 @@ export class Journal {
     const row=this.db.prepare("SELECT COUNT(*) AS total,COALESCE(SUM(state='pending'),0) AS pending FROM price_reviews WHERE shop=?").get(shopId);
     return {total:row.total,pending:row.pending};
   }
-  priceReviewPage(shopId,{page=0,pageSize=10}={}) {
+  priceReviewPage(shopId,{page=0,pageSize=10,direction='all'}={}) {
     const bounded=(value,fallback)=>Number.isSafeInteger(Number(value))?Number(value):fallback;
     const size=Math.min(20,Math.max(1,bounded(pageSize,10))),counts=this.priceReviewCounts(shopId);
-    const pages=Math.max(1,Math.ceil(counts.total/size)),current=Math.min(pages-1,Math.max(0,bounded(page,0)));
-    const reviews=this.db.prepare("SELECT body FROM price_reviews WHERE shop=? ORDER BY (state='pending') DESC,updated DESC,rowid DESC LIMIT ? OFFSET ?")
+    const mode=['increase','decrease'].includes(direction)?direction:'all';
+    // Any lower-priced SKU puts the entire proposal in the reduction queue.
+    // Filter before LIMIT; a large shop must not lose products behind pagination.
+    const lower="EXISTS (SELECT 1 FROM json_each(price_reviews.body,'$.rows') AS sku WHERE json_extract(sku.value,'$.saleFen') < json_extract(sku.value,'$.previousFen'))";
+    const decrease=this.db.prepare(`SELECT COUNT(*) AS n FROM price_reviews WHERE shop=? AND state='pending' AND ${lower}`).get(shopId).n;
+    const directionCounts={increase:counts.pending-decrease,decrease};
+    const total=mode==='all'?counts.total:directionCounts[mode];
+    const condition=mode==='all'?'':` AND state='pending' AND ${mode==='increase'?'NOT ':''}${lower}`;
+    const pages=Math.max(1,Math.ceil(total/size)),current=Math.min(pages-1,Math.max(0,bounded(page,0)));
+    const reviews=this.db.prepare(`SELECT body FROM price_reviews WHERE shop=?${condition} ORDER BY (state='pending') DESC,updated DESC,rowid DESC LIMIT ? OFFSET ?`)
       .all(shopId,size,current*size).map(r=>JSON.parse(r.body));
-    return {shopId,...counts,page:current,pageSize:size,pages,reviews};
+    return {shopId,...counts,total,direction:mode,directionCounts,page:current,pageSize:size,pages,reviews};
   }
   priceTarget(shopId,productId) {const r=this.db.prepare('SELECT review FROM price_targets WHERE shop=? AND product=?').get(shopId,productId);return r?this.priceReview(r.review):null;}
   supersedePriceReviews(shopId,productId,reason,now=Date.now()) {

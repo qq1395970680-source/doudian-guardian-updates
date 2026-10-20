@@ -18,6 +18,7 @@ for(const width of [1440,960])test('price review shows all exact prices, needs c
   await page.route(/\/api\/price-reviews\?/,route=>{getCount++;return route.fulfill({json:{shopId:'900001',reviews:available,total:available.length,page:0,pages:1,pageSize:10}});});
   await page.route('**/api/price-reviews/decide',async route=>{const body=route.request().postDataJSON();posts.push(body);available=available.map(r=>({...r,status:'approved'}));await route.fulfill({json:{ok:true,review:available[0]}});});
   await page.goto(app.url);await page.locator('[data-view="prices"]').click();await page.locator('#view-prices').waitFor({state:'visible',timeout:1800});
+  await page.locator('[data-price-direction="all"]').click();
   const card=page.locator('.price-review');await card.waitFor();assert.equal(await card.locator('tbody tr').count(),25);
   assert.match(await card.innerText(),/¥66.72/);assert.match(await card.innerText(),/近15天最低价/);
   assert.match(await card.innerText(),/2 个建议调整/);assert.match(await card.innerText(),/提高 ¥1.39/);assert.match(await card.innerText(),/降低 ¥2.78/);

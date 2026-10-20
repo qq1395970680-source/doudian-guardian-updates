@@ -1,8 +1,8 @@
 import {planOriginalRestore} from '../../src/policy.mjs';
 
 export const ratioNow=1792495000000;
-export function ratioFixture(journal,{now=ratioNow,mixed=false}={}){
- const baseline={source:'verified-platform-history',complete:true,shopId:'900001',productId:'300001',
+export function ratioFixture(journal,{now=ratioNow,mixed=false,productId='300001'}={}){
+ const baseline={source:'verified-platform-history',complete:true,shopId:'900001',productId,
   name:'倍率限制测试商品',campaignId:'400001',type:'限量抢购',activityLimit:1000,durationMs:7*86400000,
   rules:{noLimit:false,noPerUserLimit:true,noWarmup:true,orderMinutes:30,autoRenew:true},
   skus:[{id:'500001',name:'小规格',baseFen:mixed?4700:10000,discount:50},

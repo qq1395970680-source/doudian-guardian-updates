@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft, proveOriginalRisk } from './policy.mjs';
+import {activePriceIncreaseGrant,isAutomaticPriceIncrease,validAutomaticPriceApproval} from './price-increase-policy.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -114,12 +115,12 @@ export class Journal {
       return rows.length;
     });
   }
-  recordPriceReview(review,now=Date.now()) {
+  recordPriceReview(review,now=Date.now(),{refreshPending=false}={}) {
     const task=this.get(review.taskId);
     requireThat(task&&task.shopId===review.shopId&&['queued','prepared'].includes(task.phase)&&task.submitAttempts===0&&review.source==='live-platform-draft',
       'PRICE_REVIEW_EVIDENCE','只有本次未提交草稿的直接读取能生成调价建议');
     const prior=this.db.prepare('SELECT body FROM price_reviews WHERE shop=? AND product=? ORDER BY updated DESC,rowid DESC').all(review.shopId,review.productId).map(r=>JSON.parse(r.body)).find(r=>r.key===review.key);
-    if(prior&&(['approved','declined'].includes(prior.status)||prior.status==='pending'&&prior.expiresAt>now))return prior;
+    if(prior&&(['approved','declined'].includes(prior.status)||prior.status==='pending'&&prior.expiresAt>now&&!refreshPending))return prior;
     this.supersedePriceReviews(review.shopId,review.productId,'新的平台价格要求已读取',now);
     const saved={...structuredClone(review),id:randomUUID(),status:'pending'};
     this.db.prepare('INSERT INTO price_reviews VALUES(?,?,?,?,?,?)').run(saved.id,saved.shopId,saved.productId,saved.status,JSON.stringify(saved),now);
@@ -157,11 +158,34 @@ export class Journal {
       this.event(null,'price-review-'+r.status,{shopId,productId:r.productId,reviewId:r.id},now);return r;
     });
   }
+  approvePriceIncrease(shopId,reviewId,key,historicalFingerprint,now=Date.now()) {
+    return this.transaction(()=>{
+      const grant=activePriceIncreaseGrant(this,shopId,now),r=this.priceReview(reviewId);
+      requireThat(grant,'PRICE_INCREASE_CONSENT_REQUIRED','本店尚未授权自动提价');
+      requireThat(r?.shopId===shopId&&r.key===key&&r.historicalFingerprint===historicalFingerprint,'PRICE_REVIEW_CHANGED','店铺、价格建议或历史来源已变化');
+      requireThat(r.status==='pending'&&r.source==='live-platform-draft'&&r.createdAt>0&&r.createdAt<=now&&now-r.createdAt<=30000&&r.expiresAt>now,
+        'PRICE_REVIEW_EXPIRED','自动提价需要本次新鲜草稿中的明确限制');
+      const sourceTask=this.get(r.taskId),sourcePlan=sourceTask?.plans.find(p=>p.productId===r.productId);
+      requireThat(sourceTask?.phase==='blocked'&&sourceTask.submitAttempts===0&&sourcePlan?.skus.length===r.rows.length&&r.rows.every(row=>{
+        const sku=sourcePlan.skus.find(s=>s.id===row.id);return sku&&sku.name===row.name&&sku.baseFen===row.baseFen&&sku.discount===row.previousDiscount&&sku.saleFen===row.previousFen&&
+          (sku.originalDiscount??sku.discount)===row.historicalDiscount;
+      }),'PRICE_REVIEW_CHANGED','原草稿中的已有价格或规格集合已变化');
+      requireThat(!this.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===r.productId)),'PENDING','先核实此商品已有的任务');
+      const previous=this.priceTarget(shopId,r.productId);
+      requireThat((r.previousApprovalId||null)===(previous?.historicalFingerprint===r.historicalFingerprint?previous.id:null),'PRICE_REVIEW_CHANGED','此前守护价格已变化');
+      requireThat(isAutomaticPriceIncrease(r),'PRICE_INCREASE_REVIEW_REQUIRED','存在降价、未识别限制或并非最近合法的提价档位，需要逐规格确认');
+      r.status='approved';r.approvedAt=now;r.approvalKind='automatic-price-increase';
+      r.automaticConsent={grantId:grant.id,targetsFingerprint:fingerprint(r.rows),continueGuardingExactPrices:true};
+      this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(shopId,r.productId,r.id);
+      this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(r.status,JSON.stringify(r),now,r.id);
+      this.clearProductCheck(shopId,r.productId);this.event(null,'price-increase-policy-approved',{shopId,productId:r.productId,reviewId:r.id,grantId:grant.id},now);return r;
+    });
+  }
   assertPricePlans(shopId,plans) {
     for(const plan of plans){
       if(!plan.priceApprovalId){requireThat(!plan.approvedRiskAllowed,'PRICE_APPROVAL_MISSING','缺少明确的逐规格确认');continue;}
       const review=this.priceReview(plan.priceApprovalId),baseline=this.histories(shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
-      requireThat(review?.status==='approved'&&review.consent?.exactPrices&&review.consent?.matchedRiskConfirmation&&baseline&&this.priceTarget(shopId,plan.productId)?.id===review.id&&
+      requireThat(review?.status==='approved'&&(review.consent?.exactPrices&&review.consent?.matchedRiskConfirmation||validAutomaticPriceApproval(this,review))&&baseline&&this.priceTarget(shopId,plan.productId)?.id===review.id&&
         review.shopId===shopId&&plan.shopId===shopId&&review.productId===plan.productId&&review.key===plan.priceApprovalKey&&review.historicalFingerprint===plan.historicalFingerprint,
         'PRICE_APPROVAL_CHANGED','调价确认与当前执行计划不一致');
       for(const sku of plan.skus){const original=baseline.skus.find(s=>s.id===sku.id),approved=review.rows.find(r=>r.id===sku.id);

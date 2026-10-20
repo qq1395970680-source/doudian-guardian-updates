@@ -17,9 +17,17 @@ test('local workbench rejects foreign origin and cannot enable writes before log
   const post=(path,args={},origin=app.url)=>fetch(app.url+'/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token,Origin:origin},body:JSON.stringify(args)});
   assert.equal((await post('login',{},'https://attacker.example')).status,400);assert.equal(browser.loginMode,false);
   assert.equal((await post('start',{legacyStopped:true})).status,400);assert.equal(starts,0);
+  assert.equal(app.snapshot().automaticPriceIncreaseEnabled,false);
+  assert.equal((await post('price-increase-policy',{shopId:'900001',enabled:true,acceptHigherPricesAndRisk:true})).status,400);
   assert.equal((await post('login')).status,202);while(app.snapshot().action)await new Promise(r=>setTimeout(r,10));
   assert.equal((await post('finish-login')).status,202);while(app.snapshot().action)await new Promise(r=>setTimeout(r,10));
   assert.equal((await post('start')).status,400);assert.equal(starts,0);
+  assert.equal((await post('price-increase-policy',{shopId:'900001',enabled:true})).status,400);
+  assert.equal((await post('price-increase-policy',{shopId:'900002',enabled:true,acceptHigherPricesAndRisk:true})).status,400);
+  assert.equal((await post('price-increase-policy',{shopId:'900001',enabled:true,acceptHigherPricesAndRisk:true})).status,200);
+  assert.equal(app.snapshot().automaticPriceIncreaseEnabled,true);assert.equal(starts,0);
+  assert.equal((await post('price-increase-policy',{shopId:'900001',enabled:false})).status,200);
+  assert.equal(app.snapshot().automaticPriceIncreaseEnabled,false);
   assert.equal((await post('start',{originalDiscountConsent:true})).status,202);assert.equal(starts,1);
   assert.equal((await post('stop')).status,202);assert.equal(service.running,false);
  }finally{await app.close();await rm(runtime,{recursive:true,force:true});}

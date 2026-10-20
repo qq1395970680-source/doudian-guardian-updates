@@ -4,19 +4,24 @@ import {Journal} from '../src/journal.mjs';
 import {makeTransfer,validateTransfer,importTransfer} from '../src/migration.mjs';
 import {priceFixture,fixedNow} from './helpers/price-review-fixture.mjs';
 import {fingerprint,proveDraft} from '../src/policy.mjs';
+import {AccountRegistry} from '../src/accounts.mjs';
+import {setPriceIncreasePolicy,activePriceIncreaseGrant} from '../src/price-increase-policy.mjs';
 
 test('migration preserves full history and exclusions but never credentials or price permission',()=>{
  const source=new Journal(':memory:'),target=new Journal(':memory:');try{
   const f=priceFixture(source),account={...f.policy,name:'店铺甲',profileKey:'shop-900001',authorizationSource:'private',excludedProductIds:['3000000000000000999']};
+  new AccountRegistry(source).register({shopId:f.policy.shopId},'signin-a');
+  setPriceIncreasePolicy(source,f.policy.shopId,{enabled:true,acceptHigherPricesAndRisk:true},fixedNow);
   source.putSettings('secret',{token:'must-not-export'});
   const file=makeTransfer(source,account,{version:'2.0.0-beta.6',now:fixedNow+1});
-  assert.doesNotMatch(JSON.stringify(file),/must-not-export|profileKey|authorizationSource|allowFurtherPriceReduction|originalRiskAllowed|approvedRiskAllowed|priceApprovalId/);
+  assert.doesNotMatch(JSON.stringify(file),/must-not-export|profileKey|authorizationSource|allowFurtherPriceReduction|originalRiskAllowed|approvedRiskAllowed|priceApprovalId|automaticConsent|price-increase|grantId/);
   const preview=validateTransfer(file,f.policy.shopId,fixedNow+2);assert.equal(preview.products.length,1);assert.equal(preview.products[0].skus.length,2);
   assert.throws(()=>importTransfer(target,file,{shopId:f.policy.shopId,accepted:false,expectedDigest:file.digest},fixedNow+2));
   const result=importTransfer(target,file,{shopId:f.policy.shopId,accepted:true,expectedDigest:file.digest},fixedNow+2);
   assert.equal(result.importedHistories,1);assert.deepEqual(result.excludedProductIds,account.excludedProductIds);
   assert.deepEqual(target.histories(f.policy.shopId),source.histories(f.policy.shopId));assert.equal(target.priceTarget(f.policy.shopId,f.plan.productId),null);
   assert.equal(target.settings(f.policy.shopId),null);assert.equal(target.settings('application'),null);
+  assert.ok(activePriceIncreaseGrant(source,f.policy.shopId,fixedNow+2));assert.equal(activePriceIncreaseGrant(target,f.policy.shopId,fixedNow+2),null);
   assert.equal(importTransfer(target,file,{shopId:f.policy.shopId,accepted:true,expectedDigest:file.digest},fixedNow+3).alreadyImported,true);
  }finally{source.close();target.close();}
 });

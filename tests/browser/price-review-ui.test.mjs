@@ -11,7 +11,7 @@ for(const width of [1440,960])test('price review shows all exact prices, needs c
  const dir=await mkdtemp(join(tmpdir(),'guardian-price-ui-')),journal=new Journal(':memory:'),browser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width,height:960}});
  const service={running:true,busy:false,status:()=>({unknown:0,tasks:[]}),stop(){}};
  const app=await createApp({config:{shopId:'900001',name:'测试店铺'},runtime:join(dir,'server'),port:0,dependencies:{journal,service,browser:{close:async()=>{}},platform:{progress:{stage:'test'}}}});
- const now=Date.now(),review={id:'test-review',key:'exact-price-key',shopId:'900001',productId:'3000000000000000001',name:'净水器全套滤芯',status:'pending',createdAt:now,expiresAt:now+1800000,skippedSkuIds:[],rows:Array.from({length:56},(_,i)=>({id:String(500000+i),name:'滤芯规格 '+(i+1),baseFen:13900,previousFen:6950,previousDiscount:50,discount:i?50:48,saleFen:i?6950:6672,evidence:i?[]:['活动价不得高于近15天最低价（68元）']}))};
+ const now=Date.now(),review={id:'test-review',key:'exact-price-key',shopId:'900001',productId:'3000000000000000001',name:'净水器全套滤芯',status:'pending',createdAt:now,expiresAt:now+1800000,skippedSkuIds:[],rows:Array.from({length:56},(_,i)=>({id:String(500000+i),name:'滤芯规格 '+(i+1),baseFen:13900,previousFen:6950,previousDiscount:50,discount:i===0?48:i===1?51:50,saleFen:i===0?6672:i===1?7089:6950,evidence:i===0?['活动价不得高于近15天最低价（68元）']:i===1?['活动价不得低于近15天最低价（70元）']:[]}))};
  let available=[review],posts=[],getCount=0,connectedShop='900001';
  try{await browser.open('900001');const page=await browser.page(),errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.route('**/api/status',async route=>{const r=await route.fetch(),s=await r.json();await route.fulfill({json:{...s,connection:{shopId:connectedShop},priceReviewsPending:available.filter(r=>r.status==='pending').length}});});
@@ -20,6 +20,8 @@ for(const width of [1440,960])test('price review shows all exact prices, needs c
   await page.goto(app.url);await page.locator('[data-view="prices"]').click();await page.locator('#view-prices').waitFor({state:'visible',timeout:1800});
   const card=page.locator('.price-review');await card.waitFor();assert.equal(await card.locator('tbody tr').count(),25);
   assert.match(await card.innerText(),/¥66.72/);assert.match(await card.innerText(),/近15天最低价/);
+  assert.match(await card.innerText(),/2 个建议调整/);assert.match(await card.innerText(),/提高 ¥1.39/);assert.match(await card.innerText(),/降低 ¥2.78/);
+  assert.equal(await card.getByRole('button',{name:'暂不调整',exact:true}).count(),1);
   const approve=card.getByRole('button',{name:'确认表内价格并继续守护',exact:true}),consent=card.getByRole('checkbox');
   assert.equal(await approve.isDisabled(),true);assert.equal(await consent.isChecked(),false);assert.equal(posts.length,0);
   await consent.check();assert.equal(await approve.isEnabled(),true);

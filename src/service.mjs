@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat} from './policy.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {applyPriceTarget,makePriceReviews} from './price-review.mjs';
+import {activePriceIncreaseGrant,isAutomaticPriceIncrease} from './price-increase-policy.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -15,6 +16,7 @@ export class GuardianService {
       this.lastRun=displayRun(patrol.lastRun,this.now());const success=displayRun(patrol.lastSuccessfulRun,this.now());this.lastSuccessfulRun=success?.ok?success:null;
     }
     this.recovered=false;this.lastHistoryRead=this.now();
+    this.priceIncreaseFollowups=new Set();
     this.priorityWatch=null;this.priorityListing=null;this.lastPriorityPoll=0;this.priorityPoll=null;this.priorityResume=false;this.lastPriorityCheck=null;
     this.platform.assertWrite=()=>{requireThat(!this.stopRequested&&this.policy.liveEnabled&&this.policy.cutoverConfirmed,'STOPPED','后台写入已停止');this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
   }
@@ -90,7 +92,7 @@ export class GuardianService {
     if(this.platform.release)await this.platform.release(verified).catch(()=>{});return true;
   }
   async execute(task) {
-    let draft;
+    let draft;const priceReviews=[];
     try {
       requireThat(!this.stopRequested,'STOPPED','运行已停止');
       this.journal.assertPricePlans(task.shopId,task.plans);
@@ -110,7 +112,8 @@ export class GuardianService {
       if(!await this.reconcile(this.journal.get(task.id)))this.journal.transition(task.id,'verifying','unknown',{reason:'平台结果尚未回读确认'},this.now());
     }catch(error){
       if(error.code==='PRICE_REVIEW_REQUIRED'&&error.detail?.priceProbe){
-        try{for(const review of makePriceReviews(task,error.detail.priceProbe,this.now()))this.journal.recordPriceReview(review,this.now());}
+        try{for(const review of makePriceReviews(task,error.detail.priceProbe,this.now()))priceReviews.push(this.journal.recordPriceReview(review,this.now(),{
+          refreshPending:!!activePriceIncreaseGrant(this.journal,task.shopId,this.now())&&isAutomaticPriceIncrease(review)}));}
         catch(proposalError){error=proposalError;}
       }
       const current=this.journal.get(task.id),reason=`${error.code||'ERROR'}: ${String(error.message).slice(0,800)}`;
@@ -118,7 +121,44 @@ export class GuardianService {
       if(['queued','prepared'].includes(current.phase))this.journal.transition(task.id,current.phase,'blocked',{reason,retryAfter:this.now()+15*60000},this.now());
       else if(['submitting','verifying'].includes(current.phase))this.journal.transition(task.id,current.phase,'unknown',{reason},this.now());
       else this.journal.event(task.id,'readback-error',{reason},this.now());
+      // Grant only an exact higher target after the old draft is recorded as
+      // unsubmitted. The next attempt gets fresh loss, SKU and draft proofs.
+      if(!this.stopRequested&&activePriceIncreaseGrant(this.journal,task.shopId,this.now()))for(const review of priceReviews){
+        if(review.status!=='pending'||!isAutomaticPriceIncrease(review)||this.policy.excludedProductIds?.includes(review.productId))continue;
+        try{
+          const baseline=this.latestHistories().get(review.productId);requireThat(baseline,'PRICE_REVIEW_CHANGED','当前历史来源待核对');
+          this.journal.approvePriceIncrease(task.shopId,review.id,review.key,fingerprint(baseline),this.now());
+          this.priceIncreaseFollowups.add(review.productId);
+        }catch(approvalError){this.journal.event(null,'price-increase-review-required',{shopId:task.shopId,productId:review.productId,code:approvalError.code,message:approvalError.message},this.now());}
+      }
     }finally{if(this.platform.release)await this.platform.release(this.journal.get(task.id),draft).catch(()=>{});}
+  }
+  async recoverPriceIncreases(){
+    if(!this.priceIncreaseFollowups.size)return false;
+    let submitted=false;const latest=this.latestHistories();
+    // One bounded pass prevents an unstable platform rule from causing a
+    // price-adjustment loop. Durable exact targets survive a later restart.
+    for(const productId of [...this.priceIncreaseFollowups].slice(0,5)){
+      if(this.stopRequested)break;this.priceIncreaseFollowups.delete(productId);
+      if(this.policy.excludedProductIds?.includes(productId)||this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId)))continue;
+      const baseline=latest.get(productId),target=this.journal.priceTarget(this.policy.shopId,productId);
+      if(!baseline||target?.approvalKind!=='automatic-price-increase'||target.historicalFingerprint!==fingerprint(baseline))continue;
+      try{
+        const loss=await this.platform.loss(baseline,{fresh:true});
+        requireThat(loss?.complete&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','自动提价前尚未确认当前活动');
+        if(loss.active){this.journal.clearProductCheck(this.policy.shopId,productId);continue;}
+        const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
+        const proof={complete:true,observedAt:loss.observedAt,lossKey:fingerprint([loss.lossKey])};
+        requireThat(loss.lossKey,'LOSS_UNPROVEN','自动提价缺少当前失效证明');
+        let next=this.journal.enqueue(this.policy.shopId,[plan],proof,this.now());
+        if(next.phase==='blocked'&&next.submitAttempts===0&&next.retryAfter<=this.now())next=this.journal.transition(next.id,'blocked','queued',{plans:[plan],lossEvidence:proof,reason:null},this.now());
+        if(next.phase==='queued')await this.execute(next);
+        const outcome=this.journal.get(next.id);submitted=submitted||outcome.submitAttempts>0;
+        if(outcome.phase==='verified')this.journal.clearProductCheck(this.policy.shopId,productId);
+      }catch(error){if(error.code==='STOPPED')throw error;this.journal.event(null,'price-increase-recovery-pending',{shopId:this.policy.shopId,productId,code:error.code,message:error.message},this.now());}
+    }
+    if(this.priceIncreaseFollowups.size||submitted)this.priorityResume=true;
+    return submitted;
   }
   async recoverPriority(hints) {
     const latest=this.latestHistories(),checks=new Map(this.journal.productChecks(this.policy.shopId).map(c=>[c.productId,c]));
@@ -200,7 +240,8 @@ export class GuardianService {
     }
     else if(polled)this.priorityListing=polled.listing;
     const hints=this.priorityWatch.hints(this.priorityListing);
-    const changed=await this.recoverPriority(hints);
+    let changed=await this.recoverPriority(hints);
+    changed=await this.recoverPriceIncreases()||changed;
     if(changed||currentListingKey(listing)!==currentListingKey(this.priorityListing))return{refreshRequired:true,listing:this.priorityListing};
     this.platform.refreshCurrentEvidence?.(this.priorityListing);
     return null;
@@ -284,6 +325,7 @@ export class GuardianService {
         if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
         if(task.phase==='queued')await this.execute(task);
       }
+      await this.recoverPriceIncreases();
       if(leaseError)throw leaseError;
       requireThat(!this.stopRequested,'STOPPED','本轮巡检已暂停，尚未完成');
       this.recordRun({startedAt,finishedAt:this.now(),ok:true});

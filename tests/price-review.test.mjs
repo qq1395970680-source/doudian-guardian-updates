@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {Journal} from '../src/journal.mjs';
 import {GuardianService} from '../src/service.mjs';
 import {fingerprint,planOriginalRestore,proveDraft} from '../src/policy.mjs';
-import {parsePriceConstraint,makePriceReviews,applyPriceTarget} from '../src/price-review.mjs';
+import {parsePriceConstraint,makePriceReviews,applyPriceTarget,selectClosestPriceStep} from '../src/price-review.mjs';
 import {fixedNow as now,priceFixture} from './helpers/price-review-fixture.mjs';
 
 test('numeric limits distinguish strict bounds, day counts, floors and coupon risk',()=>{
@@ -25,6 +25,29 @@ test('proposal enumerates the closest lower step without modifying history or gr
   assert.deepEqual(r.rows.map(s=>[s.previousFen,s.discount,s.saleFen]),[[6950,48,6672],[6000,60,6000]]);
   assert.equal(j.priceTarget(f.plan.shopId,f.plan.productId),null);assert.deepEqual(applyPriceTarget(f.plan,r),f.plan);
   assert.equal(fingerprint(f.baseline),before);assert.equal(j.histories(f.plan.shopId)[0].skus[0].discount,50);
+ }finally{j.close();}
+});
+
+for(const mixed of [false,true])test('offline higher-price arithmetic does not authorize a higher or mixed live target: '+mixed,()=>{
+ const j=new Journal(':memory:');try{
+  const f=priceFixture(j),before=fingerprint(f.baseline);
+  f.probe.rows[0].errors=['活动价不得低于近15天最低价（70元）'];
+  f.probe.rows[1].errors=mixed?['活动价不得高于58元']:[];
+  f.probe.warnings=f.probe.rows.flatMap(r=>r.errors);
+  const calculated=selectClosestPriceStep(f.plan.skus[0],{minFen:7000});
+  assert.equal(calculated.discount,51);
+  const pending=record(j,f);assert.equal(pending.status,'pending');
+  assert.equal(j.priceTarget(f.plan.shopId,f.plan.productId),null);assert.deepEqual(applyPriceTarget(f.plan,pending),f.plan);
+  assert.equal(fingerprint(f.baseline),before);assert.deepEqual(applyPriceTarget(f.plan,calculated),f.plan);
+ }finally{j.close();}
+});
+
+test('a manually shaped higher target cannot reuse the original-discount approval path',()=>{
+ const j=new Journal(':memory:');try{
+  const f=priceFixture(j),r=record(j,f);
+  const forged={...r,status:'approved',rows:r.rows.map((row,i)=>i?row:{...row,discount:51,saleFen:7089})};
+  assert.throws(()=>j.assertPricePlans(f.plan.shopId,[applyPriceTarget(f.plan,forged)]),{code:'PRICE_APPROVAL_CHANGED'});
+  assert.equal(j.priceTarget(f.plan.shopId,f.plan.productId),null);
  }finally{j.close();}
 });
 for(const mutation of ['diagnostic','expired','unmapped-warning','changed-price','duplicate','unknown-risk','conflicting-bounds'])test('proposal rejects insufficient direct evidence: '+mutation,()=>{

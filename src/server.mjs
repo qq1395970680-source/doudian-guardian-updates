@@ -10,6 +10,7 @@ import {GuardianService} from './service.mjs';
 import {requireThat,id} from './policy.mjs';
 import {buildCatalog} from './catalog.mjs';
 import {AccountRegistry} from './accounts.mjs';
+import {activePriceIncreaseGrant,setPriceIncreasePolicy} from './price-increase-policy.mjs';
 import {checkForUpdates,UPDATE_REPOSITORY} from './updates.mjs';
 import {projectBuild} from './build.mjs';
 import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from './migration.mjs';
@@ -34,6 +35,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  const snapshot=()=>({version,build:'isolated-headless-journal',sourceBuild,instance,shopId,name:policy.name||null,connection,action,lastAction,
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
+  automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId),
   updates:{repository:UPDATE_REPOSITORY,currentVersion:version},
   priceReviewsPending:shopId?journal.priceReviews(shopId).filter(r=>r.status==='pending').length:0,
   events:shopId?journal.events(150).filter(e=>e.detail?.shopId===shopId||e.task&&journal.get(e.task)?.shopId===shopId).slice(0,30):[]});
@@ -95,6 +97,11 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
      json(200,{ok:true,...result});return;
     }
     throw Object.assign(new Error('没有此迁移操作'),{code:'NOT_FOUND'});
+   }else if(path==='/api/price-increase-policy'){
+    requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先连接并核对当前店铺');
+    requireThat(!action,'BUSY','请等待当前店铺操作完成');
+    const setting=setPriceIncreasePolicy(journal,shopId,{enabled:args.enabled,acceptHigherPricesAndRisk:args.acceptHigherPricesAndRisk});
+    json(200,{ok:true,enabled:setting.enabled});return;
    }else if(path==='/api/price-reviews/decide'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先连接并核对当前店铺');
     const review=service.decidePriceReview(args);json(200,{ok:true,review});return;

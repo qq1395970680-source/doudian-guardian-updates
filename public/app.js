@@ -8,6 +8,7 @@ const labels={active:'生效中',scheduled:'未开始',missing:'待恢复',pendi
 const phases={queued:'待准备',prepared:'草稿已核对',submitting:'提交已记录',verifying:'回读中',unknown:'待核实',verified:'回读通过',blocked:'受阻'};
 let state=null,catalog=null,view='overview',filter='all',query='',pageIndex=0,pending=false,polling=false,online=false,timer,catalogAt=0,catalogSignature='',activitySignature='',accountSignature='',toastTimer,updateBusy=false,lastUpdate={state:'idle'};
 const pageSize=16,expanded=new Set();
+let pricePolicySignature='';
 const text=(id,value)=>{const el=$(id),t=String(value??'—');if(el.textContent!==t)el.textContent=t;};
 const time=value=>value?new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'尚无记录';
 const money=n=>Number.isSafeInteger(n)?'¥'+(n/100).toFixed(2):'—';
@@ -72,6 +73,12 @@ function renderActivity(s){const signature=JSON.stringify([s.tasks,s.events]);if
 function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s.running,s.busy,s.action,s.unknown]);if(signature!==accountSignature){accountSignature=signature;const fragment=document.createDocumentFragment();for(const a of s.accounts||[]){const row=node('div','setting-row'),body=node('div');body.append(node('strong','',a.name||'店铺'),node('p','',a.shopId));row.append(body);if(a.shopId===s.shopId)row.append(badge('当前店铺','blue'));else{const b=node('button','button small secondary','切换店铺');b.disabled=!!(s.running||s.busy||s.action||s.unknown);b.onclick=()=>act('accounts/select',{shopId:a.shopId});row.append(b);}fragment.append(row);}if(!s.accounts?.length)fragment.append(node('div','empty','登录后自动添加店铺，无需填写店铺 ID'));$('account-list').replaceChildren(fragment);}
  text('connection',s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':'登录后自动读取店铺名称、当前活动与规格价格');
  text('consent-status',s.originalRestoreAuthorized?'已确认原折扣恢复':'尚未确认');$('consent-wrap').hidden=!!s.originalRestoreAuthorized;text('exclusions',s.excluded?.length?s.excluded.join('、'):'当前没有排除商品');
+ const automatic=s.automaticPriceIncreaseEnabled===true,signaturePolicy=JSON.stringify([s.shopId,automatic]);
+ if(signaturePolicy!==pricePolicySignature){pricePolicySignature=signaturePolicy;$('price-increase-consent').checked=false;}
+ $('price-increase-consent-wrap').hidden=automatic;text('price-increase-status',automatic?'已开启本店自动提价':'等待逐项确认');
+ text('price-increase-policy',automatic?'停止自动提价':'开启自动提价');
+ const ready=online&&!pending&&!s.action&&s.shopId&&s.connection?.shopId===s.shopId;
+ $('price-increase-consent').disabled=!ready;$('price-increase-policy').disabled=!ready||!automatic&&!$('price-increase-consent').checked;
 }
 function render(s){
  if(s.instance&&s.instance!==instance){location.reload();return;}state=s;
@@ -95,6 +102,9 @@ async function post(path,args={}){const response=await fetch('/api/'+path,{metho
 async function act(name,args={}){if(pending)return;if(name==='start'&&!state.originalRestoreAuthorized&&!$('original-consent').checked){navigate('accounts');toast('请先确认本店的原折扣恢复规则，然后开启守护。');$('original-consent').focus();return;}
  pending=true;if(state)render(state);try{await post(name,{...args,...(name==='start'?{originalDiscountConsent:$('original-consent').checked}:{})});toast(name==='login'?'登录窗口正在打开，完成后点击“登录完成”。':name==='stop'?'已请求暂停，正在安全收尾。':'已开始处理');catalogAt=0;}catch(e){toast(e.message);}finally{pending=false;await poll();}}
 for(const name of ['login','finish-login','audit','start','stop'])$(name).onclick=()=>act(name);
+$('price-increase-consent').onchange=()=>{if(state)renderAccounts(state);};
+$('price-increase-policy').onclick=()=>{if(!state)return;const enabled=!state.automaticPriceIncreaseEnabled;if(enabled&&!$('price-increase-consent').checked)return;
+ void act('price-increase-policy',{shopId:state.shopId,enabled,acceptHigherPricesAndRisk:enabled&&$('price-increase-consent').checked});};
 async function poll(){if(polling||document.hidden)return;polling=true;clearTimeout(timer);try{
  const response=await fetch('/api/status',{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('offline');const s=await response.json();online=true;$('offline').hidden=true;render(s);
  if(view==='prices')await priceReviews.refresh();

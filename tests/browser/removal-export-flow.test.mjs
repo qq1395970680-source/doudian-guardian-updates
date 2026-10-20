@@ -30,6 +30,10 @@ for(const corrupt of [false,true])test('direct platform removal download is scop
    assert.equal(detail.removalExport.shopId,policy.shopId);assert.equal(detail.removalExport.campaignId,campaign.id);
    const loss=platform.lossFrom(baseline,listing,new Map([[campaign.id,detail]]),true);
    assert.equal(loss.active,false);assert.equal(loss.removal.productId,removed.productId);
+   // The live product search no longer includes an activity after it removed
+   // this product. Follow the exact previous activity via a fresh list read.
+   const freshLoss=await platform.loss(baseline,{fresh:true});
+   assert.equal(freshLoss.active,false);assert.equal(freshLoss.removal.productId,removed.productId);
    const plan=planOriginalRestore(baseline,{...baseline,observedAt:Date.now()},policy);
    assert.doesNotThrow(()=>checkRemovalPrices(plan,loss.removal));
    for(const changed of [{shopId:'900002'},{campaignId:'400009'},{records:[]}]) {

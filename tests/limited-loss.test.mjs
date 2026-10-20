@@ -28,3 +28,27 @@ test('a fresh exact official export proves a removed product omitted from curren
   assert.throws(()=>platform.lossFrom(baseline,listing,details({...proof,...change}),true,true),{code:'LIMITED_LOSS_UNPROVEN'});
  assert.throws(()=>platform.lossFrom(baseline,{complete:true,campaigns:[{...c,endAt:Date.now()-1}]},details(proof),true,true),{code:'LIMITED_LOSS_UNPROVEN'});
 });
+
+for(const mode of ['verified-task-title','current-index-title','complete-list'])
+test('fresh loss follows the original activity when product search omits its removed member: '+mode,async()=>{
+ const now=Date.now(),c={...campaign,name:'守护2-origin',status:'进行中',endAt:now+86400000},calls=[];
+ const adapter=new DoudianPlatform({browser:{},policy:{shopId:'900001'},
+  ...(mode==='verified-task-title'?{journal:{list:()=>[{phase:'verified',title:c.name,plans:[baseline],receipt:{campaignId:c.id,verifiedAt:now}}]}}:{})});
+ if(mode==='current-index-title')adapter.inventory={listing:{campaigns:[c]}};
+ adapter.list=async query=>{calls.push(query);return{complete:true,observedAt:now,campaigns:query?.productId?[]:[c]};};
+ adapter.detail=async found=>{assert.equal(found.id,c.id);return{complete:true,observedAt:now,products:[],
+  removalExport:{source:'live-platform-removal-export',shopId:'900001',campaignId:c.id,complete:true,observedAt:now,
+   records:[{productId:baseline.productId,reason:'明确退出'}]}};};
+ const proof=await adapter.loss(baseline,{fresh:true});
+ assert.equal(proof.active,false);assert.equal(proof.removal.productId,baseline.productId);assert.equal(calls.length,2);
+ if(mode!=='complete-list')assert.equal(calls[1].title,c.name);
+});
+for(const mode of ['partial-product-list','partial-origin-list','wrong-id','expired'])
+test('origin lookup is fresh evidence, not permission to infer loss: '+mode,async()=>{
+ const now=Date.now(),adapter=new DoudianPlatform({browser:{},policy:{shopId:'900001'}}),c={...campaign,name:'来源',endAt:now+60000};
+ adapter.list=async query=>({complete:!(query?.productId?mode==='partial-product-list':mode==='partial-origin-list'),
+  observedAt:now,campaigns:query?.productId?[]:[{...c,...(mode==='wrong-id'?{id:'400002'}:{}),...(mode==='expired'?{endAt:now-1}:{})}]});
+ adapter.detail=async found=>({complete:true,observedAt:now,products:[],removalExport:{source:'live-platform-removal-export',
+  shopId:'900001',campaignId:found.id,complete:true,observedAt:now,records:[{productId:baseline.productId,reason:'退出'}]}});
+ await assert.rejects(()=>adapter.loss(baseline,{fresh:true}));
+});

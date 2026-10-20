@@ -326,10 +326,23 @@ export class DoudianPlatform {
  async loss(baseline,{fresh=false}={}){
   if(fresh){
    const listing=await this.list({productId:baseline.productId}),details=new Map();
+   requireThat(listing.complete===true,'ACTIVE_UNKNOWN','商品当前活动列表未完整读取');
    for(const c of listing.campaigns.filter(active))details.set(c.id,await this.detail(c));
    const reference=this.limitedReference(baseline);
-   if(reference.limited){
-    const previous=listing.campaigns.find(c=>c.id===reference.campaignId);
+   const alreadyActive=listing.campaigns.filter(active).some(c=>details.get(c.id)?.products.some(p=>p.productId===baseline.productId&&!p.removalConfirmed));
+   if(reference.limited&&!alreadyActive){
+    let previous=listing.campaigns.find(c=>c.id===reference.campaignId);
+    if(!previous){
+     // A removed member can vanish from product-filtered search altogether.
+     // Old metadata is only a lookup hint: re-read the exact source activity
+     // and download its current removal proof; never reuse a saved proof.
+     const title=reference.title||this.inventory?.listing.campaigns.find(c=>c.id===reference.campaignId)?.name;
+     const origin=await this.list(title?{title}:{});
+     requireThat(origin.complete===true,'ACTIVE_UNKNOWN','原限量活动尚未完整重新核对');
+     const matches=origin.campaigns.filter(c=>c.id===reference.campaignId);
+     requireThat(matches.length<=1,'LIMITED_LOSS_UNPROVEN','原限量活动编号重复，不能确定退出结果');
+     previous=matches[0];if(previous)listing.campaigns.push(previous);
+    }
     if(previous&&!details.has(previous.id))details.set(previous.id,await this.detail(previous));
    }
    return this.lossFrom(baseline,listing,details,true,true);
@@ -396,7 +409,7 @@ export class DoudianPlatform {
  limitedReference(baseline){
   const task=this.journal?.list(this.policy.shopId).filter(t=>t.phase==='verified'&&t.plans.some(p=>p.productId===baseline.productId&&isLimited(p)))
    .sort((a,b)=>b.receipt.verifiedAt-a.receipt.verifiedAt)[0];
-  if(task&&task.receipt.verifiedAt>=(baseline.historyAt||0))return{limited:true,campaignId:task.receipt.campaignId};
+  if(task&&task.receipt.verifiedAt>=(baseline.historyAt||0))return{limited:true,campaignId:task.receipt.campaignId,title:task.title};
   return{limited:isLimited(baseline),campaignId:baseline.campaignId};
  }
  lossFrom(baseline,listing,details,complete,productScoped=false){

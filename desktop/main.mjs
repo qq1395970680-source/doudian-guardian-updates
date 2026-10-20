@@ -78,17 +78,25 @@ async function chooseTransfer(){
 }
 async function information(){
  let s;try{s=(await probeService({url,shopId})).status;}catch{}
- await message(product+' '+app.getVersion(),['桌面窗口关闭后仍在托盘运行。','完全停止请使用“程序 → 停止守护并退出”。',
+ await message(product+' '+app.getVersion(),['桌面窗口关闭后仍在托盘运行。','完全停止请使用右上角工具中的“停止守护并退出”。',
   '后台：'+(s?.running?'守护中':s?'已停止守护':'连接待核实'),'后台版本：'+(s?.version||'—'),'后台构建：'+(s?.sourceBuild?.slice(0,16)||'—'),
-  '数据目录：'+runtime,'此安装器包含源码；菜单可导出可修改工程。','需要开机联网且不休眠。当前巡检不承诺秒恢复。'].join('\n'));
+  '数据目录：'+runtime,'此安装器包含源码；右上角工具可导出可修改工程。','需要开机联网且不休眠。当前巡检不承诺秒恢复。'].join('\n'));
 }
 function menus(){
  const common=[{label:'打开工作台',click:show},{label:'重新连接后台',click:()=>connect().catch(e=>message('连接未完成',e.message))},
   {type:'separator'},{label:'停止守护并退出',click:stopAndQuit},{label:'仅退出窗口，后台继续',click:()=>{exiting=true;app.quit();}}];
  tray.setContextMenu(Menu.buildFromTemplate(common));
- Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'程序',submenu:common},{label:'查看',submenu:[{role:'reload',label:'刷新工作台'},{role:'resetZoom',label:'实际大小'},{role:'zoomIn',label:'放大'},{role:'zoomOut',label:'缩小'}]},
-  {label:'帮助与维护',submenu:[{label:'检查更新',click:async()=>{show();const result=await checkUpdate();await message(result.state==='available'?'发现新版本 '+result.release.version:result.state==='current'?'当前已是最新发布版本':'检查更新未完成',result.message||'在“软件更新”页面查看说明并下载安装。');}},{label:'日常使用说明',click:()=>message('双击桌面图标即可打开', '首次使用：登录店铺，自动识别当前折扣，确认本店恢复规则后开启守护。\n\n关闭窗口：隐藏到托盘，后台继续。\n暂停守护：在工作台点击暂停，或从菜单“停止守护并退出”。\n换电脑：安装同一安装包并重新登录。每家店铺的资料与规则独立保存；同一店铺请保持一台电脑执行。\n\n进一步降价不会自动执行，须本人逐规格确认。')},
-   {label:'打开数据目录',click:()=>shell.openPath(runtime)},{label:'导出可修改源码工程',click:()=>sourceProject().catch(e=>message('导出未完成',e.message))},{label:'版本与运行信息',click:information}]}]));
+ Menu.setApplicationMenu(null);
+}
+async function desktopAction(action){
+ if(typeof action!=='string')throw Error('程序操作无效');
+ if(action==='zoom-in'||action==='zoom-out'||action==='zoom-reset'){
+  const next=action==='zoom-reset'?1:Math.max(.8,Math.min(1.5,window.webContents.getZoomFactor()+(action==='zoom-in'?.1:-.1)));
+  window.webContents.setZoomFactor(next);return{zoom:next};
+ }
+ const actions={reconnect:connect,source:sourceProject,data:()=>shell.openPath(runtime),information,
+  'quit-window':()=>{exiting=true;setTimeout(()=>app.quit(),50);},'stop-quit':stopAndQuit};
+ if(!Object.hasOwn(actions,action))throw Error('程序操作无效');await actions[action]();return{ok:true};
 }
 async function refresh(){
  if(exiting||stopping||refreshing||launchPromise)return;refreshing=true;
@@ -117,12 +125,16 @@ if(!single){app.quit();}else{
  const senderAllowed=event=>event.sender===window.webContents&&event.senderFrame===window.webContents.mainFrame&&isAllowedNavigation(event.senderFrame.url,url);
  for(const [channel,fn] of [['guardian-update-check',checkUpdate],['guardian-update-install',installUpdate],['guardian-update-status',()=>updateState]])ipcMain.handle(channel,async event=>{if(!senderAllowed(event))throw Error('更新请求来源无效');return await fn();});
  for(const [channel,fn] of [['guardian-transfer-save',saveTransfer],['guardian-transfer-choose',chooseTransfer]])ipcMain.handle(channel,async(event,...args)=>{if(!senderAllowed(event))throw Error('迁移请求来源无效');return await fn(...args);});
+ ipcMain.handle('guardian-desktop-action',async(event,action)=>{if(!senderAllowed(event))throw Error('程序操作来源无效');return desktopAction(action);});
+ window.webContents.on('before-input-event',(event,input)=>{if(input.type!=='keyDown'||!input.control||input.alt)return;
+  const action=input.key==='0'?'zoom-reset':['+','='].includes(input.key)?'zoom-in':input.key==='-'?'zoom-out':null;
+  if(action){event.preventDefault();void desktopAction(action);}else if(input.key.toLowerCase()==='r'){event.preventDefault();window.webContents.reload();}});
  window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
  window.webContents.on('will-navigate',(e,target)=>{if(!isAllowedNavigation(target,url))e.preventDefault();});
  window.webContents.on('will-attach-webview',e=>e.preventDefault());
  window.on('close',e=>{if(!exiting){e.preventDefault();window.hide();if(!shownCloseTip&&!testMode){shownCloseTip=true;tray.displayBalloon({title:product,content:'窗口已收起，后台继续守护。双击托盘图标可打开。',respectQuietTime:true});}}});
  tray=new Tray(nativeImage.createFromPath(icon));tray.setToolTip(product);tray.on('double-click',show);menus();
- try{await connect();show();}catch(e){await log(e);show();await message('后台连接未完成',e.message+'\n可以使用“程序 → 重新连接后台”。');}
+ try{await connect();show();}catch(e){await log(e);show();await message('后台连接未完成',e.message+'\n可以在托盘菜单中选择“重新连接后台”。');}
  refreshTimer=setInterval(()=>void refresh(),5000);await refresh();
  }).catch(async error=>{await log(error);dialog.showErrorBox(product+'启动失败',error.message);app.quit();});
 }

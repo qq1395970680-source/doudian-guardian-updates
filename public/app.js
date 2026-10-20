@@ -3,7 +3,8 @@
 const $=id=>document.getElementById(id),{token,instance}=window.guardianSession;
 import {createPriceReviews} from './price-reviews.js';
 import {createMigration} from './migration.js';
-const names={overview:'折扣概览',accounts:'店铺管理',prices:'价格确认',activity:'运行记录',updates:'软件更新'};
+import {createRecoveries} from './recoveries.js';
+const names={overview:'折扣概览',recoveries:'恢复记录',accounts:'店铺管理',prices:'价格确认',activity:'运行记录',updates:'软件更新'};
 const labels={active:'生效中',scheduled:'未开始',missing:'待恢复',pending:'待核实',unconfirmed:'待更新',excluded:'已排除',recycled:'商品已回收'};
 const phases={queued:'待准备',prepared:'草稿已核对',submitting:'提交已记录',verifying:'回读中',unknown:'待核实',verified:'回读通过',blocked:'受阻'};
 let state=null,catalog=null,view='overview',filter='all',query='',pageIndex=0,pending=false,polling=false,online=false,timer,catalogAt=0,catalogSignature='',activitySignature='',accountSignature='',toastTimer,updateBusy=false,lastUpdate={state:'idle'};
@@ -19,9 +20,10 @@ function badge(value,color='neutral'){return node('span','badge '+color,value);}
 function icon(name){const s=document.createElementNS('http://www.w3.org/2000/svg','svg'),u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href','#i-'+name);s.append(u);return s;}
 const priceReviews=createPriceReviews({getState:()=>({state,online}),post,toast,node,money,discount,time});
 const migration=createMigration({getState:()=>({state,online}),post,toast,node,money,discount,time});
+const recoveries=createRecoveries({getState:()=>({shopId:state?.shopId??null,visible:view==='recoveries'}),node,money,discount,time});
 function toast(message){text('toast',message);$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
 function navigate(next){if(!names[next]||view===next)return;view=next;for(const id of Object.keys(names)){const el=$('view-'+id);el.hidden=id!==view;el.classList.toggle('active',id===view);}
- document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('selected',b.dataset.view===view));text('view-name',names[view]);if(state)render(state);if(view==='overview'&&catalog)renderCatalog(true);if(view==='prices')void priceReviews.refresh();window.scrollTo({top:0,behavior:'instant'});}
+ document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('selected',b.dataset.view===view));text('view-name',names[view]);if(state)render(state);if(view==='overview'&&catalog)renderCatalog(true);if(view==='prices')void priceReviews.refresh();if(view==='recoveries')void recoveries.refresh();window.scrollTo({top:0,behavior:'instant'});}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>navigate(b.dataset.view));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));
 function range(values,format){const a=values.filter(Number.isSafeInteger);if(!a.length)return'—';const lo=Math.min(...a),hi=Math.max(...a);return lo===hi?format(lo):format(lo)+' – '+format(hi);}
 function renderCatalog(force=false){
@@ -96,7 +98,7 @@ function render(s){
  $('audit').disabled=pending||!online||working||s.running||!s.shopId;$('start').disabled=pending||!online||working||s.running||!s.connection;
  $('stop').disabled=pending||!online||!(s.running||s.busy);
  text('price-count',s.priceReviewsPending||0);$('price-count').hidden=!s.priceReviewsPending;priceReviews.sync();
- renderAccounts(s);migration.sync();if(view==='activity')renderActivity(s);
+ renderAccounts(s);migration.sync();recoveries.sync();if(view==='activity')renderActivity(s);
 }
 async function post(path,args={}){const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token},body:JSON.stringify(args),signal:AbortSignal.timeout(25000)});const result=await response.json();if(!response.ok)throw Error(result.message||'操作未完成');return result;}
 async function act(name,args={}){if(pending)return;if(name==='start'&&!state.originalRestoreAuthorized&&!$('original-consent').checked){navigate('accounts');toast('请先确认本店的原折扣恢复规则，然后开启守护。');$('original-consent').focus();return;}
@@ -108,6 +110,7 @@ $('price-increase-policy').onclick=()=>{if(!state)return;const enabled=!state.au
 async function poll(){if(polling||document.hidden)return;polling=true;clearTimeout(timer);try{
  const response=await fetch('/api/status',{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('offline');const s=await response.json();online=true;$('offline').hidden=true;render(s);
  if(view==='prices')await priceReviews.refresh();
+ if(view==='recoveries')await recoveries.refresh();
  if(!catalog||Date.now()-catalogAt>10000){const response=await fetch('/api/products',{signal:AbortSignal.timeout(10000)});if(response.ok){catalog=await response.json();catalogAt=Date.now();if(view==='overview')renderCatalog();}}
  }catch{online=false;$('offline').hidden=false;text('connection-label','正在重新连接');$('connection-dot').classList.remove('online');if(state)render(state);}
  finally{polling=false;timer=setTimeout(poll,3000);}}
@@ -123,4 +126,13 @@ function renderUpdate(u){
 $('check-updates').onclick=async()=>{if(updateBusy)return;updateBusy=true;renderUpdate({state:'checking'});try{renderUpdate(window.guardianDesktop?await window.guardianDesktop.checkUpdates():await post('updates/check'));}catch(e){renderUpdate({state:'error',message:e.message});}finally{updateBusy=false;renderUpdate(lastUpdate);}};
 $('install-update').onclick=async()=>{if(!window.guardianDesktop){toast('请从桌面“抖店折扣守护”打开程序，下载安装更新。');return;}if(updateBusy)return;updateBusy=true;try{renderUpdate(await window.guardianDesktop.installUpdate());}catch(e){renderUpdate({state:'error',message:e.message});}finally{updateBusy=false;renderUpdate(lastUpdate);}};
 if(window.guardianDesktop){window.guardianDesktop.onUpdate(renderUpdate);void window.guardianDesktop.updateStatus().then(renderUpdate);}
+function closeTools(focus=false){$('app-tools').hidden=true;$('app-tools-toggle').setAttribute('aria-expanded','false');if(focus)$('app-tools-toggle').focus();}
+$('app-tools-toggle').onclick=()=>{const open=$('app-tools').hidden;$('app-tools').hidden=!open;$('app-tools-toggle').setAttribute('aria-expanded',String(open));if(open)$('app-tools').querySelector('button').focus();};
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('app-tools').hidden){event.preventDefault();closeTools(true);}});
+document.addEventListener('click',event=>{if(!event.target.closest('.app-tools-anchor'))closeTools();});
+document.querySelector('[data-tool="updates"]').onclick=()=>{closeTools();navigate('updates');};
+document.querySelector('[data-tool="refresh"]').onclick=()=>location.reload();
+if(window.guardianDesktop?.action){document.querySelector('.desktop-tools').hidden=false;for(const button of document.querySelectorAll('[data-desktop-action]'))button.onclick=async()=>{
+ try{const action=button.dataset.desktopAction;if(!action.startsWith('zoom-'))closeTools();const result=await window.guardianDesktop.action(action);if(result?.zoom)document.querySelector('[data-desktop-action="zoom-reset"]').textContent=Math.round(result.zoom*100)+'%';}catch(e){toast(e.message||'操作未完成');}
+};}
 void poll();

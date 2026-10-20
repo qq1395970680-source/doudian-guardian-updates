@@ -1,0 +1,36 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {createApp} from '../../src/server.mjs';
+import {Journal} from '../../src/journal.mjs';
+import {DedicatedBrowser} from '../../src/browser.mjs';
+import {recoveryTask,seedRecoveries} from '../helpers/recovery-fixture.mjs';
+for(const width of [1440,960])test('restoration records show exact prices with bounded rows, stable refresh and accessible app tools '+width,{timeout:60000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'guardian-recoveries-ui-')),journal=new Journal(':memory:'),browser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width,height:1000}});
+ const tasks=Array.from({length:27},(_,i)=>recoveryTask(i,{skuCount:25}));tasks[0].plans[0].name='<img src=x onerror=alert(1)> 原折扣恢复';
+ seedRecoveries(journal,[...tasks,recoveryTask(28,{phase:'unknown'}),recoveryTask(29,{phase:'blocked'})]);
+ const app=await createApp({config:{shopId:'900001',name:'恢复记录验收'},port:0,runtime:join(dir,'server'),dependencies:{journal,browser:{close:async()=>{}},service:{running:true,busy:false,status:()=>({tasks:[],unknown:1}),stop(){}},platform:{}}});
+ try{await browser.open('900001');const page=await browser.page(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(app.url);
+  await page.locator('[data-view="recoveries"]').click({timeout:2500});await page.locator('.recovery-card').first().waitFor({timeout:2500});
+  assert.equal(await page.locator('#recovery-occurrences').innerText(),'27');assert.equal(await page.locator('#recovery-products').innerText(),'21');
+  assert.equal(await page.locator('.recovery-card').count(),12);assert.equal(await page.locator('.recovery-skus tbody tr').count(),0);
+  await page.locator('.recovery-card summary').first().click();await page.locator('.recovery-skus').waitFor();assert.equal(await page.locator('.recovery-skus tbody tr').count(),10);
+  assert.match(await page.locator('.recovery-card').first().innerText(),/¥50.00/);assert.equal(await page.locator('.recovery-card img').count(),0);
+  await page.getByRole('button',{name:'下一页规格',exact:true}).click();assert.match(await page.locator('.recovery-skus').innerText(),/滤芯规格 11/);
+  await page.evaluate(()=>window.savedRecovery=document.querySelector('.recovery-card'));await page.waitForTimeout(3300);
+  assert.equal(await page.evaluate(()=>window.savedRecovery===document.querySelector('.recovery-card')),true);
+  await page.locator('#recovery-search').fill('700026');await page.waitForFunction(()=>document.querySelectorAll('.recovery-card').length===1);assert.match(await page.locator('.recovery-card').innerText(),/净水器滤芯 26/);
+  await page.locator('#recovery-search').fill('');await page.waitForFunction(()=>document.querySelectorAll('.recovery-card').length===12);
+  await page.locator('#recovery-next').click();await page.waitForFunction(()=>document.querySelector('#recovery-page-label').textContent.includes('2 / 3'));
+  await page.locator('[data-recovery-filter="pending"]').click();await page.waitForFunction(()=>document.querySelectorAll('.recovery-card').length===1);assert.match(await page.locator('.recovery-card').innerText(),/结果待核实/);
+  await page.locator('[data-recovery-filter="verified"]').click();await page.waitForFunction(()=>document.querySelectorAll('.recovery-card').length===12);
+  await page.locator('#app-tools-toggle').click();await page.locator('#app-tools').waitFor();await page.keyboard.press('Escape');assert.equal(await page.locator('#app-tools').isVisible(),false);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
+  await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`recovery-history-${width}.png`)});
+  await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('.view.active').evaluate(e=>getComputedStyle(e).animationName),'none');
+  assert.deepEqual(errors,[]);await writeFile(resolve('artifacts',`recovery-history-ui-${width}.json`),JSON.stringify({width,boundedRows:12,boundedSkuRows:10,stableRefresh:true,unknownExcludedFromSuccess:true,noOverflow:true,errors}));
+ }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
+});

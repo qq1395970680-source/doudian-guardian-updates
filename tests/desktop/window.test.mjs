@@ -22,6 +22,11 @@ test('native desktop window, tray hide, single instance, isolated renderer, and 
   assert.equal(starts,0);assert.equal(stops,0);
   const prefs=await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0],p=w.webContents.getLastWebPreferences();return{sandbox:p.sandbox,node:p.nodeIntegration,isolated:p.contextIsolation};});
   assert.deepEqual(prefs,{sandbox:true,node:false,isolated:true});
+  assert.equal(await desktop.evaluate(({Menu})=>Menu.getApplicationMenu()===null),true,'desktop uses the in-app toolbar instead of the native menu strip');
+  await page.locator('#app-tools-toggle').click();await page.locator('[data-desktop-action="zoom-in"]').click();
+  assert.equal(await desktop.evaluate(({BrowserWindow})=>Math.round(BrowserWindow.getAllWindows()[0].webContents.getZoomFactor()*100)),110);
+  await page.locator('[data-desktop-action="zoom-reset"]').click();await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(()=>window.guardianDesktop.action('arbitrary-command').then(()=>false,()=>true)),true);
   assert.equal(await page.evaluate(()=>typeof window.require),'undefined');
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',process.env.GUARDIAN_TEST_DESKTOP_EXE?'desktop-packaged.png':'desktop-source.png')});
   await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].close());
@@ -31,9 +36,9 @@ test('native desktop window, tray hide, single instance, isolated renderer, and 
   const secondCode=await new Promise((ok,no)=>{second.once('error',no);second.once('exit',ok);});assert.equal(secondCode,0);
   await page.waitForFunction(()=>document.visibilityState==='visible');
   assert.equal(await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().length),1);assert.equal(starts,0);
-  const closed=desktop.waitForEvent('close');await desktop.evaluate(({Menu})=>Menu.getApplicationMenu().items[0].submenu.items.find(x=>x.label==='仅退出窗口，后台继续').click());await closed;desktop=null;
+  await page.locator('#app-tools-toggle').click();const closed=desktop.waitForEvent('close');await page.locator('[data-desktop-action="quit-window"]').click();await closed;desktop=null;
   assert.equal((await(await fetch(backend.url+'/api/status')).json()).running,true);
-  await launch();const exited=desktop.waitForEvent('close');await desktop.evaluate(({Menu})=>Menu.getApplicationMenu().items[0].submenu.items.find(x=>x.label==='停止守护并退出').click());await exited;desktop=null;
+  const reopened=await launch();await reopened.locator('#app-tools-toggle').click();const exited=desktop.waitForEvent('close');await reopened.locator('[data-desktop-action="stop-quit"]').click();await exited;desktop=null;
   assert.ok(stops>=1);assert.equal(service.running,false);assert.deepEqual(errors,[]);
  }finally{await desktop?.close().catch(()=>{});await backend.close();await rm(runtime,{recursive:true,force:true});}
 });

@@ -11,6 +11,7 @@ import {requireThat,id} from './policy.mjs';
 import {buildCatalog} from './catalog.mjs';
 import {AccountRegistry} from './accounts.mjs';
 import {activePriceIncreaseGrant,setPriceIncreasePolicy} from './price-increase-policy.mjs';
+import {buildRecoveryHistory} from './recovery-history.mjs';
 import {checkForUpdates,UPDATE_REPOSITORY} from './updates.mjs';
 import {projectBuild} from './build.mjs';
 import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from './migration.mjs';
@@ -59,11 +60,17 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   try{
    if(closing){res.setHeader('Connection','close');json(503,{ok:false,code:'CLOSING',message:'后台正在维护重启'});return;}
    requireThat(req.headers.host===host,'HOST_REJECTED','只接受本机工作台访问');
-   const path=new URL(req.url,origin).pathname;
+   const requestUrl=new URL(req.url,origin),path=requestUrl.pathname;
    if(req.method==='GET'&&path==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(html);return;}
    const assets={'/app.js':['app.js','text/javascript; charset=utf-8'],'/price-reviews.js':['price-reviews.js','text/javascript; charset=utf-8'],'/migration.js':['migration.js','text/javascript; charset=utf-8'],'/app.css':['app.css','text/css; charset=utf-8'],'/guardian.png':['guardian.png','image/png']};
    if(req.method==='GET'&&assets[path]){const[file,type]=assets[path];res.writeHead(200,{'Content-Type':type});res.end(await readFile(join(rootDir,'public',file)));return;}
    if(req.method==='GET'&&path==='/api/status'){json(200,snapshot());return;}
+   if(req.method==='GET'&&path==='/recoveries.js'){res.writeHead(200,{'Content-Type':'text/javascript; charset=utf-8'});res.end(await readFile(join(rootDir,'public','recoveries.js'),'utf8'));return;}
+   if(req.method==='GET'&&path==='/api/recoveries'){
+    const q=requestUrl.searchParams;
+    json(200,buildRecoveryHistory({shopId,tasks:shopId?journal.list(shopId):[],reviews:shopId?journal.priceReviews(shopId):[],
+     filter:q.get('filter')||'verified',query:q.get('q')||'',page:q.get('page'),pageSize:q.get('size')||12}));return;
+   }
    if(req.method==='GET'&&path==='/api/price-reviews'){
     const reviews=shopId?journal.priceReviews(shopId):[];
     json(200,{shopId,reviews});return;

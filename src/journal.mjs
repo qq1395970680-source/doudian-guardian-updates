@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft, proveOriginalRisk } from './policy.mjs';
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease,validAutomaticPriceApproval} from './price-increase-policy.mjs';
+import {assertCampaignPolicy} from './campaign-policy.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -41,13 +42,16 @@ export class Journal {
     requireThat(plans.length && plans.every(p => p.shopId === shopId), 'SHOP_MISMATCH', '任务不能跨店');
     requireThat(lossEvidence?.complete === true && lossEvidence.observedAt > 0 && now-lossEvidence.observedAt<=120000 && lossEvidence.observedAt<=now+5000 &&
       typeof lossEvidence.lossKey==='string' && lossEvidence.lossKey.length>0, 'LOSS_UNPROVEN', '缺少当前活动失效证明');
-    const dedupe = fingerprint({ shopId, plans: plans.map(p => [p.productId, p.historicalFingerprint, p.skus]), loss: lossEvidence.lossKey });
+    const dedupe = fingerprint({ shopId, plans: plans.map(p => [p.productId, p.historicalFingerprint, p.skus,
+      ...(p.type==='限量抢购'?[p.type,p.rules,p.activityLimit,p.durationMs,p.campaignPolicyFingerprint||null]:[])]), loss: lossEvidence.lossKey });
     return this.transaction(() => {
       const prior = this.db.prepare('SELECT id FROM tasks WHERE dedupe=?').get(dedupe);
       if (prior) return this.get(prior.id);
       const pending = this.list(shopId).filter(t => !['verified', 'blocked'].includes(t.phase));
       requireThat(!pending.some(t => t.plans.some(p => plans.some(q => q.productId === p.productId))), 'PENDING', '商品已有未完成任务');
-      const taskId = randomUUID(), title = '守护2-' + taskId.replaceAll('-', '').slice(0, 18);
+      const taskId = randomUUID(), discounts=[...new Set(plans.flatMap(p=>p.skus.map(s=>s.discount)))].sort((a,b)=>a-b);
+      const label=plans.every(p=>p.type==='限量抢购')?(discounts.length===1?String(discounts[0]/10)+'折':'多折扣')+'-':'';
+      const title = '守护2-' + label + taskId.replaceAll('-', '').slice(0, label?12:18);
       const body = { title, plans, lossEvidence, createdAt: now, submitAttempts: 0, riskAttempts: 0 };
       this.db.prepare('INSERT INTO tasks VALUES(?,?,?,?,?,?)').run(taskId, shopId, dedupe, 'queued', JSON.stringify(body), now);
       this.event(taskId, 'queued', { products: plans.map(p => p.productId) }, now);
@@ -182,6 +186,7 @@ export class Journal {
     });
   }
   assertPricePlans(shopId,plans) {
+    assertCampaignPolicy(this,shopId,plans);
     for(const plan of plans){
       if(!plan.priceApprovalId){requireThat(!plan.approvedRiskAllowed,'PRICE_APPROVAL_MISSING','缺少明确的逐规格确认');continue;}
       const review=this.priceReview(plan.priceApprovalId),baseline=this.histories(shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);

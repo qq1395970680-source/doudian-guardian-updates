@@ -23,6 +23,7 @@ export function buildRecoveryHistory({shopId,tasks=[],reviews=[],filter='verifie
     return{id:s.id,name:s.name,baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen,historicalDiscount,historicalSaleFen};
    });
    records.push({id:task.id+':'+plan.productId,taskId:task.id,productId:plan.productId,name:plan.name||'商品 '+plan.productId,
+    activityType:plan.type,activityLimit:plan.activityLimit??null,durationMs:plan.durationMs??null,autoRenew:plan.rules?.autoRenew??null,
     phase:task.phase,state,createdAt:task.createdAt,submittedAt:task.submittedAt||null,updatedAt:task.updatedAt,
     verifiedAt:receiptValid?receipt.verifiedAt:null,campaignId:receiptValid?receipt.campaignId:null,
     currentValidity:'historical-receipt',salePriceEvidence:receiptValid?receipt.salePriceEvidence:null,

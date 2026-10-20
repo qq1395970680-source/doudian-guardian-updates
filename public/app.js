@@ -91,6 +91,8 @@ function render(s){
  const p=s.progress||{},working=!!(s.action||s.busy);text('run-pill',s.running?'后台守护已开启':working?'正在同步数据':s.connection?'店铺已连接':'等待连接店铺');
  text('hero-title',s.running?'折扣守护，正在进行':working?'正在同步店铺折扣':s.connection?'你的店铺，已准备就绪':'从连接店铺开始');
  text('hero-detail',s.running?'自动巡检当前活动，按本店已确认的价格恢复，并独立核对每个规格。':s.connection?'查看当前商品折扣，确认恢复规则后即可开启后台守护。':'登录一次，自动识别店铺与当前折扣。之后的巡检在后台完成。');
+ if(s.campaignRule?.type==='限量抢购')text('hero-detail',`按各商品原折扣分组守护限量抢购 · 每件商品共用 ${s.campaignRule.activityLimit} 件 · ${s.campaignRule.durationMs/86400000} 天 · 自动续期${s.campaignRule.rules.autoRenew?'开启':'关闭'}。`);
+ if(s.campaignConversion&&s.campaignConversion.status!=='complete')text('hero-detail',`限量活动迁移中，已核验 ${s.campaignConversion.verified} / ${s.campaignConversion.total} 件。完整历史保留，普通巡检待迁移完成后继续。`);
  text('progress',[s.action,p.stage,Number.isInteger(p.activeRead)&&Number.isInteger(p.activeTotal)?p.activeRead+' / '+p.activeTotal+' 个当前活动':''].filter(Boolean).join(' · ')||(s.running?'等待下一轮巡检':'守护尚未开启'));
  text('schedule','上次成功：'+time(s.lastSuccessfulRun?.finishedAt||(s.lastRun?.ok?s.lastRun.finishedAt:null))+'　'+(working?'本轮进行中':s.nextAt?'下一轮：'+time(s.nextAt):'等待开启'));
  text('patrol-status',working?'同步中':s.running?'自动巡检':'待机');text('unknown-count',s.unknown||0);text('verified',s.verified||0);text('blocked',s.blocked||0);text('nav-count',s.unknown||0);$('nav-count').hidden=!s.unknown;

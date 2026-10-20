@@ -22,12 +22,15 @@ export function createRecoveries({getState,node,money,discount,time}){
    meta.append(node('span','badge '+(r.state==='verified'?'green':r.state==='pending'?'purple':'amber'),label),node('time','',time(r.verifiedAt||r.updatedAt)));
    summary.append(mark,title,meta,node('span','recovery-chevron','⌄'));card.append(summary);
    const context=node('div','recovery-context');context.append(node('span','',r.mode==='original'?'原折扣恢复':r.mode==='automatic-price-increase'?'按授权自动提价':'按确认价格恢复'),node('span','',`${r.skuCount} 个规格`));
+   if(r.activityType)context.append(node('span','',r.activityType));
+   if(r.activityType==='限量抢购')context.append(node('span','',`商品总限量 ${r.activityLimit} 件`));
    if(r.campaignId)context.append(node('span','',`活动 ${r.campaignId}`));card.append(context);
    let body;
    function details(){
     if(body)return;body=node('div','recovery-detail');
     body.append(node('p','helper',r.state==='verified'?'此记录已通过独立逐规格回读。它证明当次恢复结果，当前是否生效请查看“折扣概览”。':'以下为该次计划价格，尚不能作为恢复成功的证明。'+(r.reason?' '+r.reason:'')));
     const facts=node('div','recovery-facts');for(const [label,value] of [['创建任务',time(r.createdAt)],['记录提交',time(r.submittedAt)],['独立回读',time(r.verifiedAt)]]){const fact=node('div');fact.append(node('small','',label),node('strong','',value));facts.append(fact);}body.append(facts);
+    if(r.activityType==='限量抢购')body.append(node('p','helper',`限量抢购 · 商品共用 ${r.activityLimit} 件 · ${r.durationMs/86400000} 天 · 自动续期${r.autoRenew?'开启':'关闭'}。`));
     const tableWrap=node('div','price-table-scroll'),table=node('table','recovery-skus'),head=node('thead'),tr=node('tr'),rows=node('tbody');
     for(const h of ['规格','原价','历史折后价',r.state==='verified'?'恢复折后价':'计划折后价','折扣'])tr.append(node('th','',h));head.append(tr);table.append(head,rows);tableWrap.append(table);body.append(tableWrap);
     const pager=node('div','pagination'),info=node('span'),buttons=node('div'),prev=node('button','button small secondary','上一页规格'),next=node('button','button small secondary','下一页规格');

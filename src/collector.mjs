@@ -28,7 +28,8 @@ export function assembleCells(cells,total){
 }
 const materialRow=(r,precheck)=>r.kind==='sku'?{
  kind:r.kind,name:r.name,baseFen:r.baseFen,errors:r.errors,offShelf:r.offShelf,...(!precheck?{discount:r.discount,saleFen:r.saleFen}:{}),
-}:r.kind==='product'?{kind:r.kind,productId:r.productId,offShelf:r.offShelf,errors:r.errors}:{kind:r.kind};
+}:r.kind==='product'?{kind:r.kind,productId:r.productId,offShelf:r.offShelf,errors:r.errors,
+ ...(!precheck&&Object.hasOwn(r,'activityLimit')?{activityLimit:r.activityLimit}:{})}:{kind:r.kind};
 async function pass(page,precheck,originalRisk){
  const loading=s=>s.busy&&!(originalRisk&&s.originalRiskReady&&s.formBusy===false);
  await page.evaluate(scrollForm,0);await delay(250);
@@ -46,7 +47,7 @@ async function pass(page,precheck,originalRisk){
   }
   const ordered=[...cells.values()].sort((a,b)=>a.top-b.top);let cursor=0;
   for(const cell of ordered){if(Math.abs(cell.top-cursor)>0.6)break;cursor=cell.top+cell.height;}
-  if(Math.abs(cursor-total)<0.6)return {snapshot:s,products:assembleCells(ordered,total)};
+  if(Math.abs(cursor-total)<0.6)return {snapshot:s,products:assembleCells(ordered,total),cells:ordered};
   await page.evaluate(scrollForm,cursor);await delay(120);
  }
  throw new GuardError('VIRTUAL_LIMIT','规格遍历未完成');
@@ -56,7 +57,8 @@ export async function collectForm(page,{precheck=false,originalRisk=false}={}){
  for(let attempt=0;attempt<5;attempt++){
   try{
    const value=await pass(page,precheck,originalRisk);
-   const key=fingerprint({products:value.products.map(p=>({productId:p.productId,offShelf:p.offShelf,skus:p.skus.map(r=>materialRow(r,precheck))})),
+   const key=fingerprint({products:value.products.map(p=>({productId:p.productId,offShelf:p.offShelf,
+    ...(!precheck&&Object.hasOwn(p,'activityLimit')?{activityLimit:p.activityLimit}:{}),skus:p.skus.map(r=>materialRow(r,precheck))})),
     counts:value.snapshot.counts,page:value.snapshot.page,mode:value.snapshot.mode,...(!precheck?{title:value.snapshot.title,type:value.snapshot.type,rules:value.snapshot.rules,dates:value.snapshot.dates,byDiscount:value.snapshot.byDiscount,renew:value.snapshot.renew}: {})});
    if(previous===key)return value;previous=key;
   }catch(e){if(!['VIRTUAL_CHANGED','FORM_CHANGED','VIRTUAL_GAP'].includes(e.code))throw e;lastError=e;previous=null;}

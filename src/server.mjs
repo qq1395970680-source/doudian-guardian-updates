@@ -37,6 +37,8 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
   automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId),
+  campaignRule:shopId?journal.settings('campaign-policy:'+shopId)?.target||null:null,
+  campaignConversion:shopId?(()=>{const s=journal.settings('campaign-conversion:'+shopId);return s?{status:s.status,total:s.products.length,verified:s.products.filter(p=>p.phase==='verified').length,updatedAt:s.updatedAt}:null;})():null,
   updates:{repository:UPDATE_REPOSITORY,currentVersion:version},
   priceReviewsPending:shopId?journal.priceReviews(shopId).filter(r=>r.status==='pending').length:0,
   events:shopId?journal.events(150).filter(e=>e.detail?.shopId===shopId||e.task&&journal.get(e.task)?.shopId===shopId).slice(0,30):[]});

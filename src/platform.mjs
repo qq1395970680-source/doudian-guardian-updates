@@ -1,5 +1,5 @@
-import {GuardError,requireThat,id,fingerprint,saleFen,validateHistorical,proveDraft,proveOriginalRisk} from './policy.mjs';
-import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice} from './platform-snapshot.mjs';
+import {GuardError,requireThat,id,fingerprint,saleFen,validateHistorical,proveDraft,proveOriginalRisk,isLimited} from './policy.mjs';
+import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice,scrollForm} from './platform-snapshot.mjs';
 import {until,delay,parseDate,collectForm,bindFormProducts} from './collector.mjs';
 import {makeWorkbook} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
@@ -134,7 +134,7 @@ export class DoudianPlatform {
   try{
    const products=[],seen=new Set();let declared=null,rules=null;
    for(let n=1;n<=100;n++){
-    await this.ready(page);let slice=await until(async()=>{const s=await page.evaluate(detailSlice);return Number.isInteger(s.declared)&&(s.products.length||s.declared===0)&&s;},'活动详情商品未加载');
+    await this.ready(page);let slice=await until(async()=>{const s=await page.evaluate(detailSlice,{limited:isLimited(campaign)});return Number.isInteger(s.declared)&&(s.products.length||s.declared===0)&&s;},'活动详情商品未加载');
     if(declared===null)declared=slice.declared;requireThat(slice.declared===declared,'DETAIL_CHANGED','详情商品总数在读取期间变化');
     if(slice.products.some(p=>!p.expanded)){
      const expectedIds=slice.products.map(p=>p.productId),sw=page.getByRole('switch'),switchCount=await sw.count();
@@ -145,13 +145,13 @@ export class DoudianPlatform {
       // Global expansion replaces each row's expander asynchronously. Do not
       // race it with clicks based on the pre-expansion product snapshot.
      }else for(const p of slice.products){
-      const current=(await page.evaluate(detailSlice)).products.find(row=>row.productId===p.productId);
+      const current=(await page.evaluate(detailSlice,{limited:isLimited(campaign)})).products.find(row=>row.productId===p.productId);
       requireThat(current,'DETAIL_CHANGED','待展开商品已变化');if(current.expanded)continue;
       const expand=page.locator(`tr[data-row-key="${p.key}"]`).locator('[aria-label="展开行"]');
       requireThat(await expand.count()===1&&await expand.isVisible(),'DETAIL_EXPANSION','规格展开入口不唯一或不可见');
       await expand.click();
      }
-     slice=await until(async()=>{this.check();const s=await page.evaluate(detailSlice);return s.products.length===expectedIds.length&&s.products.every(p=>expectedIds.includes(p.productId)&&p.expanded&&p.skus.length)&&s;},'活动详情规格尚未完整展开');
+     slice=await until(async()=>{this.check();const s=await page.evaluate(detailSlice,{limited:isLimited(campaign)});return s.products.length===expectedIds.length&&s.products.every(p=>expectedIds.includes(p.productId)&&p.expanded&&p.skus.length)&&s;},'活动详情规格尚未完整展开');
     }
     requireThat(declared===slice.declared,'DETAIL_CHANGED','详情数量变化');
     if(rules)requireThat(fingerprint(rules)===fingerprint(slice.rules),'DETAIL_CHANGED','详情规则变化');rules=slice.rules;
@@ -166,13 +166,29 @@ export class DoudianPlatform {
     requireThat(pager.nextCount<=1&&pager.activeCount<=1&&(!pager.page||pager.page===n),'DETAIL_PAGING','详情包含未处理的嵌套或未知分页');
     if(!pager.nextCount||pager.disabled){
      requireThat(seen.size===declared,'DETAIL_INCOMPLETE',`详情声明 ${declared} 件，完整读取 ${seen.size} 件`);
-     await this.identity(page);return {complete:true,products,rules,observedAt:Date.now()};
+     await this.identity(page);
+     if(isLimited(campaign)&&typeof rules.autoRenew!=='boolean'&&active(campaign))rules.autoRenew=await this.readRenewal(campaign);
+     return {complete:true,products,rules,observedAt:Date.now()};
     }
     const before=slice.products.map(p=>p.productId).join(',');await page.locator('li[title="下一页"] button:visible').click();
-    await until(async()=>(await page.evaluate(detailSlice)).products.map(p=>p.productId).join(',')!==before,'详情翻页停滞');
+    await until(async()=>(await page.evaluate(detailSlice,{limited:isLimited(campaign)})).products.map(p=>p.productId).join(',')!==before,'详情翻页停滞');
    }
    throw new GuardError('DETAIL_LIMIT','活动详情超过页数上限');
   }catch(e){await this.fault(page,campaign.id,'detail',e);throw e;}finally{await page.close();}
+ }
+ async readRenewal(campaign){
+  // The live detail page omits renewal. Its separate edit view exposes the
+  // persisted, disabled radio. Only read it; never submit or change that form.
+  const page=await this.open(LIST+`/edit?refer=edit&id=${id(campaign.id)}&operate_use_mode=0&limit_stock_type=1`);
+  try{
+   await page.locator('#title').waitFor();
+   const s=await until(async()=>{const value=await page.evaluate(formSlice);return !value.busy&&value.title===campaign.name&&typeof value.rules.autoRenew==='boolean'&&value;},'活动续期状态未加载');
+   const dates=s.dates.map(parseDate),url=new URL(page.url());
+   requireThat(url.pathname===LIST+'/edit'&&url.searchParams.get('id')===campaign.id&&s.type===campaign.type&&
+    dates.length===2&&dates[0]===campaign.startAt&&dates[1]===campaign.endAt,
+    'LIMITED_RULES','续期回读页与目标活动不一致');
+   await this.identity(page);return s.rules.autoRenew;
+  }finally{await page.close();}
  }
  async discover({readOnlyReuseMaxAgeMs=0,historyReadLimit=20,onReadBoundary=null,onReadBatchStart=null}={}){
   requireThat(Number.isInteger(historyReadLimit)&&historyReadLimit>=0&&historyReadLimit<=20,'HISTORY_BUDGET','历史读取预算无效');
@@ -257,7 +273,8 @@ export class DoudianPlatform {
    for(const p of detail.products){
     if(this.policy.captureExistingOnly&&(!active(c)||p.removalConfirmed||p.removalAmbiguous))continue;
     const baseline={source:'verified-platform-history',complete:true,shopId:this.policy.shopId,productId:p.productId,name:p.name,campaignId:c.id,
-     historyAt:c.startAt,generatedByGuardian:c.name.startsWith('守护2-'),observedAt:detail.observedAt,type:c.type,rules:detail.rules,skus:p.skus};
+     historyAt:c.startAt,generatedByGuardian:c.name.startsWith('守护2-'),observedAt:detail.observedAt,type:c.type,rules:detail.rules,skus:p.skus,
+     ...(isLimited(c)?{activityLimit:p.activityLimit,durationMs:c.endAt-c.startAt}:{})};
     try{validateHistorical(baseline);baselines.push(baseline);}catch(e){errors.push({campaignId:c.id,productId:p.productId,code:e.code,message:e.message});}
    }
   }
@@ -275,10 +292,28 @@ export class DoudianPlatform {
   if(fresh){
    const listing=await this.list({productId:baseline.productId}),details=new Map();
    for(const c of listing.campaigns.filter(active))details.set(c.id,await this.detail(c));
+   const reference=this.limitedReference(baseline);
+   if(reference.limited){
+    const previous=listing.campaigns.find(c=>c.id===reference.campaignId);
+    if(previous&&!details.has(previous.id))details.set(previous.id,await this.detail(previous));
+   }
    return this.lossFrom(baseline,listing,details,true,true);
   }
   requireThat(this.inventory?.activeComplete,'ACTIVE_UNKNOWN','全店有效活动尚未完整核对');
+  const reference=this.limitedReference(baseline);
+  if(reference.limited){
+   const previous=this.inventory.listing.campaigns.find(c=>c.id===reference.campaignId);
+   // Current-only scans omit ended campaigns. Inspect the precise last source
+   // independently rather than treating an omitted row as a lost promotion.
+   if(!previous||!this.inventory.details.has(previous.id))return this.loss(baseline,{fresh:true});
+  }
   return this.lossFrom(baseline,this.inventory.listing,this.inventory.details,true);
+ }
+ limitedReference(baseline){
+  const task=this.journal?.list(this.policy.shopId).filter(t=>t.phase==='verified'&&t.plans.some(p=>p.productId===baseline.productId&&isLimited(p)))
+   .sort((a,b)=>b.receipt.verifiedAt-a.receipt.verifiedAt)[0];
+  if(task&&task.receipt.verifiedAt>=(baseline.historyAt||0))return{limited:true,campaignId:task.receipt.campaignId};
+  return{limited:isLimited(baseline),campaignId:baseline.campaignId};
  }
  lossFrom(baseline,listing,details,complete,productScoped=false){
   const related=[];
@@ -289,6 +324,12 @@ export class DoudianPlatform {
    if(p)related.push(c.id+':removed');
   }
   const previous=listing.campaigns.find(c=>c.id===baseline.campaignId);
+  const reference=this.limitedReference(baseline);
+  if(reference.limited){
+   const p=details.get(reference.campaignId)?.products.find(p=>p.productId===baseline.productId);
+   requireThat(p?.removalConfirmed===true&&p.removalRiskConfirmed===true&&!p.soldOut,
+    'LIMITED_LOSS_UNPROVEN','限量活动尚无本商品被异常剔除的明确证据；售罄、到期或不明消失不自动补量');
+  }
   // Routine full/current-only listings describe the same missing product even
   // when ended history is omitted or rows reorder. Keep its retry budget stable.
   // Fresh product-scoped evidence retains campaign history to distinguish a
@@ -355,7 +396,7 @@ export class DoudianPlatform {
   await until(()=>control.locator('input').isChecked(),`${label} 未生效`);
  }
  async rules(page,plan){
-  await this.radio(page,'不设置');await this.radio(page,'不限购');
+  if(!isLimited(plan))await this.radio(page,'不设置');await this.radio(page,'不限购');
   const more=button(page,'更多配置（订单取消时间、是否预热）');
   if(await more.count()===1&&await more.getAttribute('aria-expanded')==='false')await more.click();
   await this.radio(page,'不预热');
@@ -365,16 +406,53 @@ export class DoudianPlatform {
    await select.locator('.ecom-mcenter-select-selector').click();
    await page.locator('.ecom-mcenter-select-dropdown:visible .ecom-mcenter-select-item-option').filter({hasText:new RegExp('^'+plan.rules.orderMinutes+'分钟$')}).click();
   }
-  const renew=page.locator('#renew_switch_on');if(await renew.count())await this.radio(page,'不开启');
+  const renew=page.locator('#renew_switch_on');
+  if(isLimited(plan)||await renew.count())await this.radio(page,isLimited(plan)&&plan.rules.autoRenew?'(?:开启|开启自动续期)(?:\\s*推荐)?':'不开启');
+ }
+ async setDates(page,plan){
+  if(!isLimited(plan)){
+   await page.locator('input[placeholder="开始日期"]').click();await button(page,'近48小时').click();return;
+  }
+  const value=await page.evaluate(formSlice),dates=value.dates.map(parseDate),now=Date.now();
+  if(dates.length===2&&dates[1]-dates[0]===plan.durationMs&&dates[0]>now-240000&&dates[0]<=now+300000)return;
+  const format=time=>new Date(time+8*3600000).toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');
+  const start=Math.floor(now/1000)*1000;
+  for(const [label,time] of [['开始日期',start],['结束日期',start+plan.durationMs]]){
+   const input=page.locator(`input[placeholder="${label}"]`);requireThat(await input.count()===1,'DRAFT_TIME','日期控件不唯一');
+   await input.fill(format(time));await input.press('Enter');
+  }
+  await page.locator('#title').click();
+  await until(async()=>{const d=(await page.evaluate(formSlice)).dates.map(parseDate);return d.length===2&&d[0]===start&&d[1]===start+plan.durationMs;},'限量活动时间尚未生效');
+ }
+ async fillProductLimits(page,plans){
+  requireThat(plans.length&&plans.every(isLimited),'LIMITED_QUANTITY','商品限量只能用于限量活动');
+  const {products,cells}=await collectForm(page);
+  requireThat(products.length===plans.length&&products.every(p=>plans.some(q=>q.productId===p.productId)),'DRAFT_MEMBERSHIP','填写限量前商品集合不符');
+  const column=await page.evaluate(()=>{
+   const found=[...document.querySelectorAll('tr')].filter(r=>r.querySelector('th')).flatMap(r=>[...r.cells].map((c,i)=>({i,t:c.textContent.replace(/\s/g,'')}))).filter(c=>c.t==='活动限量');
+   return found.length===1?found[0].i:null;
+  });
+  requireThat(Number.isInteger(column),'LIMITED_QUANTITY','活动限量列未能唯一定位');
+  for(const plan of plans){
+   this.check();const cell=cells.find(c=>c.rows.some(r=>r.kind==='product'&&r.productId===plan.productId));
+   requireThat(cell,'LIMITED_QUANTITY','限量商品行未完整读取');await page.evaluate(scrollForm,cell.top);await delay(150);
+   const row=page.locator('tr[class*="index-productRow--"]').filter({hasText:new RegExp('ID[：:]\\s*'+plan.productId+'(?!\\d)')});
+   requireThat(await row.count()===1,'LIMITED_QUANTITY','限量商品行不唯一');
+   const input=row.locator('td').nth(column).locator('input[role="spinbutton"]');
+   requireThat(await input.count()===1&&await input.isEnabled(),'LIMITED_QUANTITY','商品总限量控件不可用');
+   await input.fill(String(plan.activityLimit));await input.press('Tab');
+   await until(async()=>{const s=await page.evaluate(formSlice);return s.cells.flatMap(c=>c.rows).some(r=>r.kind==='product'&&r.productId===plan.productId&&r.activityLimit===plan.activityLimit);},'商品总限量未生效');
+  }
  }
  async observeDraft(task,page,{originalRisk=false,priceReview=false}={}){
   const {products,snapshot}=await collectForm(page,{originalRisk});
-  requireThat(snapshot.counts.length&&snapshot.counts.every(n=>n===task.plans.length)&&snapshot.mode==='Excel批量导入'&&snapshot.byDiscount&&!snapshot.renew,'DRAFT_RULES',
+  requireThat(snapshot.counts.length&&snapshot.counts.every(n=>n===task.plans.length)&&snapshot.mode==='Excel批量导入'&&snapshot.byDiscount&&snapshot.renew===(isLimited(task.plans[0])&&task.plans[0].rules.autoRenew),'DRAFT_RULES',
    '导入数量、打折方式或续期规则未核对：'+JSON.stringify({expectedCount:task.plans.length,counts:snapshot.counts,mode:snapshot.mode,priceModes:snapshot.priceModes,byDiscount:snapshot.byDiscount,renew:snapshot.renew}));
   requireThat(products.every(p=>!p.errors.length&&(priceReview||p.skus.every(s=>!s.errors.length))),'DRAFT_WARNING','商品或规格有未解决的价格提示');
   const dates=snapshot.dates.map(parseDate);requireThat(dates.length===2,'DRAFT_TIME','草稿时间不完整');
   return {kind:'draft',shopId:this.policy.shopId,title:snapshot.title,type:snapshot.type,rules:snapshot.rules,startAt:dates[0],endAt:dates[1],
-   complete:true,observedAt:Date.now(),rows:bindFormProducts(products,task.plans),warnings:snapshot.warnings,dialogs:snapshot.dialogs};
+   complete:true,observedAt:Date.now(),rows:bindFormProducts(products,task.plans),warnings:snapshot.warnings,dialogs:snapshot.dialogs,
+   ...(isLimited(task.plans[0])?{productLimits:products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
  }
  async prepare(task){
   requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed,'CUTOVER_REQUIRED','尚未切换执行权');
@@ -387,7 +465,7 @@ export class DoudianPlatform {
    requireThat(await card.count()===1,'TYPE_UNKNOWN','活动类型不唯一');if(!(await card.getAttribute('class')).split(' ').includes('active'))await card.click();
    // This page has never selected products online. No clear/switch recovery.
    await this.radio(page,'Excel批量导入');await this.rules(page,task.plans[0]);await page.locator('#title').fill(task.title);
-   await page.locator('input[placeholder="开始日期"]').click();await button(page,'近48小时').click();
+   await this.setDates(page,task.plans[0]);
    await this.identity(page);this.check();this.assertWrite();
    this.journal.assertPricePlans(task.shopId,task.plans);
    const file=page.locator('input[type="file"][accept*=".xlsx"]');requireThat(await file.count()===1,'UPLOAD_CONTROL','官方导入控件不唯一');
@@ -395,7 +473,9 @@ export class DoudianPlatform {
    const expected=`全部${task.plans.length}个商品（共${task.plans.reduce((n,p)=>n+p.skus.length,0)}个规格）上传成功`;
    await until(async()=>{this.check();const t=(await page.locator('body').innerText()).replace(/\s/g,'');
     if(/全部商品或规格上传失败|查看上传失败信息/.test(t))throw new GuardError('IMPORT_REJECTED','平台拒绝部分原折扣；未调整价格或提交');return t.includes(expected);},'导入未返回完整成功数量',60000);
-   await this.rules(page,task.plans[0]);await this.expand(page);await this.identity(page);
+   await this.rules(page,task.plans[0]);await this.expand(page);
+   if(isLimited(task.plans[0]))await this.fillProductLimits(page,task.plans);
+   await this.identity(page);
    const observation=await this.observeDraft(task,page,{priceReview:true});
    if(observation.rows.some(row=>row.errors?.length))throw new GuardError('PRICE_REVIEW_REQUIRED','平台要求调整价格，等待逐规格建议和本人确认；未填入更低价格',
     {priceProbe:{...observation,source:'live-platform-draft'}});
@@ -456,7 +536,32 @@ export class DoudianPlatform {
   const campaign=matches[0];if(!active(campaign))return null;const d=await this.detail(campaign);
   requireThat(d.products.every(p=>!p.removalConfirmed&&!p.removalAmbiguous),'READBACK_REMOVED','新活动已有商品或规格退出，不能记为恢复成功');
   return {complete:d.complete,shopId:this.policy.shopId,title:campaign.name,campaignId:campaign.id,status:campaign.status,
-   observedAt:d.observedAt,type:campaign.type,rules:d.rules,rows:d.products.flatMap(p=>p.skus.map(s=>({...s,productId:p.productId}))),startAt:campaign.startAt,endAt:campaign.endAt};
+   observedAt:d.observedAt,type:campaign.type,rules:d.rules,rows:d.products.flatMap(p=>p.skus.map(s=>({...s,productId:p.productId}))),startAt:campaign.startAt,endAt:campaign.endAt,
+   ...(isLimited(campaign)?{productLimits:d.products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
+ }
+ async cancelCampaign(campaign,beforeBoundary){
+  id(campaign.id);requireThat(active(campaign),'CONVERSION_SCOPE','仅作废迁移清单中的当前活动');
+  const page=await this.open(LIST);
+  try{
+   await page.locator('input[placeholder="请输入活动名称"]').fill(campaign.name);
+   await button(page,'查询').click();
+   const control=page.locator(`[data-btm="operation_set_failed_${campaign.id}"]`);
+   await control.waitFor();
+   const rows=await page.evaluate(listSlice),row=rows.find(r=>r.ids.length===1&&r.ids[0]===campaign.id);
+   requireThat(row&&row.name===campaign.name&&row.type===campaign.type&&row.status===campaign.status&&
+    parseDate(row.times[0])===campaign.startAt&&parseDate(row.times[1])===campaign.endAt,'CONVERSION_CHANGED','作废入口与已核对的活动不一致');
+   requireThat(await control.count()===1,'CONVERSION_SCOPE','作废入口不唯一');
+   await control.click({trial:true});this.check();this.assertWrite();await beforeBoundary('intent');await control.click();
+   const dialog=page.getByRole('dialog').filter({visible:true});
+   await dialog.waitFor();
+   const text=await dialog.innerText();
+   requireThat(await dialog.count()===1&&/作废|确定失效活动|确定失效该活动/.test(text)&&!/删除商品|删除店铺/.test(text),'CONVERSION_CONFIRM','作废确认内容未核对');
+   const confirm=dialog.getByRole('button',{name:/^(?:确\s*定|确\s*认|确\s*认\s*作\s*废|作\s*废)$/});
+   requireThat(await confirm.count()===1,'CONVERSION_CONFIRM','作废确认入口不唯一');
+   await confirm.click({trial:true});this.check();this.assertWrite();await beforeBoundary('confirm');await confirm.click();
+   await dialog.waitFor({state:'hidden'});
+  }catch(error){await this.fault(page,campaign.id,'cancel',error);throw error;}
+  finally{await page.close();}
  }
  async release(task){if(['unknown','submitting','verifying'].includes(task.phase))return;const page=this.drafts.get(task.id);this.drafts.delete(task.id);if(page)await page.close();}
  async probe(){const page=await this.open(LIST);try{return await this.identity(page);}finally{await page.close();}}

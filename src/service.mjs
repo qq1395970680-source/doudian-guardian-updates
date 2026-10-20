@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
-import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat} from './policy.mjs';
+import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat,restorationGroupKey} from './policy.mjs';
+import {preferCampaignBaselines,applyCampaignPolicy} from './campaign-policy.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {applyPriceTarget,makePriceReviews} from './price-review.mjs';
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease} from './price-increase-policy.mjs';
@@ -36,10 +37,10 @@ export class GuardianService {
   latestHistories() {
     const latest=new Map(),histories=this.journal.histories(this.policy.shopId).sort((a,b)=>Number(!!a.generatedByGuardian)-Number(!!b.generatedByGuardian)||(b.historyAt||0)-(a.historyAt||0));
     for(const baseline of histories)if(!latest.has(baseline.productId))latest.set(baseline.productId,baseline);
-    return latest;
+    return preferCampaignBaselines(this.journal,this.policy.shopId,latest);
   }
   restorePlan(baseline,current) {
-    return applyPriceTarget(planOriginalRestore(baseline,current,this.policy,this.now()),this.journal.priceTarget(this.policy.shopId,baseline.productId));
+    return applyCampaignPolicy(applyPriceTarget(planOriginalRestore(baseline,current,this.policy,this.now()),this.journal.priceTarget(this.policy.shopId,baseline.productId)),this.journal);
   }
   decidePriceReview(args) {
     const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
@@ -191,7 +192,7 @@ export class GuardianService {
         }
         requireThat(loss.lossKey&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','优先恢复缺少新鲜的独立失效证明');
         const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
-        const key=fingerprint({type:plan.type,rules:plan.rules});if(!groups.has(key))groups.set(key,[]);
+        const key=restorationGroupKey(plan);if(!groups.has(key))groups.set(key,[]);
         groups.get(key).push({baseline,hint,loss,plan});
       }catch(error){blocked(baseline,hint,error);}
     }
@@ -254,6 +255,8 @@ export class GuardianService {
   }
   async tick() {
     requireThat(this.policy.liveEnabled===true&&this.policy.cutoverConfirmed===true,'CUTOVER_REQUIRED','新程序尚未启用实店执行');
+    const conversion=this.journal.settings('campaign-conversion:'+this.policy.shopId);
+    requireThat(!conversion||conversion.status==='complete','CONVERSION_IN_PROGRESS','活动迁移尚未完成，保留原始记录并暂停普通巡检');
     if(this.busy)return {skipped:'busy'};
     this.journal.lease(this.policy.shopId,this.owner,this.now());this.busy=true;this.priorityResume=false;this.priorityListing=null;
     let leaseError=null;
@@ -300,7 +303,7 @@ export class GuardianService {
           const current=await this.platform.precheck(baseline);
           const plan=this.restorePlan(baseline,current);
           this.journal.clearProductCheck(this.policy.shopId,baseline.productId);
-          const key=fingerprint({type:plan.type,rules:plan.rules});if(!groups.has(key))groups.set(key,[]);
+          const key=restorationGroupKey(plan);if(!groups.has(key))groups.set(key,[]);
           groups.get(key).push({plan,loss});
         }catch(error){blocked(baseline,loss,error);}
       }

@@ -5,6 +5,8 @@ export function formSlice() {
   const visible=e=>!!e&&e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
   const all=(s,r=document)=>[...r.querySelectorAll(s)];
   const money=s=>{const m=String(s).replaceAll(',','').match(/^[¥￥]?(\d+)(?:\.(\d{1,2}))?$/);return m?Number(m[1])*100+Number((m[2]||'').padEnd(2,'0')):null;};
+  const quotaColumns=all('tr').filter(r=>r.querySelector('th')).flatMap(r=>[...r.cells].map((c,i)=>({i,label:text(c).replace(/\s/g,'')})).filter(c=>c.label==='活动限量'));
+  const quotaColumn=quotaColumns.length===1?quotaColumns[0].i:-1;
   const warningSelector='[role="alert"],.ecom-mcenter-zform-error,[class*="zform-item-explain-error"],[class*="form-item-explain-error"]';
   const parse=row=>{
     const kind=row.className.includes('index-productRow--')?'product':row.className.includes('index-skuRow--')?'sku':row.className.includes('index-addSkuRow--')?'tail':null;
@@ -17,6 +19,7 @@ export function formSlice() {
       baseFen:money(infoText.match(/原价[：:]\s*[¥￥]([\d,.]+)/)?.[1]),
       discount:input?.value?Math.round(Number(input.value)*10):null,
       saleFen:money(text(row.cells[2]).match(/折后价[：:]\s*[¥￥]([\d,.]+)/)?.[1]),
+      ...(kind==='product'&&quotaColumn>=0?{activityLimit:(()=>{const inputs=all('input[role="spinbutton"]',row.cells[quotaColumn]);return inputs.length===1&&/^\d+$/.test(inputs[0].value)?Number(inputs[0].value):null;})()}:{}),
       errors:all(warningSelector,row).filter(visible).map(text).filter(Boolean),
       offShelf:labels.some(s=>/^(?:商品状态[：:]\s*)?(?:商品)?已下架[。！!]?\s*$/.test(s))};
   };
@@ -33,6 +36,8 @@ export function formSlice() {
     return {raw:text(e),value:text(clone)};
   });
   const title=text(document.querySelector('.market-activity-radio-card-item.active [class*="index-title--"]'));
+  const renew=selected.some(label=>/^(?:开启|开启自动续期)(?:推荐)?$/.test(label.replace(/\s/g,'')))?true:
+    selected.includes('不开启')?false:title==='限量抢购'?null:false;
   const order=text(document.querySelector('#order_expire_time')?.closest('.ecom-mcenter-select')?.querySelector('.ecom-mcenter-select-selection-item'));
   const counts=[...text(document.body).matchAll(/已完成\s*\d+\s*\/\s*(\d+)|已选数量\s*(\d+)\s*个/g)].map(m=>Number(m[1]||m[2]));
   const pager=all('li.ecom-mcenter-pagination-item-active[title]').filter(e=>visible(e)&&!e.closest('.ecom-mcenter-drawer-open'));
@@ -40,8 +45,8 @@ export function formSlice() {
   const riskButtons=dialogs.length===1?all('button',dialogs[0]).filter(e=>visible(e)&&text(e).replace(/\s/g,'')==='仍要创建'&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'):[];
   const originalRiskReady=dialogs.length===1&&/^\d+个商品存在低价风险，请谨慎新建/.test(text(dialogs[0]).replace(/\s/g,''))&&riskButtons.length===1;
   return {title:document.querySelector('#title')?.value||'',type:title,mode:text(document.querySelector('#select_product_method input:checked')?.closest('label')),
-    rules:{noLimit:selected.includes('不设置'),noPerUserLimit:selected.includes('不限购'),noWarmup:selected.includes('不预热'),orderMinutes:Number(order.match(/^(\d+)分钟$/)?.[1])},
-    renew:selected.includes('开启'),priceModes,byDiscount:priceModes.length===1&&priceModes[0].value==='打折',
+    rules:{noLimit:selected.includes('不设置'),noPerUserLimit:selected.includes('不限购'),noWarmup:selected.includes('不预热'),orderMinutes:Number(order.match(/^(\d+)分钟$/)?.[1]),...(title==='限量抢购'?{autoRenew:renew}:{})},
+    renew,priceModes,byDiscount:priceModes.length===1&&priceModes[0].value==='打折',
     dates:all('input[placeholder="开始日期"],input[placeholder="结束日期"]').map(e=>e.value),counts,grids:grids.length,total:inner?Number.parseFloat(inner.style.height):1,cells,
     page:pager.length?Number(pager[0].title):1,pagerCount:pager.length,
     busy:busyNodes.length>0,formBusy:busyNodes.some(e=>!e.matches('.ecom-mcenter-spin-spinning')||!e.closest('#marketing-global-spin-portal')),originalRiskReady,
@@ -67,8 +72,12 @@ export function listSlice() {
     return {ids,cells:cells.length,name:text(cells[0]).split('\n')[0],type:text(cells[0]).includes('限时抢购')?'限时抢购':text(cells[0]).includes('限量抢购')?'限量抢购':'普通降价促销',
       times:text(cells[2]).match(/\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}/g),status:text(cells[5]).match(/进行中|未开始|已失效|已结束|已作废/)?.[0],risk:/风险商品已剔除/.test(text(cells[5]))};});
 }
-export function detailSlice() {
+export function detailSlice({limited=false}={}) {
   const text=e=>(e?.innerText||e?.textContent||'').trim(),body=text(document.body);
+  const headerRows=[...document.querySelectorAll('tr')].filter(r=>r.querySelector('th'));
+  const quotaColumns=headerRows.flatMap(r=>[...r.cells].map((c,i)=>({i,label:text(c).replace(/\s/g,'')})).filter(c=>c.label==='活动限量'));
+  const quotaColumn=quotaColumns.length===1?quotaColumns[0].i:-1;
+  const quotaValue=cell=>{const value=text(cell).replaceAll(',','').trim();const match=value.match(/^(?:活动限量[：:]\s*)?(\d+)(?:\s*件)?$/);return match?Number(match[1]):null;};
   const money=s=>{const m=String(s).replaceAll(',','').match(/^(\d+)(?:\.(\d{1,2}))?$/);return m?Number(m[1])*100+Number((m[2]||'').padEnd(2,'0')):null;};
   const rows=[...document.querySelectorAll('tr[data-row-key]')].filter(r=>/^\d+_/.test(r.getAttribute('data-row-key'))&&/ID[：:]/.test(text(r))&&r.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}));
   const products=rows.map(row=>{
@@ -78,10 +87,15 @@ export function detailSlice() {
       return {id:r.getAttribute('data-row-key'),name:t.split(/原价[：:]/)[0].trim(),baseFen:money(t.match(/原价[：:]\s*[¥￥]([\d,.]+)/)?.[1]),discount:discount?Math.round(Number(discount)*10):null,saleFen:money(sale)};
     }):[];
     return {productId,name:text(info).split(/ID[：:]/)[0].trim(),key:row.getAttribute('data-row-key'),expanded:!!nested?.querySelector('table'),skus,
+      ...(limited?{activityLimit:quotaColumn>=0?quotaValue(row.cells[quotaColumn]):null}:{}),
+      ...(limited?{soldOut:/售罄|已抢光|限量(?:已)?售完|剩余(?:活动)?库存[：:]\s*0/.test(text(row)),
+        removalRiskConfirmed:/风险|风控|违规|异常剔除/.test(text(row))&&/已退出活动|自动退出|已剔除/.test(text(row))}:{}),
       removalConfirmed:/已退出活动|自动退出/.test(text(row)),removalAmbiguous:/已退出活动|自动退出/.test(text(nested))&&!/已退出活动|自动退出/.test(text(row))};
   });
+  const renewal=body.match(/自动续期\s*(不开启|开启自动续期|已开启|开启)(?:\s|$)/)?.[1];
   return {declared:Number(body.match(/商品数量\s*(\d+)\s*个/)?.[1]),products,
-    rules:{noLimit:/是否设置活动限量\s*不设置/.test(body),noPerUserLimit:/每人限购\s*不限购/.test(body),noWarmup:/是否预热\s*不预热/.test(body),orderMinutes:Number(body.match(/订单取消时间\s*(\d+)分钟/)?.[1])}};
+    rules:{noLimit:/是否设置活动限量\s*不设置/.test(body),noPerUserLimit:/每人限购\s*不限购/.test(body),noWarmup:/是否预热\s*不预热/.test(body),orderMinutes:Number(body.match(/订单取消时间\s*(\d+)分钟/)?.[1]),
+      ...(limited?{autoRenew:renewal?renewal!=='不开启':null}:{})}};
 }
 
 export function accountSlice(){

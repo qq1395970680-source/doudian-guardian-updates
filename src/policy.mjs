@@ -10,6 +10,30 @@ export const canonical = value => Array.isArray(value) ? value.map(canonical) :
   value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
 export const fingerprint = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 export const normalizeName = name => String(name ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+export const isLimited = value => value?.type === '限量抢购';
+export function validateLimited(value) {
+  requireThat(Number.isSafeInteger(value.activityLimit) && value.activityLimit >= 1 && value.activityLimit <= 1000,
+    'LIMITED_QUANTITY', '限量抢购必须有已核对的商品总限量（1～1000件）');
+  requireThat(typeof value.rules?.autoRenew === 'boolean' && value.rules.noLimit === false,
+    'LIMITED_RULES', '限量抢购的自动续期和数量规则尚未核对');
+  requireThat(Number.isSafeInteger(value.durationMs) && value.durationMs > 0 &&
+    value.durationMs <= 30 * 86400000 && value.durationMs % 1000 === 0,
+    'LIMITED_DURATION', '限量抢购的活动时长必须明确且不超过30天');
+}
+export function restorationGroupKey(plan) {
+  return fingerprint({type: plan.type, rules: plan.rules,
+    ...(isLimited(plan) ? {durationMs: plan.durationMs, discounts: [...new Set(plan.skus.map(s => s.discount))].sort((a,b) => a-b)} : {})});
+}
+function proveProductLimits(plans, observation) {
+  if (!plans.some(isLimited)) return;
+  requireThat(plans.every(isLimited), 'LIMITED_READBACK', '活动不能混合限量和不限量规则');
+  for(const plan of plans)validateLimited(plan);
+  const limits = observation.productLimits;
+  requireThat(Array.isArray(limits) && limits.length === plans.length &&
+    new Set(limits.map(p => p.productId)).size === limits.length &&
+    plans.every(plan => limits.some(p => p.productId === plan.productId && p.activityLimit === plan.activityLimit)),
+    'LIMITED_READBACK', '商品限量缺失、重复或与计划不一致');
+}
 export function id(value, label = '编号') {
   requireThat(typeof value === 'string' && /^\d{3,25}$/.test(value), 'INVALID_ID', `${label}必须为完整数字文本`);
   return value;
@@ -37,10 +61,11 @@ export function validateHistorical(baseline) {
   requireThat(baseline && baseline.source === 'verified-platform-history' && baseline.complete === true,
     'UNVERIFIED_HISTORY', '必须使用完整核验的平台历史，诊断日志不能用于恢复');
   id(baseline.shopId, '店铺ID'); id(baseline.productId, '商品ID'); uniqueRows(baseline.skus, '历史');
-  requireThat(baseline.rules && ['限时抢购', '普通降价促销'].includes(baseline.type), 'UNSUPPORTED_RULE', '历史活动规则不完整');
+  requireThat(baseline.rules && ['限时抢购', '普通降价促销', '限量抢购'].includes(baseline.type), 'UNSUPPORTED_RULE', '历史活动规则不完整');
+  if (isLimited(baseline)) validateLimited(baseline);
   const r=baseline.rules;
-  requireThat(r.noLimit===true && r.noPerUserLimit===true && r.noWarmup===true && Number.isInteger(r.orderMinutes) && r.orderMinutes>0 && r.orderMinutes<=1440,
-    'UNSUPPORTED_RULE','仅支持已核对的不限量、不限购、不预热及明确订单取消时间');
+  requireThat((isLimited(baseline) ? r.noLimit===false : r.noLimit===true) && r.noPerUserLimit===true && r.noWarmup===true && Number.isInteger(r.orderMinutes) && r.orderMinutes>0 && r.orderMinutes<=1440,
+    'UNSUPPORTED_RULE','仅支持已核对的活动限量、不限购、不预热及明确订单取消时间');
   for (const sku of baseline.skus) saleFen(sku.baseFen, sku.discount);
   return baseline;
 }
@@ -73,6 +98,7 @@ export function planOriginalRestore(baseline, current, policy, now = Date.now())
   requireThat(!skippedSkuIds.length || policy.allowMissingHistoricalSkus === true, 'MISSING_SKUS', '历史规格缺失，未获得保留子集的授权');
   const result = { shopId: baseline.shopId, productId: baseline.productId, name: baseline.name,
     type: baseline.type, rules: structuredClone(baseline.rules), skus: mappings, skippedSkuIds,
+    ...(isLimited(baseline) ? {activityLimit: baseline.activityLimit, durationMs: baseline.durationMs} : {}),
     historicalFingerprint: fingerprint(baseline), currentFingerprint: fingerprint(current), observedAt: current.observedAt,
     originalRiskAllowed: policy.originalRiskAllowed === true };
   return { ...result, fingerprint: fingerprint(result) };
@@ -94,7 +120,12 @@ export function proveReadback(plans, observation, { title, now = Date.now(), exa
   }
   for (const plan of plans) requireThat(fingerprint(observation.rules) === fingerprint(plan.rules) && observation.type === plan.type,
     'READBACK_RULES', '回读活动规则不一致');
+  proveProductLimits(plans, observation);
+  for (const plan of plans.filter(isLimited)) requireThat(observation.endAt - observation.startAt === plan.durationMs,
+    'LIMITED_READBACK', '回读限量活动时长与计划不一致');
   return { campaignId: observation.campaignId, verifiedAt: now, productCount: plans.length, skuCount: expected.length,
+    ...(plans.some(isLimited) ? {type: '限量抢购', productLimits: structuredClone(observation.productLimits),
+      durationMs: plans[0].durationMs, autoRenew: observation.rules.autoRenew} : {}),
     salePriceEvidence:actual.every(r=>r.saleSource==='observed')?'observed':'verified-base-and-discount-with-computed-sale',
     evidenceFingerprint: fingerprint(observation) };
 }
@@ -110,8 +141,8 @@ function checkDraft(task, observation, now, continuation) {
   const original=continuation?task.draftProof?.observation:null;
   const validTime=original?observation.startAt===original.startAt&&observation.endAt===original.endAt&&observation.endAt>now:
     observation.startAt > now - 300000 && observation.startAt <= now + 300000;
-  requireThat(validTime && observation.endAt - observation.startAt === 48 * 3600000,
-    'DRAFT_TIME', '草稿时间不是已核对的未来48小时');
+  requireThat(validTime && task.plans.every(plan => observation.endAt - observation.startAt === (isLimited(plan) ? plan.durationMs : 48 * 3600000)),
+    'DRAFT_TIME', '草稿时间与已核对的活动时长不一致');
   // Reuse only the comparison contract; the observation remains explicitly a
   // draft and is never stored as an independent live verification receipt.
   const expected = task.plans.flatMap(p => p.skus.map(s => ({...s,productId:p.productId})));
@@ -125,6 +156,7 @@ function checkDraft(task, observation, now, continuation) {
   }
   for(const plan of task.plans) requireThat(observation.type===plan.type&&fingerprint(observation.rules)===fingerprint(plan.rules),
     'DRAFT_RULES','草稿活动规则与历史不一致');
+  proveProductLimits(task.plans, observation);
   return {taskId:task.id,at:now,fingerprint:fingerprint(observation),materialFingerprint:draftMaterial(observation),plansFingerprint:fingerprint(task.plans),observation:structuredClone(observation)};
 }
 
@@ -144,5 +176,6 @@ export function proveOriginalRisk(task,observation,now=Date.now()){
 
 export function draftMaterial(o){
   return fingerprint({shopId:o.shopId,title:o.title,type:o.type,rules:o.rules,startAt:o.startAt,endAt:o.endAt,
+    ...(isLimited(o) ? {productLimits: [...(o.productLimits || [])].sort((a,b) => a.productId.localeCompare(b.productId))} : {}),
     rows:[...(o.rows||[])].map(r=>({productId:r.productId,id:r.id,name:normalizeName(r.name),baseFen:r.baseFen,discount:r.discount,saleFen:r.saleFen})).sort((a,b)=>(a.productId+':'+a.id).localeCompare(b.productId+':'+b.id))});
 }

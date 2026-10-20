@@ -1,5 +1,6 @@
 import {fingerprint,requireThat,validateHistorical,isLimited,restorationGroupKey,normalizeName} from './policy.mjs';
 import {setCampaignPolicy,campaignPolicy} from './campaign-policy.mjs';
+import {readBatchProducts,recoveryBatches} from './recovery-batches.mjs';
 
 const active=c=>['进行中','未开始'].includes(c.status);
 const importable=b=>{
@@ -23,7 +24,8 @@ export function conversionGroups(journal,shopId,baselines,productIds){
   const key=restorationGroupKey({...baseline,...policy?.target,skus});
   if(!groups.has(key))groups.set(key,[]);groups.get(key).push(productId);
  }
- return [...groups.values()];
+ return [...groups.values()].flatMap(ids=>recoveryBatches(ids.map(productId=>({baseline:baselines.get(productId)})),{key:()=>''})
+  .map(batch=>batch.map(m=>m.baseline.productId)));
 }
 export function campaignMaterial(c,d){
  return fingerprint({id:c.id,name:c.name,type:c.type,startAt:c.startAt,endAt:c.endAt,rules:d.rules,
@@ -125,7 +127,14 @@ export class CampaignConversion{
     else throw Error('Unknown cancellation boundary');
     this.save(state);this.journal.event(null,'conversion-cancel-'+stage,{shopId:this.shopId,campaignId},Date.now());
    });
-  }catch(error){entry.phase=entry.confirmAttempts>0?'cancel-unknown':'cancel-unconfirmed';entry.error=String(error.message).slice(0,1000);entry.errorCode=error.code||'ERROR';this.save(state);throw error;}
+  }catch(error){
+   entry.phase=entry.confirmAttempts>0?'cancel-unknown':'cancel-unconfirmed';entry.error=String(error.message).slice(0,1000);entry.errorCode=error.code||'ERROR';this.save(state);
+   // The original page may retain an active row after a successful request.
+   // At the exhausted confirmation boundary, cancel() can only independently
+   // read and accept a terminal state, or fail before any further write.
+   if(entry.confirmAttempts>=confirmationLimit)return this.cancel(campaignId);
+   throw error;
+  }
   return this.cancel(campaignId);
  }
  async absence(product){
@@ -140,8 +149,9 @@ export class CampaignConversion{
  }
  async restore(productIds,{allowPriceFollowup=true}={}){
   this.idle();const state=this.state(),items=state?.products.filter(p=>productIds.includes(p.productId)&&p.phase!=='verified');
-  requireThat(items?.length&&items.length<=5,'CONVERSION_SCOPE','每批迁移1至5件商品');
-  const plans=[],proofs=[],latest=this.service.latestHistories();
+  requireThat(items?.length&&items.length<=50&&new Set(productIds).size===productIds.length&&items.length===productIds.length,
+   'CONVERSION_SCOPE','每批迁移1至50个尚未完成的唯一商品');
+  const plans=[],proofs=[],candidates=[],latest=this.service.latestHistories();
   for(const item of items){
    requireThat(state.campaigns.filter(c=>c.productIds.includes(item.productId)).every(c=>c.phase==='cancelled'),
     'CONVERSION_ACTIVE','原活动尚未确认作废，不能创建');
@@ -151,12 +161,51 @@ export class CampaignConversion{
    if(already){item.phase='verified';item.taskId=already.id;item.receipt=already.receipt;continue;}
    const baseline=latest.get(item.productId);
    requireThat(baseline&&fingerprint(baseline)===item.baselineFingerprint,'CONVERSION_CHANGED','迁移价格来源变化，先核实');
-   proofs.push(await this.absence(item));
-   try{const current=await this.platform.precheck(baseline);plans.push(this.service.restorePlan(baseline,current));}
-   catch(error){
-    if(!['OFF_SHELF','PRODUCT_RECYCLED'].includes(error.code))throw error;
-    item.phase='skipped';item.reason=error.code;this.save(state);
+   candidates.push({item,baseline});
+  }
+  // Initialize the shared profile once. Only independent reads overlap; drain
+  // both pages, including failures, before planning any creation.
+  if(candidates.length)await this.platform.ensure?.();
+  if(this.platform.precheckBatch&&candidates.length>1){
+   const read=await readBatchProducts(this.platform,candidates),eligible=[];
+   for(const entry of read){
+    if(entry.error){
+     if(!['OFF_SHELF','PRODUCT_RECYCLED'].includes(entry.error.code))throw entry.error;
+     entry.member.item.phase='skipped';entry.member.item.reason=entry.error.code;this.save(state);
+    }else eligible.push({...entry.member,plan:this.service.restorePlan(entry.member.baseline,entry.current)});
    }
+   if(eligible.length>5&&this.platform.readFreshCurrentInventory){
+    const {listing,details,observedAt}=await this.platform.readFreshCurrentInventory();
+    requireThat(listing.complete===true,'ACTIVE_UNKNOWN','迁移前批量活动核对不完整');
+    for(const {item,plan} of eligible){
+     for(const c of listing.campaigns){
+      const d=details.get(c.id);requireThat(d?.complete,'ACTIVE_UNKNOWN','迁移前活动详情未完整读取');
+      const p=d.products.find(p=>p.productId===item.productId);
+      requireThat(!p||p.removalConfirmed&&!p.removalAmbiguous,'ALREADY_ACTIVE','商品仍有有效活动，未重复创建');
+     }
+     plans.push(plan);proofs.push({complete:true,observedAt,lossKey:fingerprint({conversion:state.requestId,productId:item.productId,campaigns:listing.campaigns})});
+    }
+   }else for(let i=0;i<eligible.length;i+=2){
+    const part=eligible.slice(i,i+2),settled=await Promise.allSettled(part.map(m=>this.absence(m.item)));
+    const failure=settled.find(r=>r.status==='rejected');if(failure)throw failure.reason;
+    settled.forEach((r,j)=>{plans.push(part[j].plan);proofs.push(r.value);});
+   }
+  }else{
+  for(let start=0;start<candidates.length;start+=2){
+   const results=await Promise.allSettled(candidates.slice(start,start+2).map(async({item,baseline})=>{
+    const proof=await this.absence(item);
+    try{const current=await this.platform.precheck(baseline);return{item,proof,plan:this.service.restorePlan(baseline,current)};}
+    catch(error){
+     if(!['OFF_SHELF','PRODUCT_RECYCLED'].includes(error.code))throw error;
+     return{item,skipped:error.code};
+    }
+   }));
+   const failed=results.find(r=>r.status==='rejected');if(failed)throw failed.reason;
+   for(const {value} of results){
+    if(value.skipped){value.item.phase='skipped';value.item.reason=value.skipped;this.save(state);}
+    else{plans.push(value.plan);proofs.push(value.proof);}
+   }
+  }
   }
   if(!plans.length){this.save(state);return null;}
   requireThat(plans.every(p=>restorationGroupKey(p)===restorationGroupKey(plans[0])),'CONVERSION_GROUP','同批商品必须属于相同折扣组');

@@ -39,6 +39,21 @@ test('unknown cancellation is never repeated after restart',async()=>{
   assert.equal(restarted.state().campaigns[0].phase,'cancelled');assert.equal(x.cancels,1);
  }finally{x.journal.close();}
 });
+
+test('a stale cancellation page is reconciled by a fresh read without repeating confirmation',async()=>{
+ const x=example();let confirms=0;
+ try{
+  await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});
+  x.platform.cancelCampaign=async(_c,before)=>{
+   await before('intent');await before('confirm');confirms++;x.campaign.status='已失效';
+   throw Object.assign(Error('original list row did not refresh'),{code:'LOAD_TIMEOUT'});
+  };
+  const result=await x.conversion.cancel('400001');
+  assert.equal(result.phase,'cancelled');assert.equal(result.endedStatus,'已失效');
+  assert.equal(result.confirmAttempts,1);assert.equal(confirms,1);
+  await x.conversion.cancel('400001');assert.equal(confirms,1);
+ }finally{x.journal.close();}
+});
 test('an unconfirmed dialog can reopen only after fresh unchanged-activity checks',async()=>{
  const x=example();try{
   await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});
@@ -82,5 +97,66 @@ test('cancellation retry rejects missing, automated or mismatched consent',async
   }
   await assert.rejects(()=>x.conversion.cancel('400001'),{code:'CONVERSION_UNKNOWN'});
   assert.equal(x.cancels,1);
+ }finally{x.journal.close();}
+});
+
+test('five-product conversion bounds independent prechecks to two readers and preserves plan order',async()=>{
+ const x=example();let readers=0,peak=0,ensured=0,writes=0;
+ const p=x.detail.products[0];
+ x.detail.products=Array.from({length:5},(_,i)=>({...structuredClone(p),productId:String(300001+i),skus:p.skus.map(s=>({...s,id:String(500001+i)}))}));
+ x.platform.ensure=async()=>{ensured++;};
+ x.platform.precheck=async b=>{
+  assert.equal(ensured,1,'initialize the shared dedicated browser before concurrent pages');
+  readers++;peak=Math.max(peak,readers);
+  try{await new Promise(r=>setTimeout(r,b.productId==='300001'?25:5));return{...b,observedAt:Date.now()};}
+  finally{readers--;}
+ };
+ x.conversion.service.execute=async task=>{
+  assert.equal(readers,0,'all readers must close before a creation');
+  assert.deepEqual(task.plans.map(p=>p.productId),x.detail.products.map(p=>p.productId));
+  writes++;
+ };
+ try{
+  await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});
+  await x.conversion.cancel('400001');
+  const task=await x.conversion.restore(x.detail.products.map(p=>p.productId));
+  assert.equal(peak,2);assert.equal(readers,0);assert.equal(writes,1);assert.equal(task.plans.length,5);
+ }finally{x.journal.close();}
+});
+
+test('a failed parallel precheck drains its other reader and never queues a partial batch',async()=>{
+ const x=example();let readers=0,finished=0;
+ const p=x.detail.products[0];
+ x.detail.products=[p,{...structuredClone(p),productId:'300002',skus:p.skus.map(s=>({...s,id:'500002'}))}];
+ x.platform.ensure=async()=>{};
+ x.platform.precheck=async b=>{
+  readers++;
+  try{
+   await new Promise(r=>setTimeout(r,b.productId==='300001'?1:25));
+   if(b.productId==='300001')throw Object.assign(Error('shop changed'),{code:'SHOP_MISMATCH'});
+   finished++;return{...b,observedAt:Date.now()};
+  }finally{readers--;}
+ };
+ x.conversion.service.execute=async()=>assert.fail('an incomplete parallel precheck must not create');
+ try{
+  await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});await x.conversion.cancel('400001');
+  await assert.rejects(()=>x.conversion.restore(['300001','300002']),{code:'SHOP_MISMATCH'});
+  assert.equal(readers,0);assert.equal(finished,1,'drain the other read before propagating failure');assert.equal(x.journal.list('900001').length,0);
+ }finally{x.journal.close();}
+});
+
+test('fifty-product migration uses one batch precheck and one shared current inventory after cancellation',async()=>{
+ const x=example();let prechecks=0,inventories=0,writes=0;
+ const p=x.detail.products[0];x.detail.products=Array.from({length:50},(_,i)=>({...structuredClone(p),productId:String(300001+i),skus:p.skus.map(s=>({...s,id:String(500001+i)}))}));
+ x.platform.precheck=async()=>assert.fail('must use a shared form');
+ x.platform.precheckBatch=async bs=>{prechecks++;return bs.map(b=>({...b,observedAt:Date.now()}));};
+ x.platform.readFreshCurrentInventory=async()=>{inventories++;return{listing:{complete:true,campaigns:[]},details:new Map(),observedAt:Date.now()};};
+ x.conversion.service.execute=async task=>{writes++;assert.equal(task.plans.length,50);};
+ try{
+  await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});
+  await assert.rejects(()=>x.conversion.restore(x.detail.products.map(p=>p.productId)),{code:'CONVERSION_ACTIVE'});
+  assert.equal(prechecks,0);assert.equal(writes,0);
+  await x.conversion.cancel('400001');await x.conversion.restore(x.detail.products.map(p=>p.productId));
+  assert.equal(prechecks,1);assert.equal(inventories,1);assert.equal(writes,1);
  }finally{x.journal.close();}
 });

@@ -27,8 +27,11 @@ for(const mode of ['corruptPrice','dropAfterSubmit','abortBeforeHeaders'])test(`
  const dir=await mkdtemp(join(tmpdir(),'guardian-v2-failure-')),fixture=await fixtureServer({[mode]:true}),browser=new DedicatedBrowser(dir,{test:true,viewport:{width:960,height:600}});
  const journal=new Journal(join(dir,'tasks.sqlite')),policy={shopId:'900001',excludedProductIds:fixtureProducts.slice(1).map(p=>p.productId),allowMissingHistoricalSkus:true,originalRiskAllowed:true,liveEnabled:true,cutoverConfirmed:true};
  const platform=new DoudianPlatform({browser,policy,journal,base:fixture.base}),service=new GuardianService({platform,policy,journal});
+ let prechecks=0;const precheck=platform.precheck.bind(platform);
+ platform.precheck=async baseline=>{prechecks++;return precheck(baseline);};
  try{
   await service.tick();
+  assert.equal(prechecks,1,'fresh single-product recovery must not reopen the identical SKU precheck');
   if(mode==='corruptPrice'){
    assert.equal(service.status().blocked,1,JSON.stringify(service.status()));assert.equal(fixture.state.creates,0);assert.equal(fixture.state.submits,0);
   }else if(mode==='dropAfterSubmit'){

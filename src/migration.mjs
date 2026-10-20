@@ -56,7 +56,7 @@ export function validateTransfer(file,expectedShop,now=Date.now()){
    'TRANSFER_TASK','任务记录格式无效或重复');taskIds.add(t.id);
   requireThat(Number.isSafeInteger(t.createdAt)&&t.createdAt>0&&Number.isSafeInteger(t.updatedAt)&&t.updatedAt>=t.createdAt&&t.updatedAt<=now+5000,
    'TRANSFER_TIME','任务记录时间无效');
-  requireThat([0,1].includes(t.submitAttempts)&&[0,1].includes(t.riskAttempts)&&(!unresolved(t)||t.submitAttempts===1)&&Array.isArray(t.plans)&&t.plans.length>0&&t.plans.length<=5,
+  requireThat([0,1].includes(t.submitAttempts)&&[0,1].includes(t.riskAttempts)&&(!unresolved(t)||t.submitAttempts===1)&&Array.isArray(t.plans)&&t.plans.length>0&&t.plans.length<=50,
    'TRANSFER_TASK','任务提交边界无效');
   const members=new Set();
   for(const plan of t.plans){

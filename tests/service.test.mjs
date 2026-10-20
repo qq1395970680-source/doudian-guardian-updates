@@ -87,3 +87,41 @@ test('ordinary patrol cannot redate stale loss evidence when building a batch',a
   assert.equal(service.lastRun.code,'LOSS_UNPROVEN');assert.equal(f.counts.submitted,0);assert.equal(j.list(f.policy.shopId).length,0);
  }finally{j.close();}
 });
+
+test('an immediate ordinary recovery reads the same SKU form only once but independently rechecks absence',async()=>{
+ const f=fixture(),j=new Journal(':memory:');const loss=f.platform.loss;const calls=[];
+ f.platform.loss=async(b,options)=>{calls.push(options?.fresh===true);return loss(b,options);};
+ try{
+  const service=new GuardianService({journal:j,...f,now:()=>now});await service.tick();
+  assert.equal(service.status().verified,1);assert.equal(f.counts.submitted,1);
+  assert.deepEqual(calls,[false,true],'fresh product absence still gates the write');
+  assert.equal(f.counts.prechecks,1,'a second page must not repeat the just-completed SKU read');
+ }finally{j.close();}
+});
+
+test('a delayed execution must refresh SKU prices and block a changed original price',async()=>{
+ const f=fixture(),j=new Journal(':memory:');let clock=now;
+ f.platform.loss=async(_b,options)=>{
+  if(options?.fresh)clock+=30001;
+  return{complete:true,active:false,lossKey:'ended',observedAt:clock};
+ };
+ f.platform.precheck=async()=>{
+  f.counts.prechecks++;
+  return{...f.current,observedAt:clock,skus:f.current.skus.map(s=>({...s,baseFen:f.counts.prechecks>1?11000:s.baseFen}))};
+ };
+ try{
+  const service=new GuardianService({journal:j,...f,now:()=>clock});await service.tick();
+  assert.equal(f.counts.prechecks,2);assert.equal(f.counts.prepared,0);assert.equal(f.counts.submitted,0);
+  assert.equal(j.list(f.policy.shopId).length,0);
+ }finally{j.close();}
+});
+
+test('a new active campaign found after SKU precheck prevents preparation and submission',async()=>{
+ const f=fixture(),j=new Journal(':memory:');
+ f.platform.loss=async(_b,options)=>({complete:true,active:options?.fresh===true,lossKey:'ended',observedAt:now});
+ try{
+  const service=new GuardianService({journal:j,...f,now:()=>now});await service.tick();
+  assert.equal(f.counts.prechecks,1);assert.equal(f.counts.prepared,0);assert.equal(f.counts.submitted,0);
+  assert.equal(j.list(f.policy.shopId).length,0);
+ }finally{j.close();}
+});

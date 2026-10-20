@@ -11,10 +11,10 @@ import {CampaignConversion} from '../../src/campaign-conversion.mjs';
 import {fixtureServer,fixtureProducts} from './platform-fixture.mjs';
 import {AccountRegistry} from '../../src/accounts.mjs';
 import {setPriceIncreasePolicy} from '../../src/price-increase-policy.mjs';
-for(const scenario of ['original','higher-floor','mixed-lower'])
+for(const scenario of ['original','higher-floor','mixed-lower','stale-list'])
 test(`current promotion conversion preserves authorized price rules: ${scenario}`,{timeout:180000},async()=>{
- const p=fixtureProducts[0],dir=await mkdtemp(join(tmpdir(),'guardian-conversion-')),fixture=await fixtureServer({limited:true,hideDetailRenewal:true,cancelDelayMs:scenario==='original'?1500:0,
-  skuPriceFloors:scenario!=='original'?{[p.skus[0].id]:6100}:{},skuPriceCaps:scenario==='mixed-lower'?{[p.skus[1].id]:5900}:{}});
+ const p=fixtureProducts[0],dir=await mkdtemp(join(tmpdir(),'guardian-conversion-')),fixture=await fixtureServer({limited:true,hideDetailRenewal:true,cancelDelayMs:scenario==='original'?1500:0,cancelStaleRow:scenario==='stale-list',
+  skuPriceFloors:['higher-floor','mixed-lower'].includes(scenario)?{[p.skus[0].id]:6100}:{},skuPriceCaps:scenario==='mixed-lower'?{[p.skus[1].id]:5900}:{}});
  const prior=fixture.state.campaigns[0];prior.status='进行中';prior.products=prior.products.slice(0,1);
  const browser=new DedicatedBrowser(dir,{test:true}),journal=new Journal(join(dir,'tasks.sqlite'));
  const policy={shopId:'900001',originalRiskAllowed:true,liveEnabled:true,cutoverConfirmed:true};

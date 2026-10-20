@@ -29,7 +29,7 @@ test('headless removal inside an ongoing old activity is restored before the unr
   assert.equal(service.status().verified,5,JSON.stringify({status:service.status(),events:journal.events(10)}));
   assert.equal(service.priorityResume,true);assert.equal(service.lastRun,null);
   const unrelatedBeforeRestore=unrelated.filter(c=>readIds.includes(c.id)).length;
-  assert.equal(unrelatedBeforeRestore,1,'only the other reader in the first pair may finish before recovery');
+  assert.equal(unrelatedBeforeRestore,0,'new risk work must run before opening unrelated detail pages');
   const task=journal.list(policy.shopId)[0];assert.equal(task.receipt.skuCount,50);assert.equal(task.submitAttempts,1);assert.equal(task.riskAttempts,1);
   assert.equal(fixture.state.submits,1);assert.equal(fixture.state.campaigns[0].status,'进行中');
   assert.equal(platform.monitorPages.size,0);const recoveryMs=Date.now()-started;

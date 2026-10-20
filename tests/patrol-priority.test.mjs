@@ -19,9 +19,9 @@ test('unchanged known blockers do not repeat expensive selection scans on every 
   const checks=f.journal.productChecks('900001');assert.equal(checks.length,8);assert.ok(checks.every(c=>c.code==='NOT_FOUND'&&c.retryAt>initial));
  }finally{f.journal.close();}
 });
-test('due old blockers have a bounded retry budget while a new loss is checked immediately',async()=>{
+test('due old blockers run after a new loss rather than waiting several more patrols',async()=>{
  const f=fixture();try{await f.service.tick();f.reads.length=0;f.advance(16*60000);f.lossKeys.set('300008','new-loss');await f.service.tick();
-  assert.equal(f.reads[0],'300008');assert.equal(f.reads.length,4);
+  assert.equal(f.reads[0],'300008');assert.equal(f.reads.length,8);
  }finally{f.journal.close();}
 });
 test('a product observed active and subsequently removed bypasses its previous cooldown',async()=>{

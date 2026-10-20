@@ -9,6 +9,13 @@ import {checkRemovalPrices} from './removal-export.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
+const unavailableProduct=code=>['PRODUCT_RECYCLED','OFF_SHELF'].includes(code);
+const blockerDelay=code=>unavailableProduct(code)?86400000:15*60000;
+// Confirmed unavailable products only need a daily state recheck. A positive
+// current activity clears the check; a changed baseline also bypasses it.
+const knownBlockerCoolingDown=(prior,baseline,now)=>prior?.contextKey===fingerprint(baseline)&&
+ ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED'].includes(prior.code)&&
+ Math.max(prior.retryAt||0,unavailableProduct(prior.code)?(prior.at||0)+blockerDelay(prior.code):0)>now;
 
 export class GuardianService {
   constructor({journal,platform,policy,now=()=>Date.now()}) {
@@ -245,6 +252,7 @@ export class GuardianService {
     for(const hint of hints){
       const baseline=latest.get(hint.productId),prior=checks.get(hint.productId);
       if(!baseline||pending.has(hint.productId)||this.policy.excludedProductIds?.includes(hint.productId))continue;
+      if(knownBlockerCoolingDown(prior,baseline,this.now()))continue;
       if(prior?.contextKey===fingerprint(baseline)&&prior.retryAt>this.now()&&(!prior.watchKey||prior.watchKey===hint.watchKey))continue;
       members.push({baseline,hint});
     }
@@ -256,7 +264,7 @@ export class GuardianService {
         if(error.code==='STOPPED')throw error;
         const {baseline,hint}=member;
         const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState};
-        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+15*60000});
+        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       });
     }
@@ -272,13 +280,14 @@ export class GuardianService {
     const blocked=(baseline,hint,error)=>{
       if(error.code==='STOPPED')throw error;
       const prior=checks.get(baseline.productId),detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState};
-      this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+15*60000});
+      this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
       if(prior?.code!==detail.code||prior?.watchKey!==hint.watchKey)this.journal.event(null,'product-blocked',detail,this.now());
     };
     for(const hint of hints){
       if(this.stopRequested)break;
       const baseline=latest.get(hint.productId);if(!baseline||pending.has(hint.productId)||this.policy.excludedProductIds?.includes(hint.productId))continue;
       const prior=checks.get(hint.productId);
+      if(knownBlockerCoolingDown(prior,baseline,this.now()))continue;
       if(prior?.contextKey===fingerprint(baseline)&&prior.retryAt>this.now()&&(!prior.watchKey||prior.watchKey===hint.watchKey))continue;
       // Page latency must not make every early proof expire while collecting
       // later hints. Leave the rest for the next monitoring boundary.
@@ -387,7 +396,7 @@ export class GuardianService {
       const blocked=(baseline,loss,error)=>{
         if(error.code==='STOPPED')throw error;
         const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:error.message,productState:error.detail?.productState};
-        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,lossKey:loss?.lossKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+15*60000});
+        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,lossKey:loss?.lossKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       };
       for(const baseline of latest.values()){
@@ -398,6 +407,7 @@ export class GuardianService {
           const loss=await this.platform.loss(baseline);if(!loss?.complete)continue;
           if(loss.active){this.journal.clearProductCheck(this.policy.shopId,baseline.productId);if(!loss.ambiguous)this.journal.supersedePriceReviews(this.policy.shopId,baseline.productId,'当前商品已有有效活动',this.now());continue;}
           const prior=checks.get(baseline.productId),same=prior?.lossKey===loss.lossKey&&prior?.contextKey===fingerprint(baseline);
+          if(knownBlockerCoolingDown(prior,baseline,this.now()))continue;
           if(same&&prior.retryAt>this.now())continue;
           candidates.push({baseline,loss,retry:same,priorAt:prior?.at||0});
         }catch(error){
@@ -408,22 +418,24 @@ export class GuardianService {
             // proofs before enqueueing any task; it never submits this hint.
             const loss={complete:false,lossKey:fingerprint({kind:'fresh-read-needed',productId:baseline.productId,campaignId:error.detail.campaignId})};
             const prior=checks.get(baseline.productId),same=prior?.lossKey===loss.lossKey&&prior?.contextKey===fingerprint(baseline);
+            if(knownBlockerCoolingDown(prior,baseline,this.now()))continue;
             if(!same||prior.retryAt<=this.now())candidates.push({baseline,loss,retry:same,priorAt:prior?.at||0});
           }else blocked(baseline,null,error);
         }
       }
       if(this.platform.precheckBatch&&this.platform.lossBatch){
-        let retries=0;
-        const eligible=candidates.sort((a,b)=>Number(a.retry)-Number(b.retry)||a.priorAt-b.priorAt).filter(c=>!c.retry||retries++<3);
+        // Cooldown limits repeat work per product. Once due, the whole backlog
+        // can drain through bounded batches; priority boundaries between them
+        // keep newly lost activities ahead of old failures.
+        const eligible=candidates.sort((a,b)=>Number(a.retry)-Number(b.retry)||a.priorAt-b.priorAt);
         for(const batch of recoveryBatches(eligible)){
           if(this.stopRequested)break;
           if(await this.priorityPlanningBoundary())return{priorityRefreshRequired:true};
           await this.recoverBatch(batch,(member,error)=>blocked(member.baseline,member.loss,error));
         }
       }else{
-      let retries=0;
-      for(const {baseline,loss,retry} of candidates.sort((a,b)=>Number(a.retry)-Number(b.retry)||a.priorAt-b.priorAt)){
-        if(this.stopRequested)break;if(retry&&retries++>=3)continue;
+      for(const {baseline,loss} of candidates.sort((a,b)=>Number(a.retry)-Number(b.retry)||a.priorAt-b.priorAt)){
+        if(this.stopRequested)break;
         if(await this.priorityPlanningBoundary())return{priorityRefreshRequired:true};
         try{
           const current=await this.platform.precheck(baseline);

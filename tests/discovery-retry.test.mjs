@@ -32,7 +32,7 @@ test('ended history does not consume a second read on a transient timeout',async
  try{const r=await f.platform.discover({historyReadLimit:1});assert.equal(reads,1);assert.equal(r.errors.length,1);assert.equal(f.journal.events().filter(e=>e.kind==='detail-read-retry').length,0);}finally{f.journal.close();}
 });
 
-test('fresh-page retries keep at most two readers and drain before the priority callback',async()=>{
+test('fresh-page retries keep at most six readers and drain before the priority callback',async()=>{
  const f=fixture(),attempts=new Map();let readers=0,maxReaders=0,boundaries=0;
  const campaigns=Array.from({length:6},(_,i)=>({...campaign,id:String(400001+i)}));
  f.platform.listActive=async()=>({complete:true,observedAt:Date.now(),campaigns});
@@ -42,6 +42,6 @@ test('fresh-page retries keep at most two readers and drain before the priority 
  };
  try{
   const r=await f.platform.discover({historyReadLimit:0,onReadBoundary:async()=>{boundaries++;assert.equal(readers,0);}});
-  assert.equal(r.activeComplete,true);assert.equal(maxReaders,2);assert.equal(readers,0);assert.ok(boundaries>1);assert.equal(attempts.size,6);assert.ok([...attempts.values()].every(n=>n===2));
+  assert.equal(r.activeComplete,true);assert.equal(maxReaders,6);assert.equal(readers,0);assert.ok(boundaries>1);assert.equal(attempts.size,6);assert.ok([...attempts.values()].every(n=>n===2));
  }finally{f.journal.close();}
 });

@@ -19,7 +19,7 @@ test('priority checks run between fully closed read batches and can request fres
    assert.equal(f.counts().opened,f.counts().closed,'priority work must not overlap in-flight detail pages');
    seen.push(context.reads.length);return context.reads.length?{refreshRequired:true,listing:fresh}:null;
   }});
-  assert.deepEqual(seen,[0,2]);assert.deepEqual(f.counts(),{opened:2,closed:2});assert.equal(result.priorityRefreshRequired,true);
+  assert.deepEqual(seen,[0,6]);assert.deepEqual(f.counts(),{opened:6,closed:6});assert.equal(result.priorityRefreshRequired,true);
   assert.equal(result.activeComplete,false);assert.equal(f.platform.inventory.activeComplete,false);
   assert.deepEqual(f.platform.inventory.listing.campaigns.map(c=>c.id),fresh.campaigns.map(c=>c.id));
  }finally{f.journal.close();}
@@ -35,22 +35,24 @@ test('a priority change at the initial listing avoids all old detail reads',asyn
 test('unchanged priority checks preserve a full discovery and stable historical order',async()=>{
  const f=fixture();let boundaries=0;try{
   const result=await f.platform.discover({historyReadLimit:0,onReadBoundary:async()=>{boundaries++;assert.equal(f.counts().opened,f.counts().closed);}});
-  assert.equal(boundaries,5);assert.equal(result.activeComplete,true);assert.equal(result.priorityRefreshRequired,false);
+  assert.equal(boundaries,3);assert.equal(result.activeComplete,true);assert.equal(result.priorityRefreshRequired,false);
   assert.deepEqual(result.baselines.map(b=>b.campaignId),campaigns.map(c=>c.id));
  }finally{f.journal.close();}
 });
 
-test('an older newly risk-marked activity is read in the first pair while baseline ordering stays stable',async()=>{
- const f=fixture(),readIds=[],watch=new PriorityWatch(f.journal,'900001'),oldest=campaigns.at(-1);
+test('an older newly risk-marked activity is read in the first batch while baseline ordering stays stable',async()=>{
+ const f=fixture(),readIds=[],watch=new PriorityWatch(f.journal,'900001'),oldest=campaigns.at(-1);let firstBatch=null;
  watch.observe({...oldest,risk:false},{complete:true,observedAt:Date.now()-1000,products:[{productId:'500008'}]});
  f.listing.campaigns=campaigns.map(c=>({...c,risk:c.id===oldest.id}));
  const read=f.platform.detail.bind(f.platform);f.platform.detail=async c=>{readIds.push(c.id);return read(c);};
  try{
   const result=await f.platform.discover({historyReadLimit:0,onReadBoundary:async({reads})=>{
    assert.equal(f.counts().opened,f.counts().closed);
+   if(reads.length&&!firstBatch)firstBatch=reads.map(r=>r.campaign.id);
    for(const {campaign,detail} of reads)watch.observe(campaign,detail);
   }});
   assert.equal(readIds[0],oldest.id);
+  assert.deepEqual(firstBatch,[oldest.id],'a new risk must not wait for unrelated pages in a larger pool');
   assert.equal(result.activeComplete,true);
   assert.deepEqual(result.baselines.map(b=>b.campaignId),campaigns.map(c=>c.id),'read priority must not change which historical baseline wins');
   readIds.length=0;await f.platform.discover({historyReadLimit:0});

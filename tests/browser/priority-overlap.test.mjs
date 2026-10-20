@@ -19,7 +19,7 @@ test('native headless monitoring overlaps detail reads and drains before the nex
  platform.detail=async c=>{const index=++reads;reading++;maxReading=Math.max(maxReading,reading);overlap=overlap||monitoring;try{return await detail(c);}finally{reading--;if(index===2)clockOffset+=31000;}};
  const service=new GuardianService({journal,platform,policy,now:()=>Date.now()+clockOffset});
  try{
-  await service.tick();assert.equal(service.lastRun.ok,true,JSON.stringify(service.lastRun));assert.equal(overlap,true);assert.equal(maxReading,2);
+  await service.tick();assert.equal(service.lastRun.ok,true,JSON.stringify(service.lastRun));assert.equal(overlap,true);assert.equal(maxReading,6);
   assert.ok(polls>=1);assert.equal(monitoring,false);assert.equal(service.priorityPoll,null);assert.equal(fixture.state.submits,0);assert.equal(fixture.state.uploads,0);
   assert.equal(platform.inventory.activeComplete,true);assert.equal(platform.inventory.details.size,7);
   await mkdir(resolve('artifacts'),{recursive:true});await writeFile(resolve('artifacts/priority-overlap-native.json'),JSON.stringify({localFixtureOnly:true,nativeHeadless:true,overlap,detailReadersMax:maxReading,polls,activeDetails:7,submits:0,uploads:0,monitorDrained:true},null,2));

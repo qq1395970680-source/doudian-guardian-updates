@@ -6,11 +6,98 @@ import {DoudianPlatform} from '../src/platform.mjs';
 import {PriorityWatch} from '../src/priority-watch.mjs';
 import {recoveryBatches,readBatchProducts} from '../src/recovery-batches.mjs';
 import {makeTransfer,importTransfer} from '../src/migration.mjs';
+import {fingerprint} from '../src/policy.mjs';
 
 const now=1792440000000;
 const baseline=i=>({source:'verified-platform-history',complete:true,shopId:'900001',productId:String(300000+i),name:'商品'+i,
  campaignId:'400001',type:'限量抢购',rules:{noLimit:false,noPerUserLimit:true,noWarmup:true,orderMinutes:30,autoRenew:true},
  durationMs:7*86400000,activityLimit:1000,skus:Array.from({length:10},(_,j)=>({id:String(600000+i*10+j),name:'规格'+j,baseFen:10000,discount:60}))});
+
+test('500 due recoverable retries drain in native batches while new losses lead and cooling rows wait',async()=>{
+ const journal=new Journal(':memory:'),bs=Array.from({length:502},(_,i)=>baseline(i)),executed=[],sizes=[];
+ const policy={shopId:'900001',liveEnabled:true,cutoverConfirmed:true,originalRiskAllowed:true};
+ for(const [i,b] of bs.entries()){
+  journal.remember(b);
+  if(i!==500)journal.putProductCheck(policy.shopId,b.productId,{code:'READ_TIMEOUT',lossKey:b.productId,contextKey:fingerprint(b),
+   at:now-2000000+i,retryAt:i===501?now+60000:now-1});
+ }
+ const platform={discover:async()=>({activeComplete:true,baselines:[]}),
+  loss:async b=>({complete:true,active:false,observedAt:now,lossKey:b.productId}),
+  lossBatch:async rows=>rows.map(b=>({productId:b.productId,loss:{complete:true,active:false,observedAt:now,lossKey:b.productId}})),
+  precheck:async b=>({...b,observedAt:now}),
+  precheckBatch:async rows=>{sizes.push(rows.length);return rows.map(b=>({...b,observedAt:now}));}};
+ const service=new GuardianService({journal,platform,policy,now:()=>now});
+ service.execute=async task=>executed.push(...task.plans.map(p=>p.productId));
+ try{
+  await service.tick();
+  assert.equal(service.lastRun.ok,true,service.lastRun.message);
+  assert.equal(executed.length,501,'due failures must not be limited to three per store patrol');
+  assert.equal(executed[0],bs[500].productId,'newly lost work must precede due old failures');
+  assert.deepEqual(executed.slice(1),bs.slice(0,500).map(b=>b.productId),'old retries remain fair');
+  assert.ok(!executed.includes(bs[501].productId));assert.equal(new Set(executed).size,501);
+  assert.ok(sizes.every(n=>n<=50));
+ }finally{journal.close();}
+});
+
+for(const code of ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED'])
+test('unchanged known blocker keeps its cooldown across an aged evidence route: '+code,async()=>{
+ const journal=new Journal(':memory:'),b=baseline(0),policy={shopId:'900001',liveEnabled:true,cutoverConfirmed:true,originalRiskAllowed:true};
+ let clock=now,reads=0,aged=true;
+ journal.remember(b);
+ journal.putProductCheck(policy.shopId,b.productId,{code,lossKey:'previous-real-evidence',contextKey:fingerprint(b),at:now-1000,retryAt:now+60000});
+ const platform={discover:async()=>({activeComplete:true,baselines:[]}),
+  loss:async()=>{if(aged)throw Object.assign(Error('aged export'),{code:'LOSS_EVIDENCE_EXPIRED',detail:{productId:b.productId,campaignId:b.campaignId}});
+   return {complete:true,active:false,observedAt:clock,lossKey:'changed-list-evidence'};},
+  precheck:async()=>{reads++;return {...b,observedAt:clock};},
+  precheckBatch:async()=>assert.fail('single product uses a single read'),
+  lossBatch:async()=>[{productId:b.productId,loss:{complete:true,active:false,observedAt:clock,lossKey:'fresh'}}]};
+ const service=new GuardianService({journal,platform,policy,now:()=>clock});service.execute=async()=>{};
+ try{
+  await service.tick();assert.equal(reads,0,'an expired source must not reset the failure cooldown');
+  aged=false;await service.tick();assert.equal(reads,0,'a changed list fingerprint is not a changed product or price');
+  clock+=60001;await service.tick();
+  if(code==='SKU_RATIO_REVIEW_REQUIRED')assert.equal(reads,1,'price retry still becomes eligible after its cooldown');
+  else {
+   assert.equal(reads,0,'confirmed unavailable products should not repeatedly open create forms all day');
+   await service.recoverPriority([{productId:b.productId,watchKey:'new-list-fingerprint'}]);
+   assert.equal(reads,0,'priority hints alone do not override the confirmed unavailable state');
+   clock+=86400000;await service.tick();assert.equal(reads,1,'unavailable state still gets a daily recheck');
+  }
+ }finally{journal.close();}
+});
+
+for(const code of ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED'])
+for(const changed of ['active-then-lost','new-baseline'])
+test('known-blocker cooldown yields to newly verified product facts: '+code+'/'+changed,async()=>{
+ const journal=new Journal(':memory:'),old=baseline(0),policy={shopId:'900001',liveEnabled:true,cutoverConfirmed:true,originalRiskAllowed:true};
+ const b=changed==='new-baseline'?{...old,skus:old.skus.map(s=>({...s,discount:65}))}:old;
+ let active=changed==='active-then-lost',reads=0;
+ journal.remember(b);
+ journal.putProductCheck(policy.shopId,b.productId,{code,contextKey:fingerprint(old),at:now-1000,retryAt:now+60000});
+ const platform={discover:async()=>({activeComplete:true,baselines:[]}),
+  loss:async()=>({complete:true,active,observedAt:now,lossKey:'new-loss'}),
+  precheck:async()=>{reads++;return {...b,observedAt:now};},precheckBatch:async()=>assert.fail('single product'),
+  lossBatch:async()=>[{productId:b.productId,loss:{complete:true,active:false,observedAt:now,lossKey:'fresh'}}]};
+ const service=new GuardianService({journal,platform,policy,now:()=>now});service.execute=async()=>{};
+ try{
+  if(active){await service.tick();assert.equal(reads,0);assert.equal(journal.productChecks(policy.shopId).length,0);active=false;}
+  await service.tick();assert.equal(reads,1,'changed facts must not be held by an old error');
+ }finally{journal.close();}
+});
+
+test('stopping between large retry batches prevents the remaining queued work from starting',async()=>{
+ const journal=new Journal(':memory:'),bs=Array.from({length:100},(_,i)=>baseline(i)),policy={shopId:'900001',liveEnabled:true,cutoverConfirmed:true,originalRiskAllowed:true};
+ for(const b of bs){journal.remember(b);journal.putProductCheck(policy.shopId,b.productId,{code:'READ_TIMEOUT',
+  lossKey:b.productId,contextKey:fingerprint(b),at:now-1000000,retryAt:now-1});}
+ let read=0,submitted=0;
+ const platform={discover:async()=>({activeComplete:true,baselines:[]}),loss:async b=>({complete:true,active:false,observedAt:now,lossKey:b.productId}),
+  precheckBatch:async rows=>{read+=rows.length;return rows.map(b=>({...b,observedAt:now}));},
+  lossBatch:async rows=>rows.map(b=>({productId:b.productId,loss:{complete:true,active:false,observedAt:now,lossKey:b.productId}}))};
+ const service=new GuardianService({journal,platform,policy,now:()=>now});
+ service.execute=async task=>{submitted+=task.plans.length;service.stopRequested=true;};
+ try{await service.tick();assert.equal(read,50);assert.equal(submitted,50);assert.equal(journal.list(policy.shopId).length,1);}
+ finally{journal.close();}
+});
 for(const priority of [false,true])test(`500 product store restores the first 50 before reading later SKU batches (${priority?'priority':'ordinary'})`,async()=>{
  const journal=new Journal(':memory:'),baselines=Array.from({length:500},(_,i)=>baseline(i)),prechecks=[],executions=[];
  for(const b of baselines)journal.remember(b);

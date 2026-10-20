@@ -291,16 +291,19 @@ export class DoudianPlatform {
       this.journal?.putSettings('campaign-attempt:'+c.id,{key,retryAt:Date.now()+15*60000,error});
      }finally{inFlight.delete(c.id);if(active(c))activeRead++;progress();}
    };
-   // Priority checks may create a recovery. Close both independent detail pages
-   // before entering that boundary or launching the next pair of readers.
-   for(let cursor=0;cursor<jobs.length&&!priorityRefreshRequired;cursor+=2){
+   // All six read slots must drain before a priority boundary can write.
+   // This is a local load budget, not a claim about platform rate limits.
+   const concurrency=6;
+   for(let cursor=0;cursor<jobs.length&&!priorityRefreshRequired;cursor+=concurrency){
     this.check();if(onReadBatchStart)await onReadBatchStart();
-    const results=await Promise.allSettled(jobs.slice(cursor,cursor+2).map(worker));
+    const results=await Promise.allSettled(jobs.slice(cursor,cursor+concurrency).map(worker));
     const rejected=results.find(r=>r.status==='rejected');if(rejected)throw rejected.reason;
-    this.check();await boundary(results.map(r=>r.value).filter(Boolean),cursor+2<jobs.length||remainingJobs>0);
+    this.check();await boundary(results.map(r=>r.value).filter(Boolean),cursor+concurrency<jobs.length||remainingJobs>0);
    }
   };
-  await readGroup(activeJobs,'核对当前活动',historyJobs.length);
+  const riskJobs=activeJobs.filter(job=>priorityIds.has(job.c.id)),regularJobs=activeJobs.filter(job=>!priorityIds.has(job.c.id));
+  await readGroup(riskJobs,'优先核对风险活动',regularJobs.length+historyJobs.length);
+  await readGroup(regularJobs,'核对当前活动',historyJobs.length);
   await readGroup(historyJobs,'补读完整历史');
   // Network completion order must not change historical selection or batching.
   for(const c of campaigns){

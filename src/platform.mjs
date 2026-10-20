@@ -323,11 +323,12 @@ export class DoudianPlatform {
    historiesPending:campaigns.filter(c=>!details.has(c.id)).length,errors,at:Date.now()};
   return {baselines,complete:!priorityRefreshRequired&&details.size===campaigns.length,activeComplete,priorityRefreshRequired,errors};
  }
- async loss(baseline,{fresh=false}={}){
+ async loss(baseline,{fresh=false,reads=null}={}){
   if(fresh){
-   const listing=await this.list({productId:baseline.productId}),details=new Map();
+   const list=reads?.list||this.list.bind(this),detail=reads?.detail||this.detail.bind(this);
+   const listing=await list({productId:baseline.productId}),details=new Map();
    requireThat(listing.complete===true,'ACTIVE_UNKNOWN','商品当前活动列表未完整读取');
-   for(const c of listing.campaigns.filter(active))details.set(c.id,await this.detail(c));
+   for(const c of listing.campaigns.filter(active))details.set(c.id,await detail(c));
    const reference=this.limitedReference(baseline);
    const alreadyActive=listing.campaigns.filter(active).some(c=>details.get(c.id)?.products.some(p=>p.productId===baseline.productId&&!p.removalConfirmed));
    if(reference.limited&&!alreadyActive){
@@ -337,13 +338,13 @@ export class DoudianPlatform {
      // Old metadata is only a lookup hint: re-read the exact source activity
      // and download its current removal proof; never reuse a saved proof.
      const title=reference.title||this.inventory?.listing.campaigns.find(c=>c.id===reference.campaignId)?.name;
-     const origin=await this.list(title?{title}:{});
+     const origin=await list(title?{title}:{});
      requireThat(origin.complete===true,'ACTIVE_UNKNOWN','原限量活动尚未完整重新核对');
      const matches=origin.campaigns.filter(c=>c.id===reference.campaignId);
      requireThat(matches.length<=1,'LIMITED_LOSS_UNPROVEN','原限量活动编号重复，不能确定退出结果');
      previous=matches[0];if(previous)listing.campaigns.push(previous);
     }
-    if(previous&&!details.has(previous.id))details.set(previous.id,await this.detail(previous));
+    if(previous&&!details.has(previous.id))details.set(previous.id,await detail(previous));
    }
    return this.lossFrom(baseline,listing,details,true,true);
   }
@@ -371,7 +372,14 @@ export class DoudianPlatform {
    }
    return results;
   }
-  const {listing,details,observedAt}=await this.readFreshCurrentInventory();
+  // Reading every unrelated activity can outlive the evidence budget on a
+  // large store. Use exact product queries before this happens, with shared
+  // origin/detail reads scoped to this one batch.
+  if((this.inventory?.listing.campaigns.filter(active).length||0)>8)return this.scopedLossBatch(baselines);
+  let inventory;
+  try{inventory=await this.readFreshCurrentInventory();}
+  catch(error){if(error.code==='BATCH_PROOF_EXPIRED')return this.scopedLossBatch(baselines);throw error;}
+  const {listing,details,observedAt}=inventory;
   const results=[];
   for(let i=0;i<baselines.length;i+=2){
    const settled=await Promise.allSettled(baselines.slice(i,i+2).map(async b=>{
@@ -383,6 +391,61 @@ export class DoudianPlatform {
    }));
    settled.forEach((r,j)=>results.push({productId:baselines[i+j].productId,...(r.status==='fulfilled'?{loss:r.value}:{error:r.reason})}));
   }
+  return results;
+ }
+ async scopedLossBatch(baselines){
+  await this.closeMonitorPages();
+  const cache=new Map(),results=new Array(baselines.length);let cursor=0,stopError=null;
+  const shared=async(key,read,refresh=true)=>{
+   let pending=cache.get(key);
+   if(!pending){
+    pending=Promise.resolve().then(async()=>{
+     try{return await read();}
+     catch(error){
+      if(error.name!=='TimeoutError'&&error.code!=='LOAD_TIMEOUT')throw error;
+      // Only this read is retried, on the new page opened by list/detail.
+      // Their finally blocks have closed the timed-out page before returning.
+      this.check();return read();
+     }
+    });cache.set(key,pending);
+   }
+   const value=await pending,age=Date.now()-value.observedAt;
+   // Shared evidence retains its actual observation time. Refresh an older
+   // origin independently; never renew its timestamp from a matching list.
+   if(age>60000&&refresh){if(cache.get(key)===pending)cache.delete(key);return shared(key,read,false);}
+   requireThat(age<=120000,'BATCH_PROOF_EXPIRED','重新读取后批量证据仍已过期');
+   requireThat(value.complete===true&&Number.isFinite(age)&&age>=-5000,'ACTIVE_UNKNOWN','批量商品核对证据不完整');
+   return value;
+  };
+  const worker=async()=>{
+   while(!stopError){
+    const i=cursor++;if(i>=baselines.length)return;
+    const b=baselines[i],times=[];
+    const reads={
+     list:async query=>{
+      const v=await shared('list:'+fingerprint(query),()=>this.list(query));times.push(v.observedAt);
+      // loss() can add the exact origin to its own result; do not mutate a
+      // list shared by another product's independent absence check.
+      return{...v,campaigns:[...v.campaigns]};
+     },
+     detail:async campaign=>{
+      const v=await shared('detail:'+fingerprint(campaign),()=>this.detail(campaign));times.push(v.observedAt);return v;
+     }
+    };
+    try{
+     this.check();
+     const loss=await this.loss(b,{fresh:true,reads}),observedAt=Math.min(...times),age=Date.now()-observedAt;
+     requireThat(times.length&&Number.isFinite(age)&&age>=-5000&&age<=120000,'BATCH_PROOF_EXPIRED','本批商品核对证据已过期');
+     results[i]={productId:b.productId,loss:{...loss,observedAt}};
+    }catch(error){
+     results[i]={productId:b.productId,error};
+     if(['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH'].includes(error.code))stopError=error;
+    }
+   }
+  };
+  // Only readers run concurrently. All six finish/close before any write.
+  await Promise.all(Array.from({length:Math.min(6,baselines.length)},worker));
+  if(stopError)throw stopError;
   return results;
  }
  async readFreshCurrentInventory(){

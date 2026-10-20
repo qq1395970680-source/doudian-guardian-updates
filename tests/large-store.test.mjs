@@ -151,3 +151,82 @@ test('a platform SKU ratio rejection blocks only its member and never resubmits 
   assert.ok(members.every(m=>m.baseline.skus.every(s=>s.discount===60)));
  }finally{journal.close();}
 });
+
+test('50 lost products in a 500-activity store use bounded product queries and share their exact origin',async()=>{
+ const bs=Array.from({length:50},(_,i)=>baseline(i)),platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'}});
+ const origin={id:'400001',name:'原限量活动',status:'进行中',type:'限量抢购',risk:true,endAt:Date.now()+86400000};
+ platform.ensure=async()=>{};
+ platform.inventory={listing:{campaigns:[origin,...Array.from({length:499},(_,i)=>({id:String(410000+i),status:'进行中'}))]},details:new Map()};
+ let inFlight=0,maxInFlight=0,productQueries=0,originQueries=0,detailReads=0;
+ platform.listActive=async()=>assert.fail('must not reread 500 unrelated activity details');
+ platform.list=async query=>{
+  inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);
+  try{
+   await new Promise(r=>setTimeout(r,2));
+   if(query?.productId){productQueries++;return{complete:true,observedAt:Date.now(),campaigns:[]};}
+   assert.equal(query.title,origin.name);originQueries++;return{complete:true,observedAt:Date.now(),campaigns:[origin]};
+  }finally{inFlight--;}
+ };
+ platform.detail=async c=>{detailReads++;assert.equal(c.id,origin.id);return{complete:true,observedAt:Date.now(),products:[],
+  removalExport:{source:'live-platform-removal-export',shopId:'900001',campaignId:origin.id,complete:true,observedAt:Date.now(),
+   records:bs.map(b=>({productId:b.productId,reason:'明确风险退出'}))}};};
+ const result=await platform.lossBatch(bs);
+ assert.equal(result.length,50);assert.ok(result.every(r=>r.loss?.complete&&!r.loss.active));
+ assert.equal(productQueries,50);assert.equal(originQueries,1);assert.equal(detailReads,1);
+ assert.ok(maxInFlight>2&&maxInFlight<=6);assert.equal(inFlight,0);
+});
+
+test('large-store scoped evidence isolates failed queries and retains an active product',async()=>{
+ const bs=Array.from({length:10},(_,i)=>({...baseline(i),type:'限时抢购'}));
+ const platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'}});platform.ensure=async()=>{};
+ platform.inventory={listing:{campaigns:Array.from({length:40},(_,i)=>({id:String(400000+i),status:'进行中'}))},details:new Map()};
+ platform.listActive=async()=>assert.fail('large store must query the requested products');
+ let inflight=0;
+ platform.list=async ({productId})=>{inflight++;try{
+  await new Promise(r=>setTimeout(r,2));
+  if(productId==='300000')throw Error('query failed');
+  return{complete:productId!=='300001',observedAt:Date.now(),campaigns:productId==='300002'?[{id:'400002',status:'进行中'}]:[]};
+ }finally{inflight--;}};
+ platform.detail=async()=>({complete:true,observedAt:Date.now(),products:[{productId:'300002'}]});
+ const result=await platform.lossBatch(bs);
+ assert.equal(result[0].error.message,'query failed');assert.equal(result[1].error.code,'ACTIVE_UNKNOWN');
+ assert.equal(result[2].loss.active,true);assert.ok(result.slice(3).every(r=>r.loss?.active===false));assert.equal(inflight,0);
+});
+
+test('expired whole-store evidence falls back to scoped proofs without reducing the 50-product batch',async()=>{
+ const bs=Array.from({length:50},(_,i)=>({...baseline(i),type:'限时抢购'}));
+ const platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'}});platform.ensure=async()=>{};
+ platform.readFreshCurrentInventory=async()=>{throw Object.assign(Error('slow entire store'),{code:'BATCH_PROOF_EXPIRED'});};
+ let queries=0;
+ platform.list=async({productId})=>{assert.ok(bs.some(b=>b.productId===productId));queries++;return{complete:true,observedAt:Date.now(),campaigns:[]};};
+ const result=await platform.lossBatch(bs);
+ assert.equal(queries,50);assert.equal(result.length,50);assert.ok(result.every(r=>r.loss?.complete&&!r.loss.active));
+});
+
+test('scoped readers preserve stale timestamps and drain outstanding readers on a stop',async()=>{
+ const bs=Array.from({length:10},(_,i)=>({...baseline(i),type:'限时抢购'}));
+ const p=new DoudianPlatform({browser:{},policy:{shopId:'900001'}});
+ let calls=0;
+ p.list=async()=>{calls++;return{complete:true,observedAt:Date.now()-180000,campaigns:[]};};
+ const stale=await p.scopedLossBatch(bs);
+ assert.equal(calls,20);assert.ok(stale.every(r=>r.error?.code==='BATCH_PROOF_EXPIRED'));
+ let readers=0;
+ p.list=async({productId})=>{readers++;try{
+  await new Promise(r=>setTimeout(r,productId==='300000'?1:10));
+  if(productId==='300000')throw Object.assign(Error('stopped'),{code:'STOPPED'});
+  return{complete:true,observedAt:Date.now(),campaigns:[]};
+ }finally{readers--;}};
+ await assert.rejects(()=>p.scopedLossBatch(bs),{code:'STOPPED'});assert.equal(readers,0);
+});
+
+test('scoped lookup retries one closed read page timeout but does not loop or retry authorization errors',async()=>{
+ const p=new DoudianPlatform({browser:{},policy:{shopId:'900001'}}),bs=[{...baseline(0),type:'限时抢购'}];
+ let calls=0;
+ p.list=async()=>{if(++calls===1)throw Object.assign(Error('slow query'),{name:'TimeoutError'});
+  return{complete:true,observedAt:Date.now(),campaigns:[]};};
+ assert.equal((await p.scopedLossBatch(bs))[0].loss.active,false);assert.equal(calls,2);
+ calls=0;p.list=async()=>{calls++;throw Object.assign(Error('still slow'),{name:'TimeoutError'});};
+ assert.equal((await p.scopedLossBatch(bs))[0].error.name,'TimeoutError');assert.equal(calls,2);
+ calls=0;p.list=async()=>{calls++;throw Object.assign(Error('signed out'),{code:'LOGIN_REQUIRED'});};
+ await assert.rejects(()=>p.scopedLossBatch(bs),{code:'LOGIN_REQUIRED'});assert.equal(calls,1);
+});

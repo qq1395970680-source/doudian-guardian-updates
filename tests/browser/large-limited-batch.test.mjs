@@ -48,3 +48,32 @@ test('50 limited products / 500 SKUs use one upload and bounded quantity travers
   await rm(dir,{recursive:true,force:true});
  }
 });
+
+test('50 removed products in 500 activities use scoped browser reads and one live origin export',{timeout:180000},async()=>{
+ const products=Array.from({length:50},(_,i)=>({productId:String(3100000000000000000n+BigInt(i)),name:'大店失效商品'+i,
+  skus:[{id:String(5100000000000000000n+BigInt(i)),name:'标准规格',baseFen:10000,discount:60}]}));
+ const fixture=await fixtureServer({catalogProducts:products,limited:true});
+ const original=fixture.state.campaigns[0],started=Date.now();
+ Object.assign(original,{type:'限量抢购',status:'进行中',risk:true,autoRenew:true,startAt:Math.floor(started/1000)*1000,
+  endAt:Math.floor(started/1000)*1000+7*86400000,products:[],removals:products.map(p=>({...p,reason:'商品低价风险退出'}))});
+ for(let i=1;i<500;i++)fixture.state.campaigns.push({...original,id:String(4100000000000000000n+BigInt(i)),
+  name:'无关活动'+i,risk:false,removals:undefined,products:[]});
+ const dir=await mkdtemp(join(tmpdir(),'guardian-large-loss-')),browser=new DedicatedBrowser(dir,{test:true});
+ const policy={shopId:'900001'},platform=new DoudianPlatform({browser,policy,base:fixture.base});
+ try{
+  const listing=await platform.listActive();assert.equal(listing.campaigns.length,500);
+  platform.inventory={listing,details:new Map()};
+  const baselines=products.map(p=>({...p,shopId:policy.shopId,campaignId:original.id,type:'限量抢购'}));
+  const results=await platform.lossBatch(baselines);
+  assert.equal(results.length,50);assert.ok(results.every(r=>r.loss?.complete&&r.loss.active===false),
+   JSON.stringify(results.filter(r=>r.error).map(r=>({productId:r.productId,code:r.error.code,message:r.error.message}))));
+  assert.equal(fixture.state.removalDownloads,1);
+  assert.equal(fixture.state.submits,0);assert.equal(fixture.state.creates,0);
+  await writeFile(resolve('artifacts/large-store-loss-evidence.json'),JSON.stringify({at:new Date().toISOString(),localFixtureOnly:true,
+   storeActivities:500,batchProducts:50,successfulLossProofs:50,liveOriginDownloads:1,writes:0,elapsedMs:Date.now()-started},null,2)+'\n');
+ }finally{
+  await browser.close();await fixture.close();
+  assert.equal(dirname(resolve(dir)).toLowerCase(),resolve(tmpdir()).toLowerCase());assert.ok(basename(dir).startsWith('guardian-large-loss-'));
+  await rm(dir,{recursive:true,force:true});
+ }
+});

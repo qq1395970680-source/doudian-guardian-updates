@@ -62,3 +62,28 @@ test('recycled products preserve history and proof without enqueueing a discount
   assert.equal(j.histories(f.policy.shopId).length,1);assert.deepEqual(j.productChecks(f.policy.shopId)[0].productState,proof);
  }finally{j.close();}
 });
+
+test('slow ordinary prechecks split execution batches without extending proof freshness',async()=>{
+ const f=fixture(),j=new Journal(':memory:');let clock=now;const executed=[];
+ const baselines=Array.from({length:5},(_,i)=>({...f.baseline,productId:String(3000000000000000001n+BigInt(i))}));
+ f.platform.discover=async()=>({baselines,activeComplete:true});
+ f.platform.loss=async b=>({complete:true,active:false,lossKey:'loss-'+b.productId,observedAt:clock});
+ f.platform.precheck=async b=>{clock+=35000;return{...b,observedAt:clock};};
+ const service=new GuardianService({journal:j,...f,now:()=>clock});
+ service.execute=async task=>{
+  assert.ok(clock-task.lossEvidence.observedAt<=120000);
+  assert.ok(task.plans.every(p=>clock-p.observedAt<=120000));
+  executed.push(...task.plans.map(p=>p.productId));
+ };
+ try{await service.tick();assert.equal(service.lastRun.ok,true,service.lastRun.message);
+  assert.deepEqual(executed.sort(),baselines.map(b=>b.productId).sort());assert.ok(j.list(f.policy.shopId).length>1);
+ }finally{j.close();}
+});
+
+test('ordinary patrol cannot redate stale loss evidence when building a batch',async()=>{
+ const f=fixture(),j=new Journal(':memory:');
+ f.platform.loss=async()=>({complete:true,active:false,lossKey:'old-observation',observedAt:now-120001});
+ try{const service=new GuardianService({journal:j,...f,now:()=>now});await service.tick();
+  assert.equal(service.lastRun.code,'LOSS_UNPROVEN');assert.equal(f.counts.submitted,0);assert.equal(j.list(f.policy.shopId).length,0);
+ }finally{j.close();}
+});

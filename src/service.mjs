@@ -164,7 +164,7 @@ export class GuardianService {
   async recoverPriority(hints) {
     const latest=this.latestHistories(),checks=new Map(this.journal.productChecks(this.policy.shopId).map(c=>[c.productId,c]));
     const pending=new Set(this.journal.list(this.policy.shopId).filter(t=>!['verified','blocked'].includes(t.phase)).flatMap(t=>t.plans.map(p=>p.productId)));
-    const groups=new Map();let inspected=0,changed=false,differentActivity=false;
+    const groups=new Map(),inspectionStarted=this.now();let inspected=0,changed=false,differentActivity=false;
     const blocked=(baseline,hint,error)=>{
       if(error.code==='STOPPED')throw error;
       const prior=checks.get(baseline.productId),detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState};
@@ -176,7 +176,9 @@ export class GuardianService {
       const baseline=latest.get(hint.productId);if(!baseline||pending.has(hint.productId)||this.policy.excludedProductIds?.includes(hint.productId))continue;
       const prior=checks.get(hint.productId);
       if(prior?.contextKey===fingerprint(baseline)&&prior.retryAt>this.now()&&(!prior.watchKey||prior.watchKey===hint.watchKey))continue;
-      if(inspected>=5)break;
+      // Page latency must not make every early proof expire while collecting
+      // later hints. Leave the rest for the next monitoring boundary.
+      if(inspected>=5||inspected>0&&this.now()-inspectionStarted>=60000)break;
       if(inspected===0&&this.platform.closeMonitorPages)await this.platform.closeMonitorPages();
       inspected++;
       try{
@@ -307,23 +309,24 @@ export class GuardianService {
           groups.get(key).push({plan,loss});
         }catch(error){blocked(baseline,loss,error);}
       }
-      for(const group of groups.values())for(let start=0;start<group.length;start+=5){
+      for(const group of groups.values())for(let start=0;start<group.length;){
         if(this.stopRequested)break;
         if(await this.priorityPlanningBoundary())return{priorityRefreshRequired:true};
-        const members=group.slice(start,start+5);
         // Recheck expiry at execution time. A large store cannot use probes
         // gathered many minutes earlier to authorize a later price write.
-        const plans=[],losses=[];for(const member of members){
+        const plans=[],losses=[],batchStarted=this.now();let read=0;
+        while(start<group.length&&read<5&&(read===0||this.now()-batchStarted<60000)){
+          const member=group[start++];read++;
           try{
             const baseline=latest.get(member.plan.productId),loss=await this.platform.loss(baseline,{fresh:true});
             requireThat(loss?.complete===true&&!loss.active&&loss.lossKey,'LOSS_UNPROVEN','提交前未能确认商品当前无有效活动');
             const current=await this.platform.precheck(baseline);
-            plans.push(this.restorePlan(baseline,current));losses.push(loss.lossKey);
+            plans.push(this.restorePlan(baseline,current));losses.push(loss);
           }catch(error){this.journal.event(null,'product-blocked',{productId:member.plan.productId,code:error.code||'ERROR',message:error.message},this.now());}
         }
         if(!plans.length)continue;
         requireThat(plans.every(p=>this.now()-p.observedAt<=120000),'PROOF_EXPIRED','本批预查已过期');
-        const lossEvidence={complete:true,observedAt:this.now(),lossKey:fingerprint(losses)};
+        const lossEvidence={complete:true,observedAt:Math.min(...losses.map(loss=>loss.observedAt)),lossKey:fingerprint(losses.map(loss=>loss.lossKey))};
         let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
         if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
         if(task.phase==='queued')await this.execute(task);

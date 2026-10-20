@@ -11,9 +11,9 @@ import {planOriginalRestore} from '../../src/policy.mjs';
 import {fixtureServer,fixtureProducts} from './platform-fixture.mjs';
 import {scrollForm} from '../../src/platform-snapshot.mjs';
 
-for(const viewport of [{width:1440,height:960},{width:960,height:600}])
-test(`limited: virtual products, quotas, mixed discounts, renewal and independent readback ${viewport.width}`,{timeout:180000},async()=>{
- const dir=await mkdtemp(join(tmpdir(),'guardian-limited-')),fixture=await fixtureServer({limited:true}),browser=new DedicatedBrowser(dir,{test:true,viewport});
+for(const viewport of [{width:1440,height:960},{width:960,height:600},{width:1440,height:960,quotaReflowPx:600}])
+test(`limited: virtual products, quotas, mixed discounts, renewal and independent readback ${viewport.width}${viewport.quotaReflowPx?' quota-reflow':''}`,{timeout:180000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'guardian-limited-')),fixture=await fixtureServer({limited:true,quotaReflowPx:viewport.quotaReflowPx||0}),browser=new DedicatedBrowser(dir,{test:true,viewport:{width:viewport.width,height:viewport.height}});
  const journal=new Journal(join(dir,'tasks.sqlite')),policy={shopId:'900001',originalRiskAllowed:true,liveEnabled:true,cutoverConfirmed:true};
  const platform=new DoudianPlatform({browser,policy,journal,base:fixture.base}),service=new GuardianService({platform,policy,journal});
  try{

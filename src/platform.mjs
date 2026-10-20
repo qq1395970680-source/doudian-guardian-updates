@@ -426,18 +426,20 @@ export class DoudianPlatform {
  }
  async fillProductLimits(page,plans){
   requireThat(plans.length&&plans.every(isLimited),'LIMITED_QUANTITY','商品限量只能用于限量活动');
-  const {products,cells}=await collectForm(page);
-  requireThat(products.length===plans.length&&products.every(p=>plans.some(q=>q.productId===p.productId)),'DRAFT_MEMBERSHIP','填写限量前商品集合不符');
   const column=await page.evaluate(()=>{
    const found=[...document.querySelectorAll('tr')].filter(r=>r.querySelector('th')).flatMap(r=>[...r.cells].map((c,i)=>({i,t:c.textContent.replace(/\s/g,'')}))).filter(c=>c.t==='活动限量');
    return found.length===1?found[0].i:null;
   });
   requireThat(Number.isInteger(column),'LIMITED_QUANTITY','活动限量列未能唯一定位');
   for(const plan of plans){
+   // A prior quantity edit can remeasure virtual rows. Locate each product
+   // from a new complete observation rather than reusing old scroll offsets.
+   const {products,cells}=await collectForm(page);
+   requireThat(products.length===plans.length&&products.every(p=>plans.some(q=>q.productId===p.productId)),'DRAFT_MEMBERSHIP','填写限量前商品集合不符');
    this.check();const cell=cells.find(c=>c.rows.some(r=>r.kind==='product'&&r.productId===plan.productId));
    requireThat(cell,'LIMITED_QUANTITY','限量商品行未完整读取');await page.evaluate(scrollForm,cell.top);await delay(150);
    const row=page.locator('tr[class*="index-productRow--"]').filter({hasText:new RegExp('ID[：:]\\s*'+plan.productId+'(?!\\d)')});
-   requireThat(await row.count()===1,'LIMITED_QUANTITY','限量商品行不唯一');
+   await until(async()=>{this.check();const count=await row.count();requireThat(count<=1,'LIMITED_QUANTITY','限量商品行不唯一');return count===1;},'限量商品行尚未挂载');
    const input=row.locator('td').nth(column).locator('input[role="spinbutton"]');
    requireThat(await input.count()===1&&await input.isEnabled(),'LIMITED_QUANTITY','商品总限量控件不可用');
    await input.fill(String(plan.activityLimit));await input.press('Tab');

@@ -95,6 +95,23 @@ test('monitoring pages close before the first fresh eligible recovery query',asy
  try{await f.service.tick();assert.equal(f.counts.submits,1);}finally{f.journal.close();}
 });
 
+test('slow priority prechecks yield a fresh recovery before the entire hint queue expires',async()=>{
+ const f=fixture(),hints=[],batches=[];
+ for(let i=0;i<5;i++){const b={...f.baseline,productId:String(300001+i)};f.journal.remember(b);hints.push({productId:b.productId,watchKey:'lost-'+i});}
+ f.service.priorityWatch=new PriorityWatch(f.journal,'900001');f.service.priorityListing={complete:true,campaigns:[]};
+ f.platform.loss=async b=>({complete:true,active:false,lossKey:'loss-'+b.productId,observedAt:f.service.now()});
+ f.platform.precheck=async b=>{f.counts.prechecks++;f.advance(35000);return{...b,observedAt:f.service.now()};};
+ f.service.execute=async task=>{
+  assert.ok(f.service.now()-task.lossEvidence.observedAt<=120000);
+  assert.ok(task.plans.every(p=>f.service.now()-p.observedAt<=120000));
+  batches.push(task.plans.map(p=>p.productId));
+ };
+ try{await f.service.recoverPriority(hints);
+  assert.ok(batches.flat().length>0,'slow reads must not expire every candidate before the first recovery');
+  assert.ok(f.counts.prechecks<5,'leave remaining hints for the next boundary instead of holding fresh work');
+ }finally{f.journal.close();}
+});
+
 test('a concurrent list change waits for both readers before restoring the original price once',async()=>{
  const f=fixture(),initial={complete:true,observedAt:now,campaigns:[{id:'400001',status:'进行中'}]};
  let monitoring=false,readers=0,releasePoll,queryStarted;

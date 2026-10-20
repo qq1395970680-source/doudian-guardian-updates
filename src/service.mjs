@@ -340,7 +340,18 @@ export class GuardianService {
   start() {
     requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed,'CUTOVER_REQUIRED','首次切换尚未确认');
     if(this.running)return;this.running=true;this.stopRequested=false;
-    const run=async()=>{if(!this.running)return;try{await this.tick();}catch(error){const at=this.now();this.recordRun({ok:false,startedAt:at,finishedAt:at,code:error.code||'ERROR',message:error.message});}if(this.running){const delay=this.priorityResume?1000:60000;this.nextAt=this.now()+delay;this.timer=setTimeout(run,delay);}};
+    const run=async()=>{
+      if(!this.running)return;const started=this.now();
+      try{await this.tick();}catch(error){const at=this.now();this.recordRun({ok:false,startedAt:at,finishedAt:at,code:error.code||'ERROR',message:error.message});}
+      if(this.running){
+        const completed=this.lastRun?.ok===true&&this.lastRun.startedAt>=started&&this.lastRun.finishedAt>=started;
+        // Long scans already space reads out. Retain a ten-second idle window
+        // for the desktop's five-second maintenance check, a thirty-second
+        // start cadence for small shops, and the existing failure backoff.
+        const delay=this.priorityResume?1000:completed?Math.max(10000,30000-Math.max(0,this.now()-started)):60000;
+        this.nextAt=this.now()+delay;this.timer=setTimeout(run,delay);
+      }
+    };
     this.timer=setTimeout(run,0);
   }
   stop() {this.running=false;this.stopRequested=true;this.nextAt=null;clearTimeout(this.timer);}

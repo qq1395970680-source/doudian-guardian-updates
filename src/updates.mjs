@@ -26,23 +26,30 @@ export async function checkForUpdates(currentVersion,{fetcher=fetch}={}){
  if(!response.ok)throw Error(response.status===404?'更新仓库尚未发布版本':`GitHub 暂时无法连接（${response.status}），请稍后重试`);
  const body=await response.text();if(body.length>2*1024**2)throw Error('更新列表过大');return selectRelease(JSON.parse(body),currentVersion);
 }
-async function githubDownload(url,fetcher){
+async function githubDownload(url,fetcher,signal,progress){
  let next=url;
  for(let n=0;n<5;n++){
   const u=new URL(next);if(u.protocol!=='https:'||u.username||u.password||u.port||!['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(u.hostname))throw Error('更新下载重定向来源无效');
-  const r=await fetcher(next,{redirect:'manual',signal:AbortSignal.timeout(180000),headers:{'User-Agent':'DoudianGuardian'}});
+  progress();const r=await fetcher(next,{redirect:'manual',signal,headers:{'User-Agent':'DoudianGuardian'}});signal.throwIfAborted();progress();
   if([301,302,303,307,308].includes(r.status)){const location=r.headers.get('location');await r.body?.cancel();if(!location)throw Error('下载重定向缺少地址');next=new URL(location,next).href;continue;}
   if(!r.ok)throw Error('下载更新失败（'+r.status+'）');return r;
  }throw Error('更新下载重定向过多');
 }
 export async function downloadUpdate(update,directory,{fetcher=fetch,onProgress=()=>{}}={}){
  validate(update);await mkdir(directory,{recursive:true});const target=join(directory,update.name),partial=target+'.'+randomUUID()+'.part';
+ const controller=new AbortController();let idle;
+ const progress=()=>{clearTimeout(idle);idle=setTimeout(()=>controller.abort(Error('更新下载连续 60 秒无进展，请稍后重试')),60000);};
+ // Slow but progressing connections must not lose an otherwise valid download
+ // at a fixed three-minute cutoff. Keep both a stall limit and an overall cap.
+ const overall=setTimeout(()=>controller.abort(Error('更新下载超过 30 分钟最长等待，请稍后重试')),30*60000);
  let handle;try{
-  const response=await githubDownload(update.url,fetcher);handle=await open(partial,'wx');const hash=createHash('sha256');let size=0,last=0;
-  for await(const chunk of response.body){size+=chunk.length;if(size>update.size)throw Error('更新文件大小校验失败');hash.update(chunk);await handle.write(chunk);
+  const response=await githubDownload(update.url,fetcher,controller.signal,progress);handle=await open(partial,'wx');const hash=createHash('sha256');let size=0,last=0;
+  for await(const chunk of response.body){controller.signal.throwIfAborted();if(chunk.length)progress();size+=chunk.length;if(size>update.size)throw Error('更新文件大小校验失败');hash.update(chunk);await handle.write(chunk);
    if(Date.now()-last>150){onProgress({received:size,total:update.size});last=Date.now();}}
+  controller.signal.throwIfAborted();clearTimeout(idle);clearTimeout(overall);
   if(size!==update.size||hash.digest('hex')!==update.sha256)throw Error('更新文件 SHA256 或大小校验失败');
   await handle.sync();await handle.close();handle=null;await rename(partial,target);onProgress({received:size,total:size});return target;
- }finally{await handle?.close();await rm(partial,{force:true});}
+ }catch(error){if(controller.signal.aborted)throw controller.signal.reason;throw error;}
+ finally{clearTimeout(idle);clearTimeout(overall);await handle?.close();await rm(partial,{force:true});}
 }
 export async function verifyInstaller(path,update){validate(update);const bytes=await readFile(path);if(bytes.length!==update.size||createHash('sha256').update(bytes).digest('hex')!==update.sha256)throw Error('安装前校验失败');}

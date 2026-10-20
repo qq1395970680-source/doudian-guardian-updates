@@ -39,6 +39,8 @@ npm run check
 
 `npm start` 启动后台，`npm run desktop` 启动桌面。不要在正式端口上启动第二实例；自动化测试全部使用临时运行目录、独立随机端口与模拟店铺。完整浏览器回归较慢，开发可先运行改动涉及的测试。
 
+连续多批验收可运行 `node --test tests/browser/continuous-limited-batches.test.mjs`：隔离模拟店铺使用正式自动调度、平台适配器和无头浏览器，处理 105 件 / 1,050 SKU 的 50／50／5 三批，并检查下一轮完整巡检没有重复提交。创建后的活动列表变化会触发重新扫描再自动续接，测试不假设全部商品必须在单次 `tick()` 内处理。它验证本地执行流程，不证明真实大店吞吐。
+
 ```powershell
 npm run build:desktop
 npm run build:source

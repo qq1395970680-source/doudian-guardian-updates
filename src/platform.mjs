@@ -1,10 +1,12 @@
-import {GuardError,requireThat,id,fingerprint,saleFen,validateHistorical,proveDraft,proveOriginalRisk,isLimited} from './policy.mjs';
+import {GuardError,requireThat,id,fingerprint,saleFen,validateHistorical,proveDraft,proveOriginalRisk,proveReadback,isLimited} from './policy.mjs';
 import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice,scrollForm} from './platform-snapshot.mjs';
 import {until,delay,parseDate,collectForm,bindFormProducts} from './collector.mjs';
 import {makeWorkbook} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {inspectRecycledProduct} from './product-state.mjs';
+import {readRemovalWorkbook} from './removal-export.mjs';
+import {createHash} from 'node:crypto';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -168,13 +170,46 @@ export class DoudianPlatform {
      requireThat(seen.size===declared,'DETAIL_INCOMPLETE',`详情声明 ${declared} 件，完整读取 ${seen.size} 件`);
      await this.identity(page);
      if(isLimited(campaign)&&typeof rules.autoRenew!=='boolean'&&active(campaign))rules.autoRenew=await this.readRenewal(campaign);
-     return {complete:true,products,rules,observedAt:Date.now()};
+     let removalExport=null,removalExportError=null;
+     try{removalExport=await this.readRemovalExport(page,campaign);}catch(error){
+      if(['STOPPED','SHOP_MISMATCH','LOGIN_REQUIRED'].includes(error.code))throw error;
+      removalExportError={code:error.code||'REMOVAL_EXPORT_READ',message:String(error.message).slice(0,500)};
+     }
+     return {complete:true,products,rules,observedAt:Date.now(),...(removalExport?{removalExport}:{}),...(removalExportError?{removalExportError}:{})};
     }
     const before=slice.products.map(p=>p.productId).join(',');await page.locator('li[title="下一页"] button:visible').click();
     await until(async()=>(await page.evaluate(detailSlice,{limited:isLimited(campaign)})).products.map(p=>p.productId).join(',')!==before,'详情翻页停滞');
    }
    throw new GuardError('DETAIL_LIMIT','活动详情超过页数上限');
   }catch(e){await this.fault(page,campaign.id,'detail',e);throw e;}finally{await page.close();}
+ }
+ async readRemovalExport(page,campaign){
+  const link=page.getByText('点击下载详情',{exact:true}),count=await link.count();if(!count)return null;
+  requireThat(count===1,'REMOVAL_EXPORT_SCOPE','剔除明细下载入口不唯一');
+  const checkScope=async()=>{
+   this.check();const url=new URL(page.url());
+   requireThat(url.origin===this.base&&url.pathname===LIST+'/view'&&url.searchParams.get('id')===campaign.id,
+    'REMOVAL_EXPORT_SCOPE','剔除明细页面与活动不一致');
+   await this.identity(page);
+   requireThat(/该活动中，有部分商品的优惠到手价会导致低价引流风险，已为您自动退出活动/.test(await page.locator('body').innerText()),
+    'REMOVAL_EXPORT_SCOPE','页面未确认因低价风险退出活动');
+  };
+  await checkScope();
+  const downloadPromise=page.waitForEvent('download',{timeout:30000});
+  // Attach a rejection handler immediately if the click fails before download.
+  downloadPromise.catch(()=>{});
+  await link.click();const download=await downloadPromise;
+  try{
+   requireThat(/\.xlsx$/i.test(download.suggestedFilename()),'REMOVAL_EXPORT_FORMAT','平台剔除明细格式未知');
+   const stream=await download.createReadStream();requireThat(stream,'REMOVAL_EXPORT_READ','平台剔除明细下载未完成');
+   const chunks=[];let length=0;
+   try{for await(const chunk of stream){length+=chunk.length;requireThat(length<=4*1024*1024,'REMOVAL_EXPORT_FORMAT','平台剔除明细超出大小上限');chunks.push(chunk);}}
+   finally{stream.destroy();}
+   const bytes=Buffer.concat(chunks),records=readRemovalWorkbook(bytes);
+   await checkScope();
+   return{source:'live-platform-removal-export',shopId:this.policy.shopId,campaignId:campaign.id,complete:true,observedAt:Date.now(),
+    sha256:createHash('sha256').update(bytes).digest('hex'),records};
+  }finally{await download.delete().catch(()=>{});}
  }
  async readRenewal(campaign){
   // The live detail page omits renewal. Its separate edit view exposes the
@@ -373,17 +408,22 @@ export class DoudianPlatform {
    if(p)related.push(c.id+':removed');
   }
   const previous=listing.campaigns.find(c=>c.id===baseline.campaignId);
-  const reference=this.limitedReference(baseline);
+  const reference=this.limitedReference(baseline);let removal=null;
   if(reference.limited){
-   const p=details.get(reference.campaignId)?.products.find(p=>p.productId===baseline.productId);
-   requireThat(p?.removalConfirmed===true&&p.removalRiskConfirmed===true&&!p.soldOut,
+   const detail=details.get(reference.campaignId),p=detail?.products.find(p=>p.productId===baseline.productId);
+   const source=detail?.removalExport,campaign=listing.campaigns.find(c=>c.id===reference.campaignId),now=Date.now();
+   if(source?.source==='live-platform-removal-export'&&source.complete===true&&source.shopId===this.policy.shopId&&
+    source.campaignId===reference.campaignId&&source.observedAt>0&&now-source.observedAt<=120000&&source.observedAt<=now+5000&&
+    campaign?.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)&&!p?.soldOut)
+    removal=source.records.find(r=>r.productId===baseline.productId)||null;
+   requireThat(p?.removalConfirmed===true&&p.removalRiskConfirmed===true&&!p.soldOut||removal,
     'LIMITED_LOSS_UNPROVEN','限量活动尚无本商品被异常剔除的明确证据；售罄、到期或不明消失不自动补量');
   }
   // Routine full/current-only listings describe the same missing product even
   // when ended history is omitted or rows reorder. Keep its retry budget stable.
   // Fresh product-scoped evidence retains campaign history to distinguish a
   // later platform removal from a previously verified restoration.
-  return {complete,active:false,observedAt:Date.now(),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,related:related.sort(),
+  return {complete,active:false,observedAt:Date.now(),...(removal?{removal}:{}),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,related:related.sort(),...(removal?{removal}:{}),
    ...(productScoped?{status:previous?.status||'absent',campaigns:listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt,c.risk]).sort((a,b)=>a[0].localeCompare(b[0]))}: {})})};
  }
  async selectProduct(page,productId){return this.selectProducts(page,[productId]);}
@@ -628,6 +668,42 @@ export class DoudianPlatform {
   return {complete:d.complete,shopId:this.policy.shopId,title:campaign.name,campaignId:campaign.id,status:campaign.status,
    observedAt:d.observedAt,type:campaign.type,rules:d.rules,rows:d.products.flatMap(p=>p.skus.map(s=>({...s,productId:p.productId}))),startAt:campaign.startAt,endAt:campaign.endAt,
    ...(isLimited(campaign)?{productLimits:d.products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
+ }
+ async auditVerifiedTask(task){
+  requireThat(task?.phase==='verified'&&task.shopId===this.policy.shopId&&task.receipt?.campaignId&&task.receipt.verifiedAt>0,
+   'CONVERSION_INCOMPLETE','只有已独立回读成功的任务才能交接持续守护');
+  this.progress={stage:'核对迁移后当前商品状态',taskId:task.id,at:Date.now()};
+  const listing=await this.list({title:task.title}),matches=listing.campaigns.filter(c=>c.name===task.title);
+  requireThat(listing.complete&&matches.length===1&&matches[0].id===task.receipt.campaignId,
+   'CONVERSION_INCOMPLETE','迁移活动与原成功回执不一致，保留待核实');
+  const campaign=matches[0],detail=await this.detail(campaign),now=Date.now();
+  requireThat(detail.complete&&detail.observedAt>0&&now-detail.observedAt<=120000&&detail.observedAt<=now+5000,
+   'CONVERSION_INCOMPLETE','迁移后状态尚未完整读取');
+  requireThat(new Set(detail.products.map(p=>p.productId)).size===detail.products.length&&
+   detail.products.every(p=>task.plans.some(plan=>plan.productId===p.productId)),
+   'CONVERSION_INCOMPLETE','迁移活动的商品集合出现未知变化');
+  const products=[];
+  for(const plan of task.plans){
+   const product=detail.products.find(p=>p.productId===plan.productId);
+   requireThat(!product?.removalAmbiguous,'CONVERSION_INCOMPLETE','迁移商品部分规格状态不明');
+   if(active(campaign)&&product&&!product.removalConfirmed){
+    const observation={complete:true,shopId:this.policy.shopId,title:campaign.name,campaignId:campaign.id,status:campaign.status,
+     observedAt:detail.observedAt,type:campaign.type,rules:detail.rules,startAt:campaign.startAt,endAt:campaign.endAt,
+     rows:product.skus.map(s=>({...s,productId:plan.productId})),
+     ...(isLimited(campaign)?{productLimits:[{productId:plan.productId,activityLimit:product.activityLimit}]}:{})};
+    const receipt=proveReadback([plan],observation,{title:task.title});
+    products.push({productId:plan.productId,status:'current',observedAt:detail.observedAt,receipt});
+   }else{
+    const source=detail.removalExport;
+    const removal=source?.source==='live-platform-removal-export'&&source.complete===true&&source.shopId===task.shopId&&
+     source.campaignId===campaign.id&&source.observedAt>0&&now-source.observedAt<=120000&&source.observedAt<=now+5000&&
+     campaign.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)&&!product?.soldOut&&
+     source.records.find(r=>r.productId===plan.productId);
+    requireThat(removal,'CONVERSION_INCOMPLETE','迁移商品缺失且没有当前平台的明确退出证明，保留待核实');
+    products.push({productId:plan.productId,status:'removed',observedAt:source.observedAt,removal,exportSha256:source.sha256});
+   }
+  }
+  return{complete:true,shopId:task.shopId,taskId:task.id,campaignId:campaign.id,observedAt:detail.observedAt,products};
  }
  async cancelCampaign(campaign,beforeBoundary){
   id(campaign.id);requireThat(active(campaign),'CONVERSION_SCOPE','仅作废迁移清单中的当前活动');

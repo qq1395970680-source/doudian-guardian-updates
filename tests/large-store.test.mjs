@@ -134,3 +134,20 @@ test('a 50-product unknown batch survives transfer to another computer without n
   assert.equal(imported.phase,'unknown');assert.ok(imported.plans.every(p=>!p.originalRiskAllowed&&!p.approvedRiskAllowed));
  }finally{journal.close();destination.close();}
 });
+
+test('a platform SKU ratio rejection blocks only its member and never resubmits its rejected prices',async()=>{
+ const journal=new Journal(':memory:'),members=Array.from({length:50},(_,i)=>({baseline:baseline(i)})),executed=[],blocked=[];
+ members[7].baseline.skus[9].baseFen=100000;
+ const policy={shopId:'900001',liveEnabled:true,cutoverConfirmed:true,originalRiskAllowed:true};
+ const platform={precheckBatch:async bs=>bs.map(b=>({...b,observedAt:now})),
+  lossBatch:async bs=>bs.map(b=>({productId:b.productId,loss:{complete:true,active:false,observedAt:now,lossKey:b.productId,
+   ...(b.productId==='300007'?{removal:{productId:b.productId,reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。'}}:{})}}))};
+ const service=new GuardianService({journal,platform,policy,now:()=>now});
+ service.execute=async task=>executed.push(...task.plans);
+ try{
+  await service.recoverBatch(members,(member,error)=>blocked.push({id:member.baseline.productId,code:error.code}));
+  assert.equal(executed.length,49);assert.ok(executed.every(p=>p.productId!=='300007'));
+  assert.deepEqual(blocked,[{id:'300007',code:'SKU_RATIO_REVIEW_REQUIRED'}]);
+  assert.ok(members.every(m=>m.baseline.skus.every(s=>s.discount===60)));
+ }finally{journal.close();}
+});

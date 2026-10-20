@@ -5,6 +5,7 @@ import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {applyPriceTarget,makePriceReviews} from './price-review.mjs';
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease} from './price-increase-policy.mjs';
 import {recoveryBatches,readBatchProducts} from './recovery-batches.mjs';
+import {checkRemovalPrices} from './removal-export.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -150,6 +151,7 @@ export class GuardianService {
         requireThat(loss?.complete&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','自动提价前尚未确认当前活动');
         if(loss.active){this.journal.clearProductCheck(this.policy.shopId,productId);continue;}
         const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
+        checkRemovalPrices(plan,loss.removal);
         const proof={complete:true,observedAt:loss.observedAt,lossKey:fingerprint([loss.lossKey])};
         requireThat(loss.lossKey,'LOSS_UNPROVEN','自动提价缺少当前失效证明');
         let next=this.journal.enqueue(this.policy.shopId,[plan],proof,this.now());
@@ -217,6 +219,7 @@ export class GuardianService {
           const refresh=refreshed.find(r=>r.member.baseline.productId===member.baseline.productId);
           if(refresh?.error)throw refresh.error;
           const plan=this.restorePlan(member.baseline,refresh?.current||member.current);
+          checkRemovalPrices(plan,member.loss.removal);
           requireThat(restorationGroupKey(plan)===restorationGroupKey(member.plan),'BATCH_CHANGED','刷新后的折扣组发生变化，等待重新分组');
           requireThat(this.now()-member.loss.observedAt<=120000,'LOSS_UNPROVEN','批量预查期间失效证明已过期');
           plans.push(plan);proofs.push(member.loss);
@@ -295,6 +298,7 @@ export class GuardianService {
         }
         requireThat(loss.lossKey&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','优先恢复缺少新鲜的独立失效证明');
         const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
+        checkRemovalPrices(plan,loss.removal);
         const key=restorationGroupKey(plan);if(!groups.has(key))groups.set(key,[]);
         groups.get(key).push({baseline,hint,loss,plan});
       }catch(error){blocked(baseline,hint,error);}
@@ -435,7 +439,8 @@ export class GuardianService {
             // prepare/submit still independently prove exact draft contents.
             const age=this.now()-(member.current?.observedAt||0);
             const current=member.current&&age>=0&&age<=30000?member.current:await this.platform.precheck(baseline);
-            plans.push(this.restorePlan(baseline,current));losses.push(loss);
+            const plan=this.restorePlan(baseline,current);checkRemovalPrices(plan,loss.removal);
+            plans.push(plan);losses.push(loss);
           }catch(error){this.journal.event(null,'product-blocked',{productId:member.plan.productId,code:error.code||'ERROR',message:error.message},this.now());}
         }
         if(!plans.length)continue;

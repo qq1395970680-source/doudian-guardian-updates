@@ -235,10 +235,22 @@ export class CampaignConversion{
    'CONVERSION_INCOMPLETE','迁移尚有未完成商品');
   const tasks=[...new Set(state.products.filter(p=>p.phase==='verified').map(p=>p.taskId))];
   for(const id of tasks){
-   const task=this.journal.get(id),readback=await this.platform.readback(task);
-   requireThat(readback,'CONVERSION_INCOMPLETE','迁移活动仍待最终回读');
-   const {proveReadback}=await import('./policy.mjs');proveReadback(task.plans,readback,{title:task.title});
+   const task=this.journal.get(id),audit=await this.platform.auditVerifiedTask(task);
+   const items=state.products.filter(p=>p.taskId===id&&p.phase==='verified');
+   requireThat(audit?.complete&&audit.shopId===this.shopId&&audit.taskId===id&&audit.campaignId===task.receipt?.campaignId&&
+    audit.products.length===task.plans.length&&new Set(audit.products.map(p=>p.productId)).size===audit.products.length&&
+    audit.products.every(p=>task.plans.some(plan=>plan.productId===p.productId)&&['current','removed'].includes(p.status))&&
+    items.every(item=>audit.products.some(p=>p.productId===item.productId)),
+    'CONVERSION_INCOMPLETE','迁移交接回读范围不完整');
+   for(const item of items)item.currentAudit={...audit.products.find(p=>p.productId===item.productId),campaignId:audit.campaignId};
+   // Preserve the original creation receipt. Later platform removals are a new
+   // condition for the normal guardian, never a reason to repeat the migration.
+   this.save(state);
   }
+  state.handoff={at:Date.now(),currentProducts:state.products.filter(p=>p.currentAudit?.status==='current').length,
+   removedProducts:state.products.filter(p=>p.currentAudit?.status==='removed').length,
+   skippedProducts:state.products.filter(p=>p.phase==='skipped').length,
+   scope:'逐商品当前状态核对；后续被平台剔除的商品保留异常，不等同于当前恢复成功，常规守护仍须重新取得新鲜证据。'};
   state.status='complete';state.completedAt=Date.now();this.save(state);return state;
  }
 }

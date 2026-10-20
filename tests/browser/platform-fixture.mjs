@@ -1,4 +1,12 @@
 import {createServer} from 'node:http';
+import {zip} from '../../src/workbook.mjs';
+
+export function removalWorkbook(records){
+ const escape=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+ const rows=[['商品ID','商品名','渠道id','渠道类型','失败原因'],...records.map(r=>[r.productId,r.name,'--','--',r.reason])];
+ return zip({'xl/worksheets/sheet1.xml':'<worksheet><sheetData>'+rows.map((r,i)=>'<row r="'+(i+1)+'">'+r.map((v,j)=>
+  '<c r="'+String.fromCharCode(65+j)+(i+1)+'" t="str"><v>'+escape(v)+'</v></c>').join('')+'</row>').join('')+'</sheetData></worksheet>'});
+}
 
 export const fixtureProducts=Array.from({length:7},(_,i)=>({productId:String(3000000000000000000n+BigInt(i)),name:'测试商品'+i,
  skus:Array.from({length:10},(_,j)=>({id:String(5000000000000000000n+BigInt(i*10+j)),name:'规格'+j,baseFen:10000+j*100,discount:60}))}));
@@ -25,6 +33,14 @@ export async function fixtureServer({catalogProducts=fixtureProducts,limited=fal
    res.end('ok');return;
   }
   if(url.pathname==='/fixture/stats'){let text='';for await(const c of req)text+=c;const data=JSON.parse(text);for(const [k,v]of Object.entries(data)){if(k==='seenPrices')state.seenPrices.push(...v);else state[k]=(state[k]||0)+v;}res.end('ok');return;}
+  if(url.pathname==='/fixture/removals'){
+   const campaign=state.campaigns.find(c=>c.id===url.searchParams.get('id'));
+   if(!campaign?.removals){res.statusCode=404;res.end();return;}
+   state.removalDownloads=(state.removalDownloads||0)+1;
+   res.setHeader('content-type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+   res.setHeader('content-disposition','attachment; filename="removal.xlsx"');
+   res.end(campaign.corruptRemoval?Buffer.from('invalid'):removalWorkbook(campaign.removals));return;
+  }
   if(url.pathname==='/fixture/cancel'){let text='';for await(const c of req)text+=c;const data=JSON.parse(text),c=state.campaigns.find(c=>c.id===data.id);if(!c){res.statusCode=404;res.end();return;}c.status='已作废';state.cancelAttempts=(state.cancelAttempts||0)+1;res.end('ok');return;}
   const route=url.pathname.split('/').at(-1),isCreate=route==='create',isDetail=route==='view',isEdit=route==='edit';
   const data=isDetail||isEdit?state.campaigns.find(c=>c.id===url.searchParams.get('id')):null;
@@ -37,6 +53,7 @@ export async function fixtureServer({catalogProducts=fixtureProducts,limited=fal
   }
   if(isDetail){
    res.end(base+`<h1>${data.name}</h1><p>商品数量 ${data.products.length} 个</p><p>${data.type==='限量抢购'?(hideDetailRenewal?'':`自动续期 ${data.autoRenew?'开启':'不开启'}`):'是否设置活动限量 不设置'} 每人限购 不限购 是否预热 不预热 订单取消时间 30分钟</p>
+   ${data.removals?`<p>该活动中，有部分商品的优惠到手价会导致低价引流风险，已为您自动退出活动，<a href="/fixture/removals?id=${data.id}">点击下载详情</a></p>`:''}
    ${detailExpandable&&detailGlobalSwitch?'<button id="expand-detail" role="switch" aria-checked="false">展开规格</button>':''}
    <table>${data.type==='限量抢购'?'<thead><tr><th>商品</th><th>活动限量</th></tr></thead>':''}${data.products.map(p=>`<tr data-row-key="${p.productId}_0_0"><td>${p.name} ID：${p.productId}${p.removalConfirmed?' 已退出活动':''}${p.removalRiskConfirmed?' 风险商品已剔除':''}${p.soldOut?' 已售罄':''}${detailExpandable?'<button aria-label="展开行" '+(detailGlobalSwitch?'disabled':'')+'>展开</button>':''}</td>${data.type==='限量抢购'?`<td>${p.activityLimit}</td>`:''}</tr><tr><td>${detailExpandable?'<template>':''}<table>${p.skus.map(s=>`<tr data-row-key="${s.id}"><td>${s.name} 原价：¥${s.baseFen/100}</td><td>${s.discount/10}折</td></tr>`).join('')}</table>${detailExpandable?'</template>':''}</td></tr>`).join('')}</table>
    <script>

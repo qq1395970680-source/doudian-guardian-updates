@@ -8,6 +8,7 @@ import {inspectRecycledProduct} from './product-state.mjs';
 import {readRemovalWorkbook} from './removal-export.mjs';
 import {createHash} from 'node:crypto';
 import {draftPriceWarnings} from './draft-price-warnings.mjs';
+import {chooseReadonlyDateRange} from './date-picker.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -632,10 +633,37 @@ export class DoudianPlatform {
   if(!isLimited(plan)){
    await page.locator('input[placeholder="开始日期"]').click();await button(page,'近48小时').click();return;
   }
-  const value=await page.evaluate(formSlice),dates=value.dates.map(parseDate),now=Date.now();
-  if(dates.length===2&&dates[1]-dates[0]===plan.durationMs&&dates[0]>now-240000&&dates[0]<=now+300000)return;
+  const readDates=async()=>{const values=(await page.evaluate(formSlice)).dates;return values.length===2&&values.every(Boolean)?values.map(parseDate):[];};
+  const matches=dates=>dates.length===2&&dates[1]-dates[0]===plan.durationMs&&dates[0]>Date.now()-240000&&dates[0]<=Date.now()+300000;
+  if(matches(await readDates()))return;
+  const startInput=page.locator('input[placeholder="开始日期"]'),endInput=page.locator('input[placeholder="结束日期"]');
+  requireThat(await startInput.count()===1&&await endInput.count()===1,'DRAFT_TIME','日期控件不唯一');
+  requireThat(await startInput.isEnabled()&&await endInput.isEnabled(),'DRAFT_TIME','活动日期控件不可用，未提交');
+  // Some shops use an inputReadOnly range picker. Its own shortcuts update
+  // React state as well as the visible dates; never remove readonly or write
+  // the DOM value behind the platform's controls.
+  const days=plan.durationMs/86400000;
+  if(Number.isInteger(days)){
+   await startInput.click();
+   const shortcut=page.getByText(`近${days}天`,{exact:true}).filter({visible:true});
+   try{await shortcut.waitFor({state:'visible',timeout:2000});}catch(error){if(error.name!=='TimeoutError')throw error;}
+   if(await shortcut.count()===1){
+    await shortcut.click();
+    const confirm=page.locator('[class*="picker-dropdown"]:visible').getByRole('button',{name:/^确\s*定$/});
+    if(await confirm.count()===1)await confirm.click();
+    await page.locator('#title').click();
+    await until(async()=>matches(await readDates()),'平台日期选择器未应用原活动时长，未提交',5000);
+    return;
+   }
+   requireThat(await shortcut.count()===0,'DRAFT_TIME','日期快捷选项不唯一，未提交');
+   await page.keyboard.press('Escape');
+  }
+  if(!await startInput.isEditable()||!await endInput.isEditable()){
+   await chooseReadonlyDateRange(page,plan.durationMs);
+   requireThat(matches(await readDates()),'DRAFT_TIME','日期时长未核对，未提交');return;
+  }
   const format=time=>new Date(time+8*3600000).toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');
-  const start=Math.floor(now/1000)*1000;
+  const start=Math.floor(Date.now()/1000)*1000;
   for(const [label,time] of [['开始日期',start],['结束日期',start+plan.durationMs]]){
    const input=page.locator(`input[placeholder="${label}"]`);requireThat(await input.count()===1,'DRAFT_TIME','日期控件不唯一');
    await input.fill(format(time));await input.press('Enter');

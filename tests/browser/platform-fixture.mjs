@@ -12,7 +12,7 @@ export const fixtureProducts=Array.from({length:7},(_,i)=>({productId:String(300
  skus:Array.from({length:10},(_,j)=>({id:String(5000000000000000000n+BigInt(i*10+j)),name:'规格'+j,baseFen:10000+j*100,discount:60}))}));
 const history={id:'4000000000000000001',name:'历史活动',type:'限时抢购',status:'已结束',startAt:Date.now()-5*86400000,endAt:Date.now()-3*86400000,products:fixtureProducts};
 function date(n){const d=new Date(n+8*3600000);return d.toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');}
-export async function fixtureServer({catalogProducts=fixtureProducts,limited=false,hideDetailRenewal=false,quotaReflowPx=0,cancelDelayMs=0,cancelStaleRow=false,corruptPrice=false,dropAfterSubmit=false,abortBeforeHeaders=false,selectionLoadDelayMs=0,submitLabel='创建',extraSubmitButton=false,emptyLiveAlert=false,globalError='',riskGlobalSpinner=false,riskFormSpinner=false,rememberedPriceMode=false,detailExpandable=false,detailGlobalSwitch=true,skuPriceCaps={},skuPriceFloors={},productPriceSummary=''}={}){
+export async function fixtureServer({catalogProducts=fixtureProducts,limited=false,readonlyDates=false,readonlyDurationDays=7,hideDetailRenewal=false,quotaReflowPx=0,cancelDelayMs=0,cancelStaleRow=false,corruptPrice=false,dropAfterSubmit=false,abortBeforeHeaders=false,selectionLoadDelayMs=0,submitLabel='创建',extraSubmitButton=false,emptyLiveAlert=false,globalError='',riskGlobalSpinner=false,riskFormSpinner=false,rememberedPriceMode=false,detailExpandable=false,detailGlobalSwitch=true,skuPriceCaps={},skuPriceFloors={},productPriceSummary=''}={}){
  const rootState={campaigns:[structuredClone({...history,products:catalogProducts})],submits:0,risks:0,uploads:0,prechecks:0,creates:0,modeWarnings:0,seenPrices:[],skuPriceCaps,skuPriceFloors,identity:{shopId:'900001',shopName:'独立测试店铺'}};
  const server=createServer(async(req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');res.setHeader('content-type','text/html;charset=utf-8');
@@ -102,6 +102,13 @@ export async function fixtureServer({catalogProducts=fixtureProducts,limited=fal
   $('#expand').onclick=()=>{state.expanded=!state.expanded;$('#expand').setAttribute('aria-checked',String(state.expanded));render();};
   $('#dates').onclick=()=>{state.startAt=Math.floor(Date.now()/1000)*1000;state.endAt=state.startAt+48*3600000;const f=n=>new Date(n+8*3600000).toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');$('input[placeholder="开始日期"]').value=f(state.startAt);$('input[placeholder="结束日期"]').value=f(state.endAt);};
   if(limited){state.startAt=Math.floor(Date.now()/1000)*1000;state.endAt=state.startAt+7*86400000;const f=n=>new Date(n+8*3600000).toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');$('input[placeholder="开始日期"]').value=f(state.startAt);$('input[placeholder="结束日期"]').value=f(state.endAt);}
+  if(limited&&${readonlyDates}){
+   const inputs=document.querySelectorAll('input[placeholder$="日期"]');for(const input of inputs)input.readOnly=true;
+   state.endAt=state.startAt+86400000;const f=n=>new Date(n+8*3600000).toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');inputs[1].value=f(state.endAt);
+   const picker=document.createElement('div');picker.className='ecom-mcenter-picker-dropdown';picker.hidden=true;picker.innerHTML='<a>近7天</a><table><tr><td class="ecom-mcenter-picker-cell ecom-mcenter-picker-cell-in-view" title="'+f(state.startAt+${readonlyDurationDays}*86400000).slice(0,10).replaceAll('/','-')+'">结束日期</td></tr></table><button>确定</button>';document.body.append(picker);
+   for(const input of inputs)input.onclick=()=>picker.hidden=false;let chosen=0;picker.querySelector('a').onclick=()=>chosen=7;picker.querySelector('td').onclick=()=>chosen=${readonlyDurationDays};
+   picker.querySelector('button').onclick=()=>{if(!chosen)return;state.endAt=state.startAt+chosen*86400000;inputs[0].value=f(state.startAt);inputs[1].value=f(state.endAt);picker.hidden=true;stats({datePickerCommits:1});};
+  }
   for(const field of document.querySelectorAll('input[placeholder$="日期"]'))field.onchange=()=>{state.startAt=Date.parse($('input[placeholder="开始日期"]').value.replaceAll('/','-').replace(' ','T')+'+08:00');state.endAt=Date.parse($('input[placeholder="结束日期"]').value.replaceAll('/','-').replace(' ','T')+'+08:00');};
   $('#select_product_method').onchange=()=>{if(state.selected.length){stats({modeWarnings:1});throw Error('Must not switch an online-selected draft');}state.mode='excel';};
   const expandControl=$('#expand');if(${selectionLoadDelayMs})expandControl.remove();

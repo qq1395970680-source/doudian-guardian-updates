@@ -11,15 +11,15 @@ import {planOriginalRestore} from '../../src/policy.mjs';
 import {fixtureServer,fixtureProducts} from './platform-fixture.mjs';
 import {scrollForm} from '../../src/platform-snapshot.mjs';
 
-for(const viewport of [{width:1440,height:960},{width:960,height:600},{width:1440,height:960,quotaReflowPx:600}])
-test(`limited: virtual products, quotas, mixed discounts, renewal and independent readback ${viewport.width}${viewport.quotaReflowPx?' quota-reflow':''}`,{timeout:180000},async()=>{
- const dir=await mkdtemp(join(tmpdir(),'guardian-limited-')),fixture=await fixtureServer({limited:true,quotaReflowPx:viewport.quotaReflowPx||0}),browser=new DedicatedBrowser(dir,{test:true,viewport:{width:viewport.width,height:viewport.height}});
+for(const viewport of [{width:1440,height:960},{width:960,height:600},{width:1440,height:960,quotaReflowPx:600},{width:960,height:600,readonlyDates:true},{width:960,height:600,readonlyDates:true,durationDays:30}])
+test(`limited: virtual products, quotas, mixed discounts, renewal and independent readback ${viewport.width}${viewport.quotaReflowPx?' quota-reflow':viewport.readonlyDates?' readonly-dates-'+(viewport.durationDays||7):''}`,{timeout:180000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'guardian-limited-')),fixture=await fixtureServer({limited:true,readonlyDates:viewport.readonlyDates||false,readonlyDurationDays:viewport.durationDays||7,quotaReflowPx:viewport.quotaReflowPx||0}),browser=new DedicatedBrowser(dir,{test:true,viewport:{width:viewport.width,height:viewport.height}});
  const journal=new Journal(join(dir,'tasks.sqlite')),policy={shopId:'900001',originalRiskAllowed:true,liveEnabled:true,cutoverConfirmed:true};
  const platform=new DoudianPlatform({browser,policy,journal,base:fixture.base}),service=new GuardianService({platform,policy,journal});
  try{
   const plans=fixtureProducts.slice(0,3).map((p,i)=>{
    const b={...structuredClone(p),shopId:policy.shopId,source:'verified-platform-history',complete:true,type:'限量抢购',
-    campaignId:'4000000000000000001',rules:{noLimit:false,noPerUserLimit:true,noWarmup:true,orderMinutes:30,autoRenew:true},durationMs:7*86400000,activityLimit:1000-i};
+    campaignId:'4000000000000000001',rules:{noLimit:false,noPerUserLimit:true,noWarmup:true,orderMinutes:30,autoRenew:true},durationMs:(viewport.durationDays||7)*86400000,activityLimit:1000-i};
    b.skus.forEach((s,j)=>s.discount=j%2?65:50);journal.remember(b);
    return planOriginalRestore(b,{...b,observedAt:Date.now()},policy);
   });
@@ -29,7 +29,8 @@ test(`limited: virtual products, quotas, mixed discounts, renewal and independen
   const actual=journal.get(task.id);assert.equal(actual.phase,'verified',JSON.stringify({actual,events:journal.events(5)}));
   assert.equal(actual.receipt.skuCount,30);assert.equal(fixture.state.submits,1);assert.equal(fixture.state.risks,1);
   assert.deepEqual(actual.receipt.productLimits.map(p=>p.activityLimit),[1000,999,998]);
-  assert.equal(actual.receipt.autoRenew,true);assert.equal(actual.receipt.durationMs,7*86400000);
+  if(viewport.readonlyDates)assert.equal(fixture.state.datePickerCommits,viewport.durationDays===30?2:1);
+  assert.equal(actual.receipt.autoRenew,true);assert.equal(actual.receipt.durationMs,(viewport.durationDays||7)*86400000);
   assert.deepEqual(fixture.state.campaigns.at(-1).products[0].skus.map(s=>s.discount),[50,65,50,65,50,65,50,65,50,65]);
  }finally{service.stop();await browser.close();journal.close();await fixture.close();await rm(dir,{recursive:true,force:true});}
 });

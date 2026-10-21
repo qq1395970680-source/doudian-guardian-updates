@@ -23,7 +23,8 @@ test('ratio optimizer agrees with exhaustive two-SKU search including cent round
   const skus=bases.map((baseFen,i)=>({id:String(i),baseFen,discount:discounts[i],saleFen:saleFen(baseFen,discounts[i])}));
   let best=null;
   for(let a=10;a<=95;a++)for(let b=10;b<=95;b++){
-   const rows=[a,b].map((discount,i)=>({discount,saleFen:saleFen(bases[i],discount)}));
+   // Independent integer oracle, not the implementation under test.
+   const rows=[a,b].map((discount,i)=>({discount,saleFen:Number((BigInt(bases[i])*BigInt(discount)+99n)/100n)}));
    const prices=rows.map(r=>r.saleFen);
    if(Math.min(...prices)<=0||Math.max(...prices)*d>Math.min(...prices)*n)continue;
    const value=score(skus,rows);if(!best||compare(value,best)<0)best=value;

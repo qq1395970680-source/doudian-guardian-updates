@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft, proveOriginalRisk } from './policy.mjs';
+import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft, proveOriginalRisk, saleFen } from './policy.mjs';
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease,validAutomaticPriceApproval} from './price-increase-policy.mjs';
 import {assertCampaignPolicy} from './campaign-policy.mjs';
 import {makeRemovalPriceReview} from './ratio-prices.mjs';
@@ -205,6 +205,9 @@ export class Journal {
           }
           r.selectedOption={id:option.id,key:option.key,label:option.label};
         }
+        requireThat(r.rows.every(row=>row.saleFen===saleFen(row.baseFen,row.discount)&&
+          row.previousFen===saleFen(row.baseFen,row.previousDiscount)),
+          'PRICE_REVIEW_CHANGED','价格取整规则已更新，请重新计算并核对全部规格价格');
         r.status='approved';r.approvedAt=now;r.consent={exactPrices:true,matchedRiskConfirmation:true,continueGuardingExactPrices:true};
         this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(shopId,r.productId,r.id);
       }else{
@@ -256,7 +259,8 @@ export class Journal {
         'PRICE_APPROVAL_CHANGED','调价确认与当前执行计划不一致');
       for(const sku of plan.skus){const original=baseline.skus.find(s=>s.id===sku.id),approved=review.rows.find(r=>r.id===sku.id);
         requireThat(original&&original.baseFen===sku.baseFen&&normalizeName(original.name)===sku.name&&
-          sku.discount===(approved?.discount??original.discount)&&sku.saleFen===Math.round(sku.baseFen*sku.discount/100),
+          sku.discount===(approved?.discount??original.discount)&&sku.saleFen===saleFen(sku.baseFen,sku.discount)&&
+          (!approved||sku.saleFen===approved.saleFen),
           'PRICE_APPROVAL_CHANGED','执行价格超出逐规格确认范围');
       }
     }

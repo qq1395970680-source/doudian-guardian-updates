@@ -12,6 +12,10 @@ const descriptions=[
 export function priceOptions(review){
  const cacheKey=fingerprint({key:review.key,rows:review.rows,ratio:review.ratio||null,type:review.type,campaignTarget:review.campaignTarget||null});
  if(cache.has(cacheKey))return structuredClone(cache.get(cacheKey));
+ const staleRounding=review.rows.some(row=>row.saleFen!==saleFen(row.baseFen,row.discount)||
+  row.previousFen!==saleFen(row.baseFen,row.previousDiscount));
+ if(staleRounding)return [...descriptions,...(['限量抢购','限时抢购'].includes(review.type)?[['switch-original','原折扣 · 切换活动类型','保留历史折扣，重新核对目标活动。']]:[])].map(([id,label,description])=>
+  ({id,label,description,available:false,rows:[],reason:'此建议使用了旧的价格取整规则。请点击重新计算，再核对逐规格确切价格；原确认记录会保留。'}));
  const skus=review.rows.map(row=>({id:row.id,baseFen:row.baseFen,discount:row.previousDiscount,saleFen:row.previousFen}));
  const highest=Math.max(...skus.map(row=>row.saleFen));
  const options=descriptions.map(([id,label,description])=>{

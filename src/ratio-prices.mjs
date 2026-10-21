@@ -16,8 +16,8 @@ export function selectRatioPrices(skus,ratio,bounds=null){
   'PRICE_RULE_UNKNOWN','逐规格价格范围不完整');
  const ranges=skus.map((s,i)=>{
   requireThat(s.discount<=95&&s.saleFen===saleFen(s.baseFen,s.discount),'PRICE_REVIEW_EVIDENCE','已有守护价不一致');
-  const b=bounds[i],low=Math.max(10,b.minDiscount??10,Math.ceil(((b.minFen??1)*100-50)/s.baseFen));
-  const high=Math.min(95,b.maxDiscount??95,b.maxFen==null?95:Math.floor((b.maxFen*100+49)/s.baseFen));
+  const b=bounds[i],low=Math.max(10,b.minDiscount??10,Math.floor(((b.minFen??1)-1)*100/s.baseFen)+1);
+  const high=Math.min(95,b.maxDiscount??95,b.maxFen==null?95:Math.floor(b.maxFen*100/s.baseFen));
   requireThat(low<=high,'NO_FEASIBLE_PRICE','逐规格价格范围内没有可用折扣');
   return {low,high,values:Array.from({length:high-low+1},(_,j)=>saleFen(s.baseFen,j+low))};
  });
@@ -31,10 +31,10 @@ export function selectRatioPrices(skus,ratio,bounds=null){
   let absolute=0,reductions=0,steps=0,changed=0,feasible=true;
   for(let i=0;i<skus.length;i++){
    const s=skus[i],range=ranges[i];
-   // Integer inversion of round(base * discount / 100), including half-cent
-   // boundaries. Never use floating-point equality to approve a ratio.
-   const low=Math.max(range.low,Math.ceil((minimum*100-50)/s.baseFen));
-   const high=Math.min(range.high,Math.floor((maximum*100+49)/s.baseFen));
+   // ceil(base * discount / 100) >= minimum iff base * discount > (minimum-1)*100.
+   // The upper bound is inclusive. Compare ratios using integer cross products.
+   const low=Math.max(range.low,Math.floor((minimum-1)*100/s.baseFen)+1);
+   const high=Math.min(range.high,Math.floor(maximum*100/s.baseFen));
    if(low>high){feasible=false;break;}
    const discount=Math.max(low,Math.min(high,s.discount)),price=saleFen(s.baseFen,discount);
    if(price<minimum||price>maximum){feasible=false;break;}

@@ -72,7 +72,7 @@ test('strict one-fen limits and rounding use the platform integer-fen price at e
  const below=pricing.selectClosestPriceStep({baseFen:101,discount:50},{maxFen:50});
  assert.deepEqual([at.discount,at.saleFen],[50,51]);
  assert.deepEqual([above.discount,above.saleFen],[51,52]);
- assert.deepEqual([below.discount,below.saleFen],[49,49]);
+ assert.deepEqual([below.discount,below.saleFen],[49,50]);
  assert.equal(pricing.selectClosestPriceStep({baseFen:1,discount:50},{minDiscount:51}).discount,51);
 });
 

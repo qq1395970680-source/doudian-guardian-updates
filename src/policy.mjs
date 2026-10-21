@@ -48,7 +48,9 @@ export function saleFen(baseFen, discount) {
     'INVALID_PRICE', '原价必须为有效的整数分');
   requireThat(Number.isInteger(discount) && discount >= 10 && discount <= 99,
     'INVALID_DISCOUNT', '折扣必须为原价的整数百分比');
-  return Math.round(baseFen * discount / 100);
+  // The platform's discount display rounds upward to two decimal yuan.
+  // Work in integer fen so exact cents never acquire a floating-point carry.
+  return Math.floor((baseFen * discount + 99) / 100);
 }
 function uniqueRows(rows, label, allowMissingIds = false) {
   requireThat(Array.isArray(rows) && rows.length > 0, 'EMPTY_SKUS', `${label}规格为空`);

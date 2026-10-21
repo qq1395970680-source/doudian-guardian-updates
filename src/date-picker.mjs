@@ -1,5 +1,6 @@
 import {requireThat} from './policy.mjs';
 import {parseDate,until} from './collector.mjs';
+import {chooseArcoDateRange} from './date-picker-arco.mjs';
 
 // Use the platform's visible range-picker controls. The temporary shortcut
 // anchors both time-of-day values to the same current instant; only the final,
@@ -9,9 +10,11 @@ export async function chooseReadonlyDateRange(page,durationMs){
  const start=page.locator('input[placeholder="开始日期"]'),end=page.locator('input[placeholder="结束日期"]');
  if(!Number.isSafeInteger(durationMs)||durationMs%1000!==0||durationMs<=0)
   fail('只读日期选择器暂不能核对该自定义时长，保留原活动时长');
- const panel=page.locator('[class*="picker-dropdown"]:visible');
  await start.click();
- await panel.waitFor({state:'visible',timeout:3000});
+ await until(async()=>await page.locator('.arco-picker-range-container:visible, [class*="picker-dropdown"]:visible').count()>0,'未识别到日期弹窗，未提交',5000);
+ if(await page.locator('.arco-picker-range-container:visible, [class*="picker-dropdown"]:visible').count()!==1)fail('日期弹窗不唯一');
+ if(await page.locator('.arco-picker-range-container:visible').count())return chooseArcoDateRange(page,durationMs);
+ const panel=page.locator('[class*="picker-dropdown"]:visible');
  if(await panel.count()!==1||!await panel.locator('td[title][class*="picker-cell-in-view"]').count())
   fail('未识别到可核对的日期日历，保留原活动时长');
  const commit=async()=>{

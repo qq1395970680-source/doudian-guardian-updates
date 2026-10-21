@@ -10,8 +10,9 @@ import {GuardianService} from '../../src/service.mjs';
 import {GuardError} from '../../src/policy.mjs';
 import {fixtureServer,fixtureProducts} from './platform-fixture.mjs';
 import {installDateTimeFixture} from './date-time-fixture.mjs';
+import {installArcoDateFixture} from './arco-date-fixture.mjs';
 
-for(const type of ['限量抢购','限时抢购'])test(`persistent blocked task rechecks and restores exact duration through patrol: ${type}`,{timeout:180000},async()=>{
+for(const picker of ['legacy','arco'])for(const type of ['限量抢购','限时抢购'])test(`persistent blocked task rechecks and restores exact duration through patrol: ${type} ${picker}`,{timeout:180000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'guardian-duration-retry-')),file=join(dir,'tasks.sqlite');
  const fixture=await fixtureServer({limited:type==='限量抢购'}),policy={shopId:'900001',originalRiskAllowed:true,liveEnabled:true,cutoverConfirmed:true};
  let browser=new DedicatedBrowser(dir,{test:true}),journal=new Journal(file),service;
@@ -28,9 +29,9 @@ for(const type of ['限量抢购','限时抢购'])test(`persistent blocked task 
    prepare:async t=>{if(failOld)throw new GuardError('DRAFT_TIME_READONLY','beta.26 whole-day guard');return platform.prepare(t);},
    submit:platform.submit.bind(platform),readback:platform.readback.bind(platform),release:platform.release.bind(platform)};
   platform.setDates=async(page,plan)=>{
-   await page.evaluate(installDateTimeFixture,{start:Math.floor(Date.now()/1000)*1000,duration:plan.durationMs});
+   await page.evaluate(picker==='arco'?installArcoDateFixture:installDateTimeFixture,{start:Math.floor(Date.now()/1000)*1000,duration:plan.durationMs});
    // Fixture's onchange handler owns its server-facing form state.
-   await page.evaluate(()=>{window.commitExactDates=()=>document.querySelector('input[placeholder="开始日期"]').onchange();document.querySelector('.ecom-mcenter-picker-dropdown button').addEventListener('click',window.commitExactDates);});
+   if(picker==='legacy')await page.evaluate(()=>{window.commitExactDates=()=>document.querySelector('input[placeholder="开始日期"]').onchange();document.querySelector('.ecom-mcenter-picker-dropdown button').addEventListener('click',window.commitExactDates);});
    await DoudianPlatform.prototype.setDates.call(platform,page,plan);
   };
   const instance=new GuardianService({journal,platform:facade,policy,now:()=>failOld?clock:Date.now()});

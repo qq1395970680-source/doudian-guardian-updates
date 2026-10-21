@@ -9,6 +9,7 @@ import {readRemovalWorkbook} from './removal-export.mjs';
 import {createHash} from 'node:crypto';
 import {draftPriceWarnings} from './draft-price-warnings.mjs';
 import {chooseReadonlyDateRange} from './date-picker.mjs';
+import {dateControlSnapshot} from './date-control-snapshot.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -42,6 +43,8 @@ export class DoudianPlatform {
   let observation=null;
   if(['prepare','submit'].includes(stage))try{const s=await page.evaluate(formSlice);observation={warnings:s.warnings,warningDetails:s.warningDetails,dialogs:s.dialogs,busy:s.busy,counts:s.counts,title:s.title,type:s.type,rules:s.rules,mode:s.mode,priceModes:s.priceModes,byDiscount:s.byDiscount,renew:s.renew};}catch{}
   if(error.code==='DRAFT_PRICE'&&error.detail?.mismatches)observation={...observation,mismatches:error.detail.mismatches};
+  if(['prepare','submit'].includes(stage)&&/DRAFT_TIME|picker|calendar|日期|时分秒/.test(String(error.code)+' '+String(error.message)))
+   try{observation={...observation,dateControls:await page.evaluate(dateControlSnapshot)};}catch{}
   await this.browser.failure(page,task,stage,error,observation).catch(()=>{});
  }
  async captureFailure(task,draft,phase,error){

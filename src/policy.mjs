@@ -20,8 +20,13 @@ export function validateLimited(value) {
     value.durationMs <= 30 * 86400000 && value.durationMs % 1000 === 0,
     'LIMITED_DURATION', '限量抢购的活动时长必须明确且不超过30天');
 }
+export function restorationDuration(plan) {
+  const value=plan.durationMs??(isLimited(plan)?null:48*3600000);
+  requireThat(Number.isSafeInteger(value)&&value>0&&value%1000===0,'DRAFT_TIME','活动时长必须明确到秒');
+  return value;
+}
 export function restorationGroupKey(plan) {
-  return fingerprint({type: plan.type, rules: plan.rules,
+  return fingerprint({type: plan.type, rules: plan.rules, durationMs:restorationDuration(plan),
     ...(isLimited(plan) ? {durationMs: plan.durationMs, discounts: [...new Set(plan.skus.map(s => s.discount))].sort((a,b) => a-b)} : {})});
 }
 function proveProductLimits(plans, observation) {
@@ -63,6 +68,7 @@ export function validateHistorical(baseline) {
   id(baseline.shopId, '店铺ID'); id(baseline.productId, '商品ID'); uniqueRows(baseline.skus, '历史');
   requireThat(baseline.rules && ['限时抢购', '普通降价促销', '限量抢购'].includes(baseline.type), 'UNSUPPORTED_RULE', '历史活动规则不完整');
   if (isLimited(baseline)) validateLimited(baseline);
+  if(baseline.durationMs!=null)restorationDuration(baseline);
   const r=baseline.rules;
   requireThat((isLimited(baseline) ? r.noLimit===false : r.noLimit===true) && r.noPerUserLimit===true && r.noWarmup===true && Number.isInteger(r.orderMinutes) && r.orderMinutes>0 && r.orderMinutes<=1440,
     'UNSUPPORTED_RULE','仅支持已核对的活动限量、不限购、不预热及明确订单取消时间');
@@ -98,12 +104,13 @@ export function planOriginalRestore(baseline, current, policy, now = Date.now())
   requireThat(!skippedSkuIds.length || policy.allowMissingHistoricalSkus === true, 'MISSING_SKUS', '历史规格缺失，未获得保留子集的授权');
   const result = { shopId: baseline.shopId, productId: baseline.productId, name: baseline.name,
     type: baseline.type, rules: structuredClone(baseline.rules), skus: mappings, skippedSkuIds,
-    ...(isLimited(baseline) ? {activityLimit: baseline.activityLimit, durationMs: baseline.durationMs} : {}),
+    ...(baseline.durationMs!=null?{durationMs:baseline.durationMs}:{}),
+    ...(isLimited(baseline) ? {activityLimit: baseline.activityLimit} : {}),
     historicalFingerprint: fingerprint(baseline), currentFingerprint: fingerprint(current), observedAt: current.observedAt,
     originalRiskAllowed: policy.originalRiskAllowed === true };
   return { ...result, fingerprint: fingerprint(result) };
 }
-export function proveReadback(plans, observation, { title, now = Date.now(), exactMembership = true } = {}) {
+export function proveReadback(plans, observation, { title, now = Date.now(), exactMembership = true, expectedRange = null } = {}) {
   requireThat(plans.length > 0 && observation?.complete === true, 'READBACK_INCOMPLETE', '没有完整独立回读');
   requireThat(observation.shopId === plans[0].shopId && observation.observedAt > 0 && observation.observedAt <= now + 5000 && now - observation.observedAt <= 120000,
     'READBACK_IDENTITY', '回读店铺或时间无效');
@@ -121,9 +128,13 @@ export function proveReadback(plans, observation, { title, now = Date.now(), exa
   for (const plan of plans) requireThat(fingerprint(observation.rules) === fingerprint(plan.rules) && observation.type === plan.type,
     'READBACK_RULES', '回读活动规则不一致');
   proveProductLimits(plans, observation);
-  for (const plan of plans.filter(isLimited)) requireThat(observation.endAt - observation.startAt === plan.durationMs,
-    'LIMITED_READBACK', '回读限量活动时长与计划不一致');
+  for (const plan of plans.filter(p=>isLimited(p)||p.durationMs!=null)) requireThat(observation.endAt - observation.startAt === plan.durationMs,
+    'LIMITED_READBACK', '回读活动时长与计划不一致');
+  if(expectedRange)requireThat(observation.startAt===expectedRange.startAt&&observation.endAt===expectedRange.endAt,
+    'DRAFT_TIME_READBACK','回读起止日期或时分秒与已提交草稿不一致');
   return { campaignId: observation.campaignId, verifiedAt: now, productCount: plans.length, skuCount: expected.length,
+    ...(expectedRange?{startAt:observation.startAt,endAt:observation.endAt}:{}),
+    ...(plans[0].durationMs!=null?{durationMs:plans[0].durationMs}:{}),
     ...(plans.some(isLimited) ? {type: '限量抢购', productLimits: structuredClone(observation.productLimits),
       durationMs: plans[0].durationMs, autoRenew: observation.rules.autoRenew} : {}),
     salePriceEvidence:actual.every(r=>r.saleSource==='observed')?'observed':'verified-base-and-discount-with-computed-sale',
@@ -141,7 +152,7 @@ function checkDraft(task, observation, now, continuation) {
   const original=continuation?task.draftProof?.observation:null;
   const validTime=original?observation.startAt===original.startAt&&observation.endAt===original.endAt&&observation.endAt>now:
     observation.startAt > now - 300000 && observation.startAt <= now + 300000;
-  requireThat(validTime && task.plans.every(plan => observation.endAt - observation.startAt === (isLimited(plan) ? plan.durationMs : 48 * 3600000)),
+  requireThat(validTime && task.plans.every(plan => observation.endAt - observation.startAt === restorationDuration(plan)),
     'DRAFT_TIME', '草稿时间与已核对的活动时长不一致');
   // Reuse only the comparison contract; the observation remains explicitly a
   // draft and is never stored as an independent live verification receipt.

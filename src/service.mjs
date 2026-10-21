@@ -52,7 +52,18 @@ export class GuardianService {
     return preferCampaignBaselines(this.journal,this.policy.shopId,latest);
   }
   restorePlan(baseline,current) {
-    return applyCampaignPolicy(applyPriceTarget(planOriginalRestore(baseline,current,this.policy,this.now()),this.journal.priceTarget(this.policy.shopId,baseline.productId)),this.journal);
+    const review=this.journal.priceTarget(this.policy.shopId,baseline.productId);
+    let source=baseline;
+    // Adding the previously unrecorded timed duration must not discard exact
+    // price/type consent for the very same immutable campaign and SKU history.
+    if(review?.status==='approved'&&review.historicalFingerprint!==fingerprint(baseline)&&baseline.durationMs!=null){
+      const prior=this.journal.histories(this.policy.shopId).find(b=>fingerprint(b)===review.historicalFingerprint);
+      const withoutDuration=b=>{const {observedAt,durationMs,...rest}=b;return fingerprint(rest);};
+      if(prior&&prior.durationMs==null&&withoutDuration(prior)===withoutDuration(baseline))source=prior;
+    }
+    let plan=planOriginalRestore(source,current,this.policy,this.now());
+    if(source!==baseline){const {fingerprint:previous,...body}=plan;plan={...body,durationMs:baseline.durationMs};plan.fingerprint=fingerprint(plan);}
+    return applyCampaignPolicy(applyPriceTarget(plan,review),this.journal);
   }
   checkPriceRules(plan,loss){
     // Another activity's removal rule is evidence of that activity's loss,
@@ -111,7 +122,8 @@ export class GuardianService {
       observed=await this.platform.readback(this.journal.get(task.id));
     }
     if(!observed)return false;
-    const receipt=proveReadback(task.plans,observed,{title:task.title,now:this.now()});
+    const receipt=proveReadback(task.plans,observed,{title:task.title,now:this.now(),
+      expectedRange:task.plans.some(p=>p.durationMs!=null)?task.draftProof?.observation:null});
     const current=this.journal.get(task.id);
     const verified=this.journal.transition(task.id,current.phase,'verified',{receipt},this.now());
     if(!this.priorityWatch)this.priorityWatch=new PriorityWatch(this.journal,this.policy.shopId);

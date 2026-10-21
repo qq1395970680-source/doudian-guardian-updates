@@ -69,7 +69,7 @@ export class CampaignConversion{
     requireThat(!p.removalAmbiguous,'CONVERSION_CHANGED','当前商品存在不明确的部分规格退出，先核实');
     const b={source:'verified-platform-history',complete:true,shopId:this.shopId,productId:p.productId,name:p.name,campaignId:c.id,
      historyAt:c.startAt,generatedByGuardian:c.name.startsWith('守护2-'),observedAt:d.observedAt,type:c.type,rules:d.rules,skus:p.skus,
-     ...(isLimited(c)?{activityLimit:p.activityLimit,durationMs:c.endAt-c.startAt}:{})};
+     durationMs:c.endAt-c.startAt,...(isLimited(c)?{activityLimit:p.activityLimit}:{})};
     validateHistorical(b);this.journal.remember(b);members.push(p.productId);
     if(this.service.policy.excludedProductIds?.includes(p.productId))continue;
     importable(b);

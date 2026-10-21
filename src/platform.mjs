@@ -315,7 +315,7 @@ export class DoudianPlatform {
     if(this.policy.captureExistingOnly&&(!active(c)||p.removalConfirmed||p.removalAmbiguous))continue;
     const baseline={source:'verified-platform-history',complete:true,shopId:this.policy.shopId,productId:p.productId,name:p.name,campaignId:c.id,
      historyAt:c.startAt,generatedByGuardian:c.name.startsWith('守护2-'),observedAt:detail.observedAt,type:c.type,rules:detail.rules,skus:p.skus,
-     ...(isLimited(c)?{activityLimit:p.activityLimit,durationMs:c.endAt-c.startAt}:{})};
+     durationMs:c.endAt-c.startAt,...(isLimited(c)?{activityLimit:p.activityLimit}:{})};
     try{validateHistorical(baseline);baselines.push(baseline);}catch(e){errors.push({campaignId:c.id,productId:p.productId,code:e.code,message:e.message});}
    }
   }
@@ -630,9 +630,10 @@ export class DoudianPlatform {
   if(isLimited(plan)||await renew.count())await this.radio(page,isLimited(plan)&&plan.rules.autoRenew?'(?:开启|开启自动续期)(?:\\s*推荐)?':'不开启');
  }
  async setDates(page,plan){
-  if(!isLimited(plan)){
+  if(!isLimited(plan)&& (plan.durationMs??48*3600000)===48*3600000){
    await page.locator('input[placeholder="开始日期"]').click();await button(page,'近48小时').click();return;
   }
+  requireThat(Number.isSafeInteger(plan.durationMs)&&plan.durationMs>0&&plan.durationMs%1000===0,'DRAFT_TIME','原活动时长必须明确到秒');
   const readDates=async()=>{const values=(await page.evaluate(formSlice)).dates;return values.length===2&&values.every(Boolean)?values.map(parseDate):[];};
   const matches=dates=>dates.length===2&&dates[1]-dates[0]===plan.durationMs&&dates[0]>Date.now()-240000&&dates[0]<=Date.now()+300000;
   if(matches(await readDates()))return;

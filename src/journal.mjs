@@ -46,7 +46,7 @@ export class Journal {
     requireThat(lossEvidence?.complete === true && lossEvidence.observedAt > 0 && now-lossEvidence.observedAt<=120000 && lossEvidence.observedAt<=now+5000 &&
       typeof lossEvidence.lossKey==='string' && lossEvidence.lossKey.length>0, 'LOSS_UNPROVEN', '缺少当前活动失效证明');
     const dedupe = fingerprint({ shopId, plans: plans.map(p => [p.productId, p.historicalFingerprint, p.skus,
-      ...(p.type==='限量抢购'?[p.type,p.rules,p.activityLimit,p.durationMs,p.campaignPolicyFingerprint||null]:[])]), loss: lossEvidence.lossKey });
+      ...(p.type==='限量抢购'?[p.type,p.rules,p.activityLimit,p.durationMs,p.campaignPolicyFingerprint||null]:p.durationMs!=null?[p.type,p.rules,p.durationMs,p.campaignPolicyFingerprint||null]:[])]), loss: lossEvidence.lossKey });
     return this.transaction(() => {
       const prior = this.db.prepare('SELECT id FROM tasks WHERE dedupe=?').get(dedupe);
       if (prior) return this.get(prior.id);

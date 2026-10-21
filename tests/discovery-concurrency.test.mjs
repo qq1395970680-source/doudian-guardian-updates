@@ -4,7 +4,7 @@ import {Journal} from '../src/journal.mjs';
 import {DoudianPlatform} from '../src/platform.mjs';
 import {buildCatalog} from '../src/catalog.mjs';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const campaign=(n,status='进行中')=>({id:String(400000+n),name:'活动'+n,type:'限时抢购',status,startAt:Date.now()-n*1000});
+const campaign=(n,status='进行中')=>({id:String(400000+n),name:'活动'+n,type:'限时抢购',status,startAt:Math.floor(Date.now()/1000)*1000-n*1000,endAt:Math.floor(Date.now()/1000)*1000-n*1000+48*3600000});
 const detail=c=>({complete:true,observedAt:Date.now(),rules:{noLimit:true,noPerUserLimit:true,noWarmup:true,orderMinutes:5},
  products:[{productId:String(Number(c.id)+100000),name:c.name,skus:[{id:String(Number(c.id)+200000),name:'原规格',baseFen:10000,discount:50,saleFen:5000}]}]});
 function setup(campaigns){const journal=new Journal(':memory:'),platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'},journal});

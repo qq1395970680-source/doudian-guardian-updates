@@ -9,7 +9,7 @@ function tables(j){j.db.exec(`CREATE TABLE IF NOT EXISTS migration_imports(diges
  CREATE TABLE IF NOT EXISTS migration_task_archive(shop TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(shop,id));`);}
 function archivalPlan(plan){const {originalRiskAllowed,approvedRiskAllowed,priceApprovalId,priceApprovalKey,fingerprint:planHash,...record}=plan;return record;}
 function taskMaterial(t){return {title:t.title,plans:t.plans.map(p=>({shopId:p.shopId,productId:p.productId,historicalFingerprint:p.historicalFingerprint,type:p.type,rules:p.rules,
- ...(isLimited(p)?{activityLimit:p.activityLimit,durationMs:p.durationMs}:{}),
+ ...(p.durationMs!=null?{durationMs:p.durationMs}:{}),...(isLimited(p)?{activityLimit:p.activityLimit}:{}),
  skus:p.skus.map(s=>({id:s.id,name:normalizeName(s.name),baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen}))}))};}
 function taskRecord(t){return {id:t.id,title:t.title,phase:t.phase,plans:t.plans.map(archivalPlan),createdAt:t.createdAt,updatedAt:t.updatedAt,
  submitAttempts:t.submitAttempts,riskAttempts:t.riskAttempts,receipt:t.receipt||null,reason:t.reason||null};}

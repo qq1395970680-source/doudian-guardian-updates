@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DoudianPlatform} from '../src/platform.mjs';
 import {Journal} from '../src/journal.mjs';
 import {PriorityWatch} from '../src/priority-watch.mjs';
-const campaigns=Array.from({length:8},(_,n)=>({id:String(400001+n),name:'活动'+n,type:'限时抢购',status:'进行中',startAt:Date.now()-n*1000}));
+const campaigns=Array.from({length:8},(_,n)=>({id:String(400001+n),name:'活动'+n,type:'限时抢购',status:'进行中',startAt:Math.floor(Date.now()/1000)*1000-n*1000,endAt:Math.floor(Date.now()/1000)*1000-n*1000+48*3600000}));
 function fixture(){
  const journal=new Journal(':memory:'),platform=new DoudianPlatform({browser:{context:{}},policy:{shopId:'900001'},journal});
  const listing={complete:true,campaigns,observedAt:Date.now()};let opened=0,closed=0;

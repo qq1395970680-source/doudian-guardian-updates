@@ -7,6 +7,7 @@ import {activePriceIncreaseGrant,isAutomaticPriceIncrease,validAutomaticPriceApp
 import {assertCampaignPolicy} from './campaign-policy.mjs';
 import {makeRemovalPriceReview} from './ratio-prices.mjs';
 import {priceOptions} from './price-options.mjs';
+import {makePriceReconfirmation,assertPriceReconfirmation,needsPriceReconfirmation} from './price-reconfirmation.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -131,7 +132,7 @@ export class Journal {
     const reviewTasks=this.list(shopId);
     const reviews=this.db.prepare(`SELECT body FROM price_reviews WHERE shop=?${condition} ORDER BY (state='pending') DESC,updated DESC,rowid DESC LIMIT ? OFFSET ?`)
       .all(shopId,size,current*size).map(r=>{
-        const review=JSON.parse(r.body);if(review.status!=='pending')return review;
+        const review=JSON.parse(r.body);if(review.status!=='pending')return {...review,requiresReconfirmation:needsPriceReconfirmation(review)};
         const attempts=reviewTasks.filter(task=>task.plans.some(p=>p.productId===review.productId));
         const activityChecks=['限量抢购','限时抢购'].flatMap(type=>{
           const task=attempts.find(t=>t.plans.some(p=>p.productId===review.productId&&p.type===type));
@@ -170,6 +171,14 @@ export class Journal {
     this.assertPricePlans(plan.shopId,[plan]);
     return this.savePriceReview(makeRemovalPriceReview(plan,loss,now),now);
   }
+  recordPriceReconfirmation(plan,now=Date.now()){
+    requireThat(!this.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),
+      'PENDING','此商品有未完成或结果未知的提交，先独立核实');
+    const history=this.histories(plan.shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
+    requireThat(history&&history.productId===plan.productId&&plan.skus.every(s=>history.skus.some(h=>h.id===s.id&&h.baseFen===s.baseFen&&normalizeName(h.name)===s.name&&h.discount===s.discount)),
+      'PRICE_APPROVAL_CHANGED','重新确认价格需要匹配的原始规格历史');
+    return this.savePriceReview(makePriceReconfirmation(plan,this.priceTarget(plan.shopId,plan.productId),now),now);
+  }
   savePriceReview(review,now,{refreshPending=false}={}){
     const prior=this.db.prepare('SELECT body FROM price_reviews WHERE shop=? AND product=? ORDER BY updated DESC,rowid DESC').all(review.shopId,review.productId).map(r=>JSON.parse(r.body)).find(r=>r.key===review.key);
     if(prior&&(['approved','declined'].includes(prior.status)||prior.status==='pending'&&prior.expiresAt>now&&!refreshPending))return prior;
@@ -185,6 +194,12 @@ export class Journal {
       requireThat(['approve','decline','recalculate'].includes(decision),'PRICE_REVIEW_DECISION','调价确认操作无效');
       requireThat(!this.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===r.productId)),
         'PENDING','此商品仍有未完成或结果未知的提交，先独立核实');
+      if(decision==='recalculate'&&needsPriceReconfirmation(r)){
+        requireThat(this.priceTarget(shopId,r.productId)?.id===r.id,'PRICE_REVIEW_CHANGED','当前守护目标已经变化');
+        this.clearProductCheck(shopId,r.productId);
+        this.event(null,'price-reconfirmation-requested',{shopId,productId:r.productId,reviewId:r.id},now);
+        return r; // Never rewrite or revoke the immutable approved record.
+      }
       if(decision==='approve'){
         requireThat(acceptPriceAndRisk===true&&Array.isArray(confirmedSkuIds)&&new Set(confirmedSkuIds).size===confirmedSkuIds.length&&
           fingerprint([...confirmedSkuIds].sort())===fingerprint(r.rows.map(row=>row.id).sort()),'PRICE_CONSENT_REQUIRED','须核对全部规格并明确确认表内价格');
@@ -205,7 +220,8 @@ export class Journal {
           }
           r.selectedOption={id:option.id,key:option.key,label:option.label};
         }
-        requireThat(r.rows.every(row=>row.saleFen===saleFen(row.baseFen,row.discount)&&
+        if(r.kind==='rounding-reconfirmation')assertPriceReconfirmation(r,target);
+        else requireThat(r.rows.every(row=>row.saleFen===saleFen(row.baseFen,row.discount)&&
           row.previousFen===saleFen(row.baseFen,row.previousDiscount)),
           'PRICE_REVIEW_CHANGED','价格取整规则已更新，请重新计算并核对全部规格价格');
         r.status='approved';r.approvedAt=now;r.consent={exactPrices:true,matchedRiskConfirmation:true,continueGuardingExactPrices:true};
@@ -258,7 +274,7 @@ export class Journal {
         review.shopId===shopId&&plan.shopId===shopId&&review.productId===plan.productId&&review.key===plan.priceApprovalKey&&review.historicalFingerprint===plan.historicalFingerprint,
         'PRICE_APPROVAL_CHANGED','调价确认与当前执行计划不一致');
       for(const sku of plan.skus){const original=baseline.skus.find(s=>s.id===sku.id),approved=review.rows.find(r=>r.id===sku.id);
-        requireThat(original&&original.baseFen===sku.baseFen&&normalizeName(original.name)===sku.name&&
+        requireThat(original&&(approved||review.kind!=='rounding-reconfirmation')&&original.baseFen===sku.baseFen&&normalizeName(original.name)===sku.name&&
           sku.discount===(approved?.discount??original.discount)&&sku.saleFen===saleFen(sku.baseFen,sku.discount)&&
           (!approved||sku.saleFen===approved.saleFen),
           'PRICE_APPROVAL_CHANGED','执行价格超出逐规格确认范围');

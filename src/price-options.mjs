@@ -10,6 +10,11 @@ const descriptions=[
  ['balanced','综合建议方案','所有规格均不降价，同时满足已读限制，尽量减少总涨价金额。']
 ];
 export function priceOptions(review){
+ if(review.kind==='rounding-reconfirmation')return [{id:'reconfirm-rounding',label:'保留折扣 · 重新确认金额',
+  description:'原确认记录完整保留；本表按新的取整规则列出确切金额，活动类型和时长沿用现有设置。',
+  available:true,rows:structuredClone(review.rows),activityType:review.type,validationStatus:'unverified',
+  reason:'确认后仍须重新核验活动、当前规格、草稿金额和独立回读。',
+  key:fingerprint({algorithm:'reconfirm-rounding-v1',sourceKey:review.key,rows:review.rows})}];
  const cacheKey=fingerprint({key:review.key,rows:review.rows,ratio:review.ratio||null,type:review.type,campaignTarget:review.campaignTarget||null});
  if(cache.has(cacheKey))return structuredClone(cache.get(cacheKey));
  const staleRounding=review.rows.some(row=>row.saleFen!==saleFen(row.baseFen,row.discount)||

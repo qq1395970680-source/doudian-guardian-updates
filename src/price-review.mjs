@@ -49,11 +49,13 @@ export function applyPriceTarget(original,review) {
   const {fingerprint:oldFingerprint,...base}=original;
   let changed=false;
   const skus=original.skus.map(sku=>{
-    const row=review.rows.find(r=>r.id===sku.id);if(!row)return sku;
+    const row=review.rows.find(r=>r.id===sku.id);
+    requireThat(row||review.kind!=='rounding-reconfirmation','PRICE_APPROVAL_CHANGED','此规格未包含在新的金额确认中，需要重新核对，不能回退到历史价格');
+    if(!row)return sku;
     requireThat(row.name===normalizeName(sku.name)&&row.baseFen===sku.baseFen&&row.historicalDiscount===sku.discount&&
       Number.isInteger(row.discount)&&row.discount>=10&&row.discount<=95&&row.saleFen===saleFen(sku.baseFen,row.discount),
       'PRICE_APPROVAL_CHANGED','已确认价格与当前规格或历史发生变化');
-    changed=changed||row.discount!==sku.discount;
+    changed=changed||row.discount!==sku.discount||review.kind==='rounding-reconfirmation';
     return {...sku,originalDiscount:sku.discount,discount:row.discount,saleFen:row.saleFen};
   });
   // Retain the previous approval identity even when its changed SKU is absent.

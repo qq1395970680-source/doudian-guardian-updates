@@ -16,7 +16,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
  function eligible(r){const s=current();return s.online&&s.state?.shopId===r.shopId&&s.state?.connection?.shopId===r.shopId&&Date.now()-readAt<15000&&!action;}
  function updateControls(card){
   const {r}=card,expired=r.expiresAt<=Date.now(),ready=eligible(r),selected=!card.source.options||card.option?.available;
-  setText(card.badge,r.status==='pending'&&expired?'建议已过期':r.status==='approved'&&r.approvalKind==='automatic-price-increase'?'按本店授权自动提价':labels[r.status]||'等待更新');
+  setText(card.badge,r.requiresReconfirmation?'原确认需重新核对':r.status==='pending'&&expired?'建议已过期':r.status==='approved'&&r.approvalKind==='automatic-price-increase'?'按本店授权自动提价':labels[r.status]||'等待更新');
   if(card.checkbox){card.checkbox.disabled=!ready||expired||!selected;card.approve.disabled=!ready||expired||!selected||!card.checkbox.checked;}
   for(const button of card.optionButtons||[])button.disabled=!ready||!button.optionAvailable;
   if(card.decline)card.decline.disabled=!ready;
@@ -40,7 +40,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
  function buildCard(r,previous,first){
   const source=r,signature=JSON.stringify(source),options=source.options||[];
   const wanted=previous?.signature===signature?previous.selectedOptionId:null;
-  const option=options.find(o=>o.id===wanted&&o.available)||(!wanted?options.find(o=>o.id==='balanced'&&o.available):null);
+  const option=options.find(o=>o.id===wanted&&o.available)||(!wanted?options.find(o=>['balanced','reconfirm-rounding'].includes(o.id)&&o.available):null);
   if(options.length)r={...source,rows:option?.rows||[],ratio:option?.ratio,type:option?.activityType||source.type};
   const el=node('details','panel price-review'),summary=node('summary','price-review-heading'),title=node('div');
   el.dataset.reviewId=r.id;el.open=previous?.el.open??(first&&r.status==='pending');
@@ -50,9 +50,14 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
   function populate(){if(populated)return;populated=true;
    const body=node('div','price-review-body'),caption=node('p','helper','下表包含本商品全部规格。已有守护价与建议价由已核对原价 × 折扣计算；未调整的规格保持原设置。');
    body.append(caption);
+   if(source.kind==='rounding-reconfirmation'){
+    caption.textContent='旧确认金额因取整规则更新而失效。左列来自原确认单，右列按相同折扣向上取分；旧确认金额与完整历史均保留。必须重新确认后才能执行。';
+    const duration=source.durationMs,seconds=Number.isSafeInteger(duration)?duration/1000:null;
+    body.append(node('p','detail-note',`沿用活动：${source.type}${seconds!=null?' · 时长 '+Math.floor(seconds/86400)+' 天 '+Math.floor(seconds%86400/3600)+' 时 '+Math.floor(seconds%3600/60)+' 分 '+seconds%60+' 秒':''}${source.activityLimit!=null?' · 总限量 '+source.activityLimit+' 件':''}。`));
+   }
    if(options.length){
     const activities=node('div','price-activity-comparison');
-    for(const type of ['限量抢购','限时抢购']){
+    for(const type of source.kind==='rounding-reconfirmation'?[source.type]:['限量抢购','限时抢购']){
      const candidates=options.filter(o=>o.activityType===type),safe=candidates.filter(o=>o.available&&o.rows.every(s=>s.saleFen>=s.previousFen)),unverified=candidates.some(o=>o.validationStatus==='unverified');
      const block=node('div','price-activity-status');
      block.append(node('strong','',type),node('p','helper',unverified?'待目标活动实时核验；切换类型不代表跳过价格限制。':safe.length?'有不降价候选方案，仍需目标活动实时校验。':'当前已读限制下没有不降价方案；请查看各方案的具体原因。'));
@@ -127,7 +132,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
     actions.append(approve,decline);body.append(actions);Object.assign(card,{checkbox,approve,decline});
     checkbox.onchange=()=>updateControls(card);approve.onclick=()=>void decide(card,'approve');decline.onclick=()=>void decide(card,'decline');
    }
-   if(['pending','declined'].includes(r.status)){
+   if(['pending','declined'].includes(r.status)||r.requiresReconfirmation){
     const row=node('div','price-review-foot'),note=node('p','helper'),recalculate=node('button','text-button','重新核对');row.append(note,recalculate);body.append(row);Object.assign(card,{note,recalculate});recalculate.onclick=()=>void decide(card,'recalculate');
    }else body.append(node('p','helper',r.status==='approved'?(r.approvalKind==='automatic-price-increase'?'本表由你开启的本店自动提价规则生成，已记录确切价格；未采用任何进一步降价。':'已记录你确认的本表确切价格。')+'是否恢复成功，请以商品折扣及独立回读结果为准。':(r.supersededReason||'已请求重新核对')+'；这份建议不会用于执行。'));
    el.append(body);updateControls(card);

@@ -63,7 +63,13 @@ export class GuardianService {
     }
     let plan=planOriginalRestore(source,current,this.policy,this.now());
     if(source!==baseline){const {fingerprint:previous,...body}=plan;plan={...body,durationMs:baseline.durationMs};plan.fingerprint=fingerprint(plan);}
-    return applyCampaignPolicy(applyPriceTarget(plan,review),this.journal);
+    try{return applyCampaignPolicy(applyPriceTarget(plan,review),this.journal);}
+    catch(error){
+      if(error.code!=='PRICE_APPROVAL_CHANGED')throw error;
+      const proposal=this.journal.recordPriceReconfirmation(applyCampaignPolicy(plan,this.journal),this.now());
+      throw Object.assign(new Error(proposal.status==='declined'?'旧确认金额已失效；已保留暂不调整选择，可在价格确认页重新核对。':'旧确认金额与当前取整规则不一致，请在价格确认页核对新金额并重新确认。'),
+        {code:'PRICE_RECONFIRM_REQUIRED',reviewId:proposal.id});
+    }
   }
   checkPriceRules(plan,loss){
     // Another activity's removal rule is evidence of that activity's loss,

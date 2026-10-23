@@ -4,6 +4,8 @@ import { resolve, relative, isAbsolute, join } from 'node:path';
 import { id, requireThat } from './policy.mjs';
 import {randomUUID} from 'node:crypto';
 import {redactDiagnostic} from './diagnostics.mjs';
+import {currentReadOperation,bounded,rawReadObject} from './read-operations.mjs';
+import {accountSlice} from './platform-snapshot.mjs';
 
 export class DedicatedBrowser {
   constructor(root, { viewport = {width:1440,height:960}, deviceScaleFactor = 1, test = false } = {}) {
@@ -32,20 +34,33 @@ export class DedicatedBrowser {
     });
     return this.context;
   }
-  async page() { requireThat(this.context,'NO_BROWSER','专用浏览器未启动');return this.context.newPage(); }
-  async close() { const context=this.context;this.context=null;this.loginMode=false;this.shopId=null;if(context)await context.close(); }
-  async failure(page,taskId,stage,error,observation=null) {
+  async page() { requireThat(this.context,'NO_BROWSER','专用浏览器未启动');const context=this.context,op=currentReadOperation();return op?op.newPage(()=>context.newPage()):context.newPage(); }
+  async close() { const context=this.context;if(context)await context.close();if(this.context===context){this.context=null;this.loginMode=false;this.shopId=null;} }
+  async failure(page,taskId,stage,error,observation=null,captureObservation=null) {
     const folder=join(this.root,'evidence',taskId.replace(/[^a-zA-Z0-9-]/g,''));await mkdir(folder,{recursive:true});
     const at=Date.now(),record=stage+'-'+at;
-    // Never associate a fresh error JSON with a stale screenshot.
+    // Persist the error before any browser call: an unresponsive renderer must
+    // not hide the original failure or prevent diagnostic export.
+    const save=async value=>{
+      const data=JSON.stringify(redactDiagnostic({at,stage,code:error.code||'PAGE_ERROR',message:String(error.message).slice(0,1200),...(value?{observation:value}: {}),...(this.diagnosticContext?{runtimeBuild:this.diagnosticContext}:{})}),null,2);
+      await writeFile(join(folder,record+'.json'),data,'utf8');await writeFile(join(folder,stage+'.json'),data,'utf8');
+    };
+    await save(observation);
     await unlink(join(folder,stage+'.png')).catch(()=>{});
-    if(!/LOGIN|ACCOUNT|SHOP_MISMATCH/.test(error.code||'')){
-      const screenshot=await page.screenshot({fullPage:false}).catch(()=>null);
+    let safeCapture=!/LOGIN|ACCOUNT|SHOP_MISMATCH/.test(error.code||'');
+    if(page&&safeCapture&&typeof rawReadObject(page).evaluate==='function'){
+      try{const account=await bounded(rawReadObject(page).evaluate(accountSlice),1000,Error('故障页登录状态无法读取'));
+        if(account.login){safeCapture=false;observation={...observation,loginRequired:true};await save(observation);}
+      }catch{safeCapture=false;observation={...observation,pageCaptureUnavailable:true};await save(observation);}
+    }
+    // A login form can appear during a failed non-read operation too. Never
+    // capture its phone/password/verification fields merely because the outer
+    // exception was a locator timeout rather than LOGIN_REQUIRED.
+    if(safeCapture&&captureObservation)try{observation={...observation,...await bounded(Promise.resolve().then(captureObservation),2000,Error('诊断DOM采集超时'))};await save(observation);}catch{}
+    if(page&&safeCapture){
+      const screenshot=await bounded(rawReadObject(page).screenshot({fullPage:false,timeout:2000}),2500,Error('故障截图超时')).catch(()=>null);
       if(screenshot){await writeFile(join(folder,record+'.png'),screenshot);await writeFile(join(folder,stage+'.png'),screenshot);}
     }
-    // No cookies, browser storage, request headers, or auth-bearing URLs.
-    const data=JSON.stringify(redactDiagnostic({at,stage,code:error.code||'PAGE_ERROR',message:String(error.message).slice(0,1200),...(observation?{observation}: {}),...(this.diagnosticContext?{runtimeBuild:this.diagnosticContext}:{})}),null,2);
-    await writeFile(join(folder,record+'.json'),data,'utf8');await writeFile(join(folder,stage+'.json'),data,'utf8');
     // Keep five occurrences per stage, plus the compatible latest files.
     const records=(await readdir(folder)).filter(n=>n.startsWith(stage+'-')&&/\d+\.json$/.test(n)).sort().reverse();
     for(const name of records.slice(5))for(const file of [name,name.replace(/\.json$/,'.png')])await unlink(join(folder,file)).catch(()=>{});

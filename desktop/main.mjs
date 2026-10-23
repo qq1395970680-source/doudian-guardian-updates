@@ -10,6 +10,8 @@ import {tmpdir} from 'node:os';
 import {ensureService,probeService,shutdownService,isAllowedNavigation,upgradeService} from './service-controller.mjs';
 import {prepareBackend,launchBackend} from './backend.mjs';
 import {validateTransfer,TRANSFER_MAX_BYTES} from '../src/migration.mjs';
+import {repairReadonlyService} from './read-repair.mjs';
+import {ownedProcessCommand} from './owned-processes.mjs';
 
 const product='抖店折扣守护';
 // Integration tests use an explicitly isolated temporary runtime and a mock
@@ -68,6 +70,16 @@ async function stopAndQuit(){
  catch(e){await log(e);await message('暂未退出，当前动作仍在收尾',e.message);}
  finally{stopping=false;}
 }
+async function repairReadonly(){
+ if(testMode||stopping||refreshing)throw Error('当前不能执行后台维护');
+ const choice=await dialog.showMessageBox(window,{type:'question',title:'修复只读后台',message:'暂停守护，核对并重新启动卡住的只读后台？',
+  detail:'仅在确认没有待核实提交，且已收到同一后台停止写入的回复后处理。程序会核对后台和专用浏览器的路径、启动时间与进程归属；无法核对时保留现场。重开后请重新连接店铺并开启守护。',buttons:['暂停并修复','取消'],defaultId:1,cancelId:1});
+ if(choice.response!==0)return;stopping=true;
+ try{
+  const result=await repairReadonlyService({url,runtime,inspect:expected=>ownedProcessCommand('inspect',expected),terminate:(expected,identity)=>ownedProcessCommand('terminate',expected,identity),start:connect});
+  await writeFile(join(runtime,'read-repair-last.json'),JSON.stringify({at:Date.now(),...result}),'utf8');await message('后台已重新启动','请在店铺管理重新连接，并开启守护。原历史、价格批准和提交记录完整保留。');
+ }catch(error){await log(error);await message('只读后台维护未完成',error.message);}finally{stopping=false;}
+}
 async function sourceProject(){
  const target=join(app.getPath('documents'),product+'源码','desktop-'+app.getVersion());
  try{await access(target);}catch{await mkdir(target,{recursive:true});await cp(join(resources,'source'),target,{recursive:true,force:false,errorOnExist:true});}
@@ -91,6 +103,7 @@ async function information(){
 }
 function menus(){
  const common=[{label:'打开工作台',click:show},{label:'重新连接后台',click:()=>connect().catch(e=>message('连接未完成',e.message))},
+  {label:'修复只读后台',click:()=>repairReadonly().catch(e=>message('维护未完成',e.message))},
   {type:'separator'},{label:'停止守护并退出',click:stopAndQuit},{label:'仅退出窗口，后台继续',click:()=>{exiting=true;app.quit();}}];
  tray.setContextMenu(Menu.buildFromTemplate(common));
  Menu.setApplicationMenu(null);
@@ -102,7 +115,7 @@ async function desktopAction(action){
   window.webContents.setZoomFactor(next);return{zoom:next};
  }
  const actions={reconnect:connect,source:sourceProject,data:()=>shell.openPath(runtime),diagnostics:async()=>{const folder=join(runtime,'diagnostics');await mkdir(folder,{recursive:true});await shell.openPath(folder);},information,
-  'quit-window':()=>{exiting=true;setTimeout(()=>app.quit(),50);},'stop-quit':stopAndQuit};
+  'quit-window':()=>{exiting=true;setTimeout(()=>app.quit(),50);},'stop-quit':stopAndQuit,'repair-readonly':repairReadonly};
  if(!Object.hasOwn(actions,action))throw Error('程序操作无效');await actions[action]();return{ok:true};
 }
 async function refresh(){

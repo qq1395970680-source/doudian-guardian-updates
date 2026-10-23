@@ -4,6 +4,8 @@ import {join,resolve,relative,isAbsolute,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import './create-desktop-icon.mjs';
 import {projectBuild} from '../src/build.mjs';
+const helperBuild=spawnSync('pwsh.exe',['-NoLogo','-File',resolve(import.meta.dirname,'build-owned-processes.ps1')],{stdio:'inherit',windowsHide:true});
+if(helperBuild.status!==0)throw Error('Owned process helper build failed');
 const root=resolve(import.meta.dirname,'..'),stage=join(root,'.desktop');
 await cp(join(root,'desktop/assets'),join(root,'build-assets'),{recursive:true});
 // This is build-only staging, never a runtime or a user-data directory.

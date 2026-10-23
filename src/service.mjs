@@ -31,13 +31,16 @@ export class GuardianService {
     this.recovered=false;this.lastHistoryRead=this.now();
     this.priceIncreaseFollowups=new Set();
     this.priorityWatch=null;this.priorityListing=null;this.lastPriorityPoll=0;this.priorityPoll=null;this.priorityResume=false;this.lastPriorityCheck=null;
-    this.platform.assertWrite=()=>{requireThat(!this.stopRequested&&this.policy.liveEnabled&&this.policy.cutoverConfirmed,'STOPPED','后台写入已停止');this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
+    this.platform.assertWrite=()=>{requireThat(!this.stopRequested&&this.policy.liveEnabled&&this.policy.cutoverConfirmed,'STOPPED','后台写入已停止');
+      const health=this.platform.readHealth?.();requireThat(!health?.quarantined&&!health?.active?.length,'READS_PENDING','只读页面尚未完成清理，暂停提交');
+      this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
   }
   status() {
     const tasks=this.policy.shopId?this.journal.list(this.policy.shopId):[];
-    return {shopId:this.policy.shopId,running:this.running,busy:this.busy,nextAt:this.nextAt,lastRun:this.lastRun,lastSuccessfulRun:this.lastSuccessfulRun,lastPriorityCheck:this.lastPriorityCheck,
+    return {shopId:this.policy.shopId,running:this.running,busy:this.busy,nextAt:this.nextAt,patrolStartedAt:this.patrolStartedAt||null,lastRun:this.lastRun,lastSuccessfulRun:this.lastSuccessfulRun,lastPriorityCheck:this.lastPriorityCheck,
       verified:tasks.filter(t=>t.phase==='verified').reduce((n,t)=>n+t.plans.length,0),unknown:tasks.filter(t=>['submitting','unknown','verifying'].includes(t.phase)).length,
       blocked:tasks.filter(t=>t.phase==='blocked').length,
+      readHealth:this.platform.readHealth?.()||null,
       tasks:tasks.slice(0,100).map(t=>({id:t.id,title:t.title,phase:t.phase,products:t.plans.map(p=>p.productId),updatedAt:t.updatedAt,reason:t.reason||null,receipt:t.receipt||null}))};
   }
   recordRun(run){
@@ -177,6 +180,7 @@ export class GuardianService {
           this.priceIncreaseFollowups.add(review.productId);
         }catch(approvalError){this.journal.event(null,'price-increase-review-required',{shopId:task.shopId,productId:review.productId,code:approvalError.code,message:approvalError.message},this.now());}
       }
+      return {error};
     }finally{if(this.platform.release)await this.platform.release(this.journal.get(task.id),draft).catch(()=>{});}
   }
   async recoverPriceIncreases(){
@@ -207,7 +211,7 @@ export class GuardianService {
     if(this.priceIncreaseFollowups.size||submitted)this.priorityResume=true;
     return submitted;
   }
-  async recoverBatch(members,blocked){
+  async recoverBatch(members,blocked,{capacityRetry=0}={}){
     const observed=await readBatchProducts(this.platform,members),ready=[];
     for(const entry of observed){
       if(entry.error){blocked(entry.member,entry.error);continue;}
@@ -272,8 +276,23 @@ export class GuardianService {
       const lossEvidence=lossEvidenceFor(proofs);
       let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
       if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
-      if(task.phase==='queued')await this.execute(task);
+      const execution=task.phase==='queued'?await this.execute(task):null;
       task=this.journal.get(task.id);submitted=submitted||task.submitAttempts>0;
+      const capacity=execution?.error?.detail?.formCapacity;
+      if(execution?.error?.code==='FORM_BATCH_CAPACITY'&&capacityRetry===0&&task.phase==='blocked'&&task.submitAttempts===0&&
+        capacity?.scopeConfirmed&&Number.isInteger(capacity.pageSize)&&capacity.pageSize>0&&capacity.pageSize<plans.length&&
+        this.now()-capacity.observedAt>=0&&this.now()-capacity.observedAt<120000){
+        this.journal.event(task.id,'batch-capacity-regrouped',{shopId:this.policy.shopId,products:plans.length,observedCapacity:capacity.pageSize,submitAttempts:0},this.now());
+        // Only the live, scoped form capacity permits this bounded regroup.
+        // Every child obtains new loss/SKU/price proofs; no failed membership or
+        // unknown submission is retried through this path.
+        const selected=eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId));
+        for(const part of recoveryBatches(selected,{maxProducts:capacity.pageSize,key:m=>restorationGroupKey(m.plan)})){
+          if(this.stopRequested)break;
+          const result=await this.recoverBatch(part,blocked,{capacityRetry:1});submitted=submitted||result.submitted;differentActivity=differentActivity||result.differentActivity;
+        }
+        continue;
+      }
       for(const member of eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId))){
         if(task.phase==='verified')this.journal.clearProductCheck(this.policy.shopId,member.baseline.productId);
         else if(task.phase==='blocked')blocked(member,Object.assign(new Error(task.reason||'本批未提交'),{code:'RESTORE_BLOCKED'}));
@@ -413,7 +432,7 @@ export class GuardianService {
     this.journal.lease(this.policy.shopId,this.owner,this.now());this.busy=true;this.priorityResume=false;this.priorityListing=null;
     let leaseError=null;
     const heartbeat=setInterval(()=>{try{this.journal.lease(this.policy.shopId,this.owner,this.now());}catch(error){leaseError=error;this.stopRequested=true;}},20000);
-    const startedAt=this.now();
+    const startedAt=this.now();this.patrolStartedAt=startedAt;
     try{
       if(!this.recovered){this.journal.recoverInterrupted(this.policy.shopId);this.recovered=true;}
       for(const task of this.journal.list(this.policy.shopId).filter(t=>['unknown','verifying'].includes(t.phase))){
@@ -513,11 +532,16 @@ export class GuardianService {
       if(leaseError)throw leaseError;
       requireThat(!this.stopRequested,'STOPPED','本轮巡检已暂停，尚未完成');
       this.recordRun({startedAt,finishedAt:this.now(),ok:true});
-    }catch(error){this.recordRun({startedAt,finishedAt:this.now(),ok:false,code:error.code||'ERROR',message:String(error.message).slice(0,1000)});}
+    }catch(error){
+      this.recordRun({startedAt,finishedAt:this.now(),ok:false,code:error.code||'ERROR',message:String(error.message).slice(0,1000)});
+      if(['LOGIN_REQUIRED','READ_CLEANUP_BLOCKED'].includes(error.code))this.stop();
+    }
     finally{
       // A stop or failed detail read must also drain the read-only monitor;
       // otherwise the next shop, maintenance handoff or write could overlap it.
-      await this.settlePriorityPoll();clearInterval(heartbeat);this.journal.release(this.policy.shopId,this.owner);this.busy=false;
+      await this.settlePriorityPoll();
+      if(this.platform.readHealth?.().quarantined){this.cleanupHeartbeat=heartbeat;this.running=false;this.nextAt=null;}
+      else{clearInterval(heartbeat);this.journal.release(this.policy.shopId,this.owner);this.busy=false;}
     }
     return this.status();
   }
@@ -538,5 +562,5 @@ export class GuardianService {
     };
     this.timer=setTimeout(run,0);
   }
-  stop() {this.running=false;this.stopRequested=true;this.nextAt=null;clearTimeout(this.timer);}
+  stop() {this.running=false;this.stopRequested=true;this.nextAt=null;clearTimeout(this.timer);this.platform.cancelReads?.();}
 }

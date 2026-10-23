@@ -58,6 +58,11 @@ export function formSlice() {
   const pagination={page:pager.length===1?Number(pager[0].title):null,activeCount:pager.length,nextCount:next.length,
     nextDisabled:next.length===1?!!disabled(next[0]):null,previousCount:prev.length,previousDisabled:prev.length===1?!!disabled(prev[0]):null,
     pageSize:Number(pagerText.match(/(\d+)\s*(?:条|个|件)\s*\/\s*页/)?.[1])||null,total:Number(pagerText.match(/共\s*(\d+)\s*(?:条|个|件)/)?.[1])||null,text:pagerText.slice(0,500)};
+  let owner=grid?.parentElement;while(owner&&pagerRoot&&!owner.contains(pagerRoot))owner=owner.parentElement;
+  const roots=all('.ecom-mcenter-pagination').filter(formControl);
+  Object.assign(pagination,{present:!!pagerRoot||next.length>0,rootCount:roots.length,
+    scopeConfirmed:!!pagerRoot&&roots.length===1&&roots[0]===pagerRoot&&grids.length===1&&!!owner&&!['BODY','HTML'].includes(owner.tagName),
+    pages:pagerRoot?all('li[title]',pagerRoot).map(e=>e.title).filter(t=>/^\d+$/.test(t)).map(Number):[]});
   const dialogs=all('[role="dialog"]').filter(visible),busyNodes=all('.ecom-mcenter-spin-spinning,.ecom-mcenter-zform-item-is-validating').filter(visible);
   const riskButtons=dialogs.length===1?all('button',dialogs[0]).filter(e=>visible(e)&&text(e).replace(/\s/g,'')==='仍要创建'&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'):[];
   const originalRiskReady=dialogs.length===1&&/^\d+个商品存在低价风险，请谨慎新建/.test(text(dialogs[0]).replace(/\s/g,''))&&riskButtons.length===1;
@@ -145,7 +150,12 @@ export function accountSlice(){
    }
   }
  }
- return {names,ids:[...new Set(ids)],login:/登录|login/.test(location.pathname)};
+ const inputs=[...document.querySelectorAll('input')].filter(visible);
+ const loginButton=[...document.querySelectorAll('button,[role="button"]')].filter(visible).some(e=>/^登\s*录$/.test(text(e)));
+ const phone=inputs.some(e=>/手机号|手机号码|手机|邮箱/.test([e.placeholder,e.getAttribute('aria-label'),e.name].filter(Boolean).join(' ')));
+ const secret=inputs.some(e=>e.type==='password'||/验证码|密码/.test([e.placeholder,e.getAttribute('aria-label'),e.name].filter(Boolean).join(' ')));
+ const loginForm=loginButton&&phone&&secret;
+ return {names,ids:[...new Set(ids)],login:/登录|login/.test(location.pathname)||loginForm,loginForm};
 }
 
 export function pagerSlice(){

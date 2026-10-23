@@ -81,3 +81,24 @@ test('failure capture keeps recent occurrences and never pairs an error with a s
   assert.ok(!(await readdir(folder)).includes('precheck.png'));
  }finally{await rm(runtime,{recursive:true,force:true});}
 });
+
+test('failure JSON is durable before an unresponsive DOM or screenshot completes',async()=>{
+ const runtime=await mkdtemp(join(tmpdir(),'guardian-failure-first-')),browser=new DedicatedBrowser(runtime,{test:true});
+ try{
+  const pending=browser.failure({screenshot:()=>new Promise(()=>{})},'400001','detail',{code:'READ_OPERATION_TIMEOUT',message:'原始读取卡住'},
+   {shopId:'900001',campaignId:'400001'},()=>new Promise(()=>{}));
+  await new Promise(r=>setTimeout(r,100));
+  const record=JSON.parse(await readFile(join(runtime,'evidence','400001','detail.json'),'utf8'));assert.equal(record.code,'READ_OPERATION_TIMEOUT');
+  await pending;assert.equal(record.observation.shopId,'900001');
+ }finally{await rm(runtime,{recursive:true,force:true});}
+});
+
+test('a generic locator timeout on an expired login page cannot capture login DOM or screenshots',async()=>{
+ const runtime=await mkdtemp(join(tmpdir(),'guardian-login-private-')),browser=new DedicatedBrowser(runtime,{test:true});let captures=0;
+ try{
+  await browser.failure({evaluate:async()=>({login:true}),screenshot:async()=>{captures++;return Buffer.from('private-login');}},'300001','prepare',
+   {code:'TimeoutError',message:'等待活动字段超时'},{shopId:'900001'},async()=>{captures++;return{phone:'private-phone'};});
+  const folder=join(runtime,'evidence','300001'),record=JSON.parse(await readFile(join(folder,'prepare.json'),'utf8'));
+  assert.equal(captures,0);assert.equal(record.observation.loginRequired,true);assert.ok(!(await readdir(folder)).some(f=>f.endsWith('.png')));
+ }finally{await rm(runtime,{recursive:true,force:true});}
+});

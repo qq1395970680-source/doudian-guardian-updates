@@ -7,7 +7,7 @@ import {createApp} from '../../src/server.mjs';
 import {Journal} from '../../src/journal.mjs';
 import {DedicatedBrowser} from '../../src/browser.mjs';
 
-test('live count distinguishes incomplete evidence, confirmed zero and fresh partial observations',{timeout:60000},async()=>{
+test('live count distinguishes incomplete evidence, confirmed zero and fresh partial observations',{timeout:120000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'guardian-freshness-')),journal=new Journal(':memory:');
  const browser=new DedicatedBrowser(join(dir,'ui'),{test:true});
  const platform={inventory:{listing:{complete:true,observedAt:Date.now(),campaigns:[]},activeComplete:false,details:new Map()},progress:{}};

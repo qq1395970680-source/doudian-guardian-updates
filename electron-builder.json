@@ -12,6 +12,7 @@
   ],
   "afterPack": "scripts/after-desktop-pack.mjs",
   "asar": true,
+  "asarUnpack": ["desktop/assets/GuardianOwnedProcesses.exe"],
   "npmRebuild": false,
   "win": {"target": ["nsis"], "icon": "desktop/assets/guardian.ico", "executableName": "DoudianGuardian", "signExecutable": false},
   "nsis": {

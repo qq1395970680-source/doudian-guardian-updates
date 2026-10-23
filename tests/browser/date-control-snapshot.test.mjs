@@ -15,7 +15,7 @@ test('date diagnosis records visible non-dropdown DOM without modifying the form
 test('a date preparation failure preserves real date controls alongside the failure evidence',async()=>{
  const browser=await chromium.launch({headless:true}),page=await browser.newPage();try{
   await page.setContent('<input id="title"><input readonly placeholder="开始日期" value="2026/10/21 10:00:00"><input readonly placeholder="结束日期" value="2026/11/18 10:00:07"><div class="fixture-calendar-popup"><button aria-label="下个月">下一月</button><table><tr><td title="2026-11-18">18</td></tr></table></div>');
-  let captured;await DoudianPlatform.prototype.fault.call({browser:{failure:async(_page,_task,_stage,_error,observation)=>{captured=observation;}}},page,'local-test','prepare',new Error('locator picker-dropdown waitFor timeout'));
+  let captured;await DoudianPlatform.prototype.fault.call({policy:{shopId:'900001'},readHealth:()=>({active:[]}),browser:{failure:async(_page,_task,_stage,_error,observation,capture)=>{captured={...observation,...await capture()};}}},page,'local-test','prepare',new Error('locator picker-dropdown waitFor timeout'));
   assert.equal(captured.dateControls.diagnosticOnly,true);assert.ok(captured.dateControls.panels.some(p=>p.className==='fixture-calendar-popup'));
  }finally{await browser.close();}
 });

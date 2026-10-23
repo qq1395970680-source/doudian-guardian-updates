@@ -21,7 +21,7 @@ for(const mismatch of [true,false])test(`20 product precheck through recovery: $
  Object.assign(original,{type:'限量抢购',status:'进行中',risk:true,autoRenew:true,startAt:Math.floor(started/1000)*1000-100000,
   endAt:Math.floor(started/1000)*1000+7*86400000-100000,products:[],removals:products.map(p=>({...p,reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。'}))});
  let captured;
- const failure=browser.failure.bind(browser);browser.failure=async(...args)=>{captured=structuredClone(args[4]);return failure(...args);};
+ const failure=browser.failure.bind(browser);browser.failure=async(...args)=>{captured=structuredClone(args[4]);const capture=args[5];if(capture)args[5]=async()=>{const extra=await capture();captured={...captured,...structuredClone(extra)};return extra;};return failure(...args);};
  if(mismatch){const expand=platform.expand.bind(platform);platform.expand=async page=>{await expand(page);await page.locator('#count').evaluate(e=>e.textContent='已选数量 19 个');};}
  try{
   const baselines=products.map(p=>({...p,shopId:policy.shopId,source:'verified-platform-history',complete:true,type:'限量抢购',campaignId:original.id,

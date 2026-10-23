@@ -100,7 +100,8 @@ function render(s){
  if(s.instance&&s.instance!==instance){location.reload();return;}state=s;
  $('action-alert').hidden=s.lastAction?.ok!==false||!!s.action;if(s.lastAction?.ok===false)text('action-alert',friendly(s.lastAction.message));
  text('shop',s.shopId?(s.name||'店铺')+' · '+s.shopId:'尚未登录店铺');text('avatar',(s.name||'店').slice(0,1));$('shop-dot').classList.toggle('online',!!s.connection);
- text('version','v'+s.version);text('update-version','当前版本 '+(window.guardianDesktop?.version||s.version));text('footer-state',s.running?'守护正在后台运行':'后台已连接');
+ const desktopVersion=window.guardianDesktop?.version,versionMismatch=!!desktopVersion&&desktopVersion!==s.version;
+ text('version','后台 v'+s.version);text('update-version',desktopVersion?'桌面 '+desktopVersion+' · 后台 '+s.version+(versionMismatch?'（后台尚未切换）':''):'后台 '+s.version);text('footer-state',s.running?'守护正在后台运行':'后台已连接');
  text('connection-label',online?(s.running?'后台守护中':'后台已连接'):'正在重新连接');$('connection-dot').classList.toggle('online',online);
  const p=s.progress||{},working=!!(s.action||s.busy);text('run-pill',s.running?'后台守护已开启':working?'正在同步数据':s.connection?'店铺已连接':'等待连接店铺');
  text('hero-title',s.running?'折扣守护，正在进行':working?'正在同步店铺折扣':s.connection?'你的店铺，已准备就绪':'从连接店铺开始');
@@ -110,6 +111,17 @@ function render(s){
  text('progress',[s.action,p.stage,Number.isInteger(p.activeRead)&&Number.isInteger(p.activeTotal)?p.activeRead+' / '+p.activeTotal+' 个当前活动':''].filter(Boolean).join(' · ')||(s.running?'等待下一轮巡检':'守护尚未开启'));
  text('schedule','上次成功：'+time(s.lastSuccessfulRun?.finishedAt||(s.lastRun?.ok?s.lastRun.finishedAt:null))+'　'+(working?'本轮进行中':s.nextAt?'下一轮：'+time(s.nextAt):'等待开启'));
  text('patrol-status',working?'同步中':s.running?'自动巡检':'待机');text('unknown-count',s.unknown||0);text('verified',s.verified||0);text('blocked',s.blocked||0);text('nav-count',s.unknown||0);$('nav-count').hidden=!s.unknown;
+ const reads=s.readHealth?.active||[],blockedCleanup=s.readHealth?.quarantined===true,loginRequired=s.lastRun?.code==='LOGIN_REQUIRED'&&!working&&!s.running;
+ if(reads.length){
+  const op=reads.reduce((a,b)=>a.startedAt<b.startedAt?a:b),remaining=Math.max(0,Math.ceil((op.deadline-Date.now())/1000));
+  text('progress',[s.action,p.stage,op.kind+(op.campaignId?' · 活动 '+op.campaignId:''),'步骤 '+op.lastStep,'读取期限剩余 '+remaining+' 秒'].filter(Boolean).join(' · '));
+  const age=Math.max(0,Math.floor((Date.now()-(p.at||s.patrolStartedAt||op.startedAt))/1000));
+  text('schedule','本轮开始：'+time(s.patrolStartedAt||op.startedAt)+'　业务进度已等待 '+age+' 秒　上次成功：'+time(s.lastSuccessfulRun?.finishedAt));
+  if(age>=120){text('patrol-status','读取较慢');text('run-pill','正在等待平台读取');}
+ }
+ if(blockedCleanup){text('progress','读取已中止，专用浏览器关闭尚未确认。请使用程序工具中的“修复只读后台”。');text('patrol-status','清理待核实');text('run-pill','守护已暂停');}
+ if(loginRequired){text('progress','平台登录已失效，守护已暂停。请在店铺管理重新登录。');text('patrol-status','需要登录');text('run-pill','等待重新登录');}
+ if(!working&&!loginRequired&&!blockedCleanup&&s.lastRun?.ok===false){text('patrol-status','巡检未完成');text('progress',p.stage+' · '+(s.lastRun.message||s.lastRun.code));text('run-pill',s.running?'等待下一轮核对':'守护已暂停');}
  $('login').disabled=pending||!online||working||s.running||!!s.unknown;$('finish-login').disabled=pending||!online||working||s.running||(!s.loginOpen&&!s.shopId);text('finish-login',s.loginOpen?'登录完成':'重新连接');
  $('audit').disabled=pending||!online||working||s.running||!s.shopId;$('start').disabled=pending||!online||working||s.running||!s.connection;
  $('stop').disabled=pending||!online||!(s.running||s.busy);

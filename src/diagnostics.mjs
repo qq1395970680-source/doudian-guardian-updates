@@ -29,17 +29,18 @@ export async function exportDiagnostics({root,runtime,journal,shopId,status,cata
  const rows=journal.db.prepare("SELECT seq,task,at,kind,body FROM events WHERE json_extract(body,'$.shopId')=? OR task IN (SELECT id FROM tasks WHERE shop=?) ORDER BY seq DESC LIMIT 2001").all(shopId,shopId);
  let events=rows.slice(0,2000).map(({body,...r})=>({...r,detail:JSON.parse(body)}));
  while(events.length>1&&Buffer.byteLength(JSON.stringify(events))>8*1024*1024)events=events.slice(0,Math.ceil(events.length/2));
- const statusFields=['version','sourceBuild','build','startedAt','shopId','name','running','busy','nextAt','lastRun','lastSuccessfulRun','lastPriorityCheck','progress','unknown','verified','blocked','action','lastAction','loginOpen','originalRestoreAuthorized','automaticPriceIncreaseEnabled','priceReviewsPending'];
+ const statusFields=['version','sourceBuild','build','startedAt','shopId','name','running','busy','nextAt','patrolStartedAt','lastRun','lastSuccessfulRun','lastPriorityCheck','progress','readHealth','unknown','verified','blocked','action','lastAction','loginOpen','originalRestoreAuthorized','automaticPriceIncreaseEnabled','priceReviewsPending'];
  json('status.json',Object.fromEntries(statusFields.filter(k=>Object.hasOwn(status,k)).map(k=>[k,status[k]])));
  json('events.json',events);json('product-checks.json',checks);json('tasks.json',tasks);json('catalog.json',catalog);
  json('price-reviews.json',journal.priceReviews(shopId));
  const ids=new Set([...(catalog?.products||[]).map(p=>p.productId),...checks.map(c=>c.productId),...events.map(e=>e.detail?.productId)].filter(Boolean));
- const folders=new Set([...tasks.map(t=>t.id),...[...ids].flatMap(id=>[id,id+'-batch'])]);
+ const campaignIds=new Set([...(catalog?.campaignIds||[]),...(catalog?.products||[]).flatMap(p=>[p.campaignId,...(p.campaigns||[]).map(c=>c.id)]),...events.map(e=>e.detail?.campaignId)].filter(v=>/^\d+$/.test(v)));
+ const folders=new Set([...tasks.map(t=>t.id),...[...ids].flatMap(id=>[id,id+'-batch']),'inventory',...campaignIds]);
  let evidenceFiles=0;const evidence=[];
  for(const folder of folders){if(!/^[a-zA-Z0-9-]+$/.test(folder))continue;
   const base=join(runtime,'evidence',folder);
   try{if((await lstat(base)).isSymbolicLink())continue;
-   for(const name of await readdir(base))if(/^(precheck|prepare|submit)(?:-\d+)?\.json$/.test(name)){
+   for(const name of await readdir(base))if(/^(precheck|prepare|submit|list|detail|renewal|identity|close-monitors)(?:-\d+)?\.json$/.test(name)){
     const path=join('evidence',folder,name),data=JSON.parse((await safeRead(runtime,path)).toString('utf8'));
     const owner=data.observation?.shopId;
     // Older evidence lacks a shop marker; only a persisted task can prove its
@@ -64,7 +65,7 @@ export async function exportDiagnostics({root,runtime,journal,shopId,status,cata
  }
  for(const name of ['package.json','package-lock.json'])add('source/'+name,await safeRead(root,name,2*1024*1024));
  const maintenance=e=>e.detail?.code==='STOPPED'||/^STOPPED(?::|$)/.test(e.detail?.reason||'')||e.detail?.reason==='pre-submit-proof-expired-on-restart';
- const failures=events.filter(e=>!maintenance(e)&&['product-blocked','control-error','readback-error','verification-pending','blocked'].includes(e.kind));
+ const failures=events.filter(e=>!maintenance(e)&&['product-blocked','control-error','readback-error','verification-pending','blocked','read-operation-failed'].includes(e.kind));
  const recorded=e=>e.detail?.runtimeBuild;
  const validBuild=e=>/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/.test(recorded(e)?.version)&&/^[a-f0-9]{64}$/.test(recorded(e)?.sourceBuild);
  const latest=failures.reduce((a,b)=>!a||b.at>a.at?b:a,null);

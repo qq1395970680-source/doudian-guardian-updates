@@ -191,14 +191,34 @@ export class GuardianService {
   }
   async recoverPriceIncreases(){
     if(!this.priceIncreaseFollowups.size)return false;
-    let submitted=false;const latest=this.latestHistories();
-    // One bounded pass prevents an unstable platform rule from causing a
-    // price-adjustment loop. Durable exact targets survive a later restart.
-    for(const productId of [...this.priceIncreaseFollowups].slice(0,5)){
-      if(this.stopRequested)break;this.priceIncreaseFollowups.delete(productId);
-      if(this.policy.excludedProductIds?.includes(productId)||this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId)))continue;
+    let submitted=false;const latest=this.latestHistories(),members=[];
+    const pending=new Set(this.journal.list(this.policy.shopId).filter(t=>!['verified','blocked'].includes(t.phase)).flatMap(t=>t.plans.map(p=>p.productId)));
+    // Snapshot once: a newly observed higher floor is a separate recheck,
+    // never a recursive price-adjustment loop in this pass. Work not reached
+    // before a stop stays queued; exact approved targets also survive restart.
+    for(const productId of [...this.priceIncreaseFollowups]){
       const baseline=latest.get(productId),target=this.journal.priceTarget(this.policy.shopId,productId);
-      if(!baseline||target?.approvalKind!=='automatic-price-increase'||target.historicalFingerprint!==fingerprint(baseline))continue;
+      if(this.policy.excludedProductIds?.includes(productId)||pending.has(productId)||!baseline||target?.status!=='approved'||
+        target.approvalKind!=='automatic-price-increase'||target.historicalFingerprint!==fingerprint(baseline)){
+        this.priceIncreaseFollowups.delete(productId);continue;
+      }
+      members.push({baseline});
+    }
+    const blocked=(member,error)=>{
+      if(error.code==='STOPPED')throw error;
+      const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000)};
+      this.journal.putProductCheck(this.policy.shopId,productId,{...detail,lossKey:member.loss?.lossKey,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
+      this.journal.event(null,'price-increase-recovery-pending',detail,this.now());
+    };
+    if(this.platform.precheckBatch&&this.platform.lossBatch){
+      for(const batch of recoveryBatches(members)){
+        if(this.stopRequested)break;
+        for(const member of batch)this.priceIncreaseFollowups.delete(member.baseline.productId);
+        const result=await this.recoverBatch(batch,blocked);submitted=submitted||result.submitted;
+      }
+    }else for(const member of members){
+      if(this.stopRequested)break;
+      const {baseline}=member,productId=baseline.productId;this.priceIncreaseFollowups.delete(productId);
       try{
         const loss=await this.platform.loss(baseline,{fresh:true});
         requireThat(loss?.complete&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','自动提价前尚未确认当前活动');
@@ -212,7 +232,7 @@ export class GuardianService {
         if(next.phase==='queued')await this.execute(next);
         const outcome=this.journal.get(next.id);submitted=submitted||outcome.submitAttempts>0;
         if(outcome.phase==='verified')this.journal.clearProductCheck(this.policy.shopId,productId);
-      }catch(error){if(error.code==='STOPPED')throw error;this.journal.event(null,'price-increase-recovery-pending',{shopId:this.policy.shopId,productId,code:error.code,message:error.message},this.now());}
+      }catch(error){blocked(member,error);}
     }
     if(this.priceIncreaseFollowups.size||submitted)this.priorityResume=true;
     return submitted;
@@ -284,6 +304,21 @@ export class GuardianService {
       if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
       const execution=task.phase==='queued'?await this.execute(task):null;
       task=this.journal.get(task.id);submitted=submitted||task.submitAttempts>0;
+      const reportTaskBlocked=(member,error)=>{
+        const plan=task.plans.find(p=>p.productId===member.baseline.productId),target=this.journal.priceTarget(this.policy.shopId,member.baseline.productId);
+        // execute() may have approved an exact replacement from this direct
+        // unsubmitted draft. Its old-price rejection cannot reinstate the
+        // cooldown that approval just cleared, including after a restart.
+        // The failed task and old approval stay immutable; the replacement
+        // still needs fresh loss, SKU, price, draft and submission proofs.
+        if(task.phase==='blocked'&&task.submitAttempts===0&&task.riskAttempts===0&&task.submittedAt==null&&task.riskAttemptedAt==null&&
+          task.draftProof==null&&task.riskProof==null&&task.receipt==null&&target?.status==='approved'&&target.approvalKind==='automatic-price-increase'&&
+          target.id!==plan?.priceApprovalId&&target.historicalFingerprint===plan?.historicalFingerprint&&target.historicalFingerprint===fingerprint(member.baseline)&&
+          execution?.priceFailure?.recordedReviews.some(r=>r.id===target.id&&r.productId===plan.productId&&r.shopId===task.shopId)){
+          this.journal.clearProductCheck(this.policy.shopId,plan.productId);
+          this.journal.event(task.id,'product-target-recheck-pending',{shopId:task.shopId,productId:plan.productId,failedTaskId:task.id,previousApprovalId:plan.priceApprovalId||null,newReviewId:target.id},this.now());
+        }else blocked(member,error);
+      };
       const capacity=execution?.error?.detail?.formCapacity;
       if(execution?.error?.code==='FORM_BATCH_CAPACITY'&&capacityRetry===0&&task.phase==='blocked'&&task.submitAttempts===0&&
         capacity?.scopeConfirmed&&Number.isInteger(capacity.pageSize)&&capacity.pageSize>0&&capacity.pageSize<plans.length&&
@@ -309,7 +344,7 @@ export class GuardianService {
             'PRICE_ISOLATION_EVIDENCE','重新核对的商品集合不完整或未缩小');
           this.journal.event(task.id,'batch-draft-price-isolated',{shopId:this.policy.shopId,...isolation,submitAttempts:0,riskAttempts:0},this.now());
           for(const member of eligible.filter(m=>isolation.rejectedProductIds.includes(m.baseline.productId)))
-            blocked(member,Object.assign(new Error(task.reason||'商品价格需要确认'),{code:'PRICE_REVIEW_REQUIRED'}));
+            reportTaskBlocked(member,Object.assign(new Error(task.reason||'商品价格需要确认'),{code:'PRICE_REVIEW_REQUIRED'}));
           // Keep every clean member together, within the normal 50/500 budgets.
           // A new task must obtain new absence, SKU, price and draft evidence.
           const result=await this.recoverBatch(selected,blocked,{capacityRetry,priceIsolationDepth:priceIsolationDepth+1});
@@ -319,7 +354,7 @@ export class GuardianService {
       }
       for(const member of eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId))){
         if(task.phase==='verified')this.journal.clearProductCheck(this.policy.shopId,member.baseline.productId);
-        else if(task.phase==='blocked')blocked(member,Object.assign(new Error(task.reason||'本批未提交'),{code:'RESTORE_BLOCKED'}));
+        else if(task.phase==='blocked')reportTaskBlocked(member,Object.assign(new Error(task.reason||'本批未提交'),{code:'RESTORE_BLOCKED'}));
       }
     }
     return{submitted,differentActivity};
@@ -458,7 +493,7 @@ export class GuardianService {
     const heartbeat=setInterval(()=>{try{this.journal.lease(this.policy.shopId,this.owner,this.now());}catch(error){leaseError=error;this.stopRequested=true;}},20000);
     const startedAt=this.now();this.patrolStartedAt=startedAt;
     try{
-      if(!this.recovered){this.journal.recoverInterrupted(this.policy.shopId);this.recovered=true;}
+      if(!this.recovered){this.journal.recoverInterrupted(this.policy.shopId,this.now());this.recovered=true;}
       for(const task of this.journal.list(this.policy.shopId).filter(t=>['unknown','verifying'].includes(t.phase))){
         if(this.stopRequested)break;
         try{await this.reconcile(task);}catch(error){this.journal.event(task.id,'verification-pending',{code:error.code||'ERROR',message:error.message},this.now());}

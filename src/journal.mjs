@@ -14,6 +14,9 @@ const transitions = {
   submitting: ['verifying', 'unknown'], unknown: ['verifying', 'verified', 'blocked'],
   verifying: ['verified', 'unknown', 'blocked'], blocked: ['queued'], verified: []
 };
+const restartBlockReason='pre-submit-proof-expired-on-restart';
+const knownUnsubmitted=task=>task?.submitAttempts===0&&task.riskAttempts===0&&
+  task.submittedAt==null&&task.riskAttemptedAt==null&&task.draftProof==null&&task.riskProof==null&&task.receipt==null;
 export class Journal {
   constructor(path) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
@@ -72,7 +75,7 @@ export class Journal {
     return this.transaction(() => {
       const task = this.get(taskId);
       requireThat(task && task.phase === expected && transitions[expected]?.includes(phase), 'JOURNAL_TRANSITION', '任务状态已变化或不允许该操作');
-      if(expected==='blocked')requireThat(task.submitAttempts===0&&task.retryAfter>0&&task.retryAfter<=now,'RETRY_FORBIDDEN','只能重试已明确未提交且已到重试时间的任务');
+      if(expected==='blocked')requireThat(knownUnsubmitted(task)&&task.retryAfter>0&&task.retryAfter<=now,'RETRY_FORBIDDEN','只能重试主提交和风险确认均明确为零且已到重试时间的任务');
       const { id, shopId, phase: oldPhase, updatedAt, ...body } = task;
       Object.assign(body, patch);
       this.db.prepare('UPDATE tasks SET phase=?,body=?,updated=? WHERE id=? AND phase=?').run(phase, JSON.stringify(body), now, taskId, expected);
@@ -82,7 +85,7 @@ export class Journal {
   beginSubmit(taskId, proof, now = Date.now()) {
     const task = this.get(taskId);
     if(task)this.assertPricePlans(task.shopId,task.plans);
-    requireThat(task?.phase === 'prepared' && task.submitAttempts === 0 && proof?.taskId === taskId && proof.at > 0 && now - proof.at <= 30000,
+    requireThat(task?.phase === 'prepared' && knownUnsubmitted(task) && proof?.taskId === taskId && proof.at > 0 && now - proof.at <= 30000,
       'SUBMIT_PROOF', '提交证明缺失、过期或已尝试提交');
     const verified=proveDraft(task,proof.observation,now);
     requireThat(verified.plansFingerprint===proof.plansFingerprint&&verified.materialFingerprint===proof.materialFingerprint,'SUBMIT_PROOF','草稿证明与计划不一致');
@@ -105,10 +108,24 @@ export class Journal {
       this.event(taskId, 'risk-confirmation-attempted', { proof }, now); return this.get(taskId);
     });
   }
-  recoverInterrupted(shopId) {
+  recoverInterrupted(shopId,now=Date.now()) {
+    requireThat(Number.isSafeInteger(now)&&now>0,'RECOVERY_TIME','重启恢复时间无效');
     for (const task of this.list(shopId)) {
-      if (['submitting', 'verifying'].includes(task.phase)) this.transition(task.id, task.phase, 'unknown', { reason: 'process-restarted-readback-only' });
-      else if (['queued', 'prepared'].includes(task.phase)) this.transition(task.id, task.phase, 'blocked', { reason: 'pre-submit-proof-expired-on-restart' });
+      if (['submitting', 'verifying'].includes(task.phase)) this.transition(task.id, task.phase, 'unknown', { reason: 'process-restarted-readback-only' },now);
+      else if (['queued','prepared'].includes(task.phase)||task.phase==='blocked'&&task.reason===restartBlockReason&&task.retryAfter==null) {
+        this.transaction(()=>{
+          const current=this.get(task.id);
+          requireThat(current&&fingerprint(current)===fingerprint(task),'JOURNAL_TRANSITION','重启核验期间任务已变化');
+          const {id,shopId:storedShop,phase:previousPhase,updatedAt,...body}=current,safe=knownUnsubmitted(current);
+          const phase=safe?'blocked':'unknown',patch=safe?{reason:restartBlockReason,retryAfter:now}:{reason:'restart-submit-boundary-unconfirmed-readback-only'};
+          // Keep the old plan, exact approval identity and any contradictory
+          // boundary fields. This only permits a fresh normal recheck; it does
+          // not queue stale proof or manufacture a missing zero-attempt count.
+          Object.assign(body,patch);
+          this.db.prepare('UPDATE tasks SET phase=?,body=?,updated=? WHERE id=? AND phase=?').run(phase,JSON.stringify(body),now,id,previousPhase);
+          this.event(id,phase,{...patch,previousPhase,restartRecheckRequired:safe},now);
+        });
+      }
     }
   }
   remember(baseline, now = Date.now()) {

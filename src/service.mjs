@@ -6,6 +6,7 @@ import {applyPriceTarget,makePriceReviews} from './price-review.mjs';
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease} from './price-increase-policy.mjs';
 import {recoveryBatches,readBatchProducts} from './recovery-batches.mjs';
 import {checkRemovalPrices} from './removal-export.mjs';
+import {isolateDraftPriceFailure} from './draft-price-isolation.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -141,7 +142,7 @@ export class GuardianService {
     if(this.platform.release)await this.platform.release(verified).catch(()=>{});return true;
   }
   async execute(task) {
-    let draft;const priceReviews=[];
+    let draft,priceFailure=null;const priceReviews=[];
     try {
       requireThat(!this.stopRequested,'STOPPED','运行已停止');
       this.journal.assertPricePlans(task.shopId,task.plans);
@@ -161,8 +162,13 @@ export class GuardianService {
       if(!await this.reconcile(this.journal.get(task.id)))this.journal.transition(task.id,'verifying','unknown',{reason:'平台结果尚未回读确认'},this.now());
     }catch(error){
       if(error.code==='PRICE_REVIEW_REQUIRED'&&error.detail?.priceProbe){
-        try{for(const review of makePriceReviews(task,error.detail.priceProbe,this.now()))priceReviews.push(this.journal.recordPriceReview(review,this.now(),{
-          refreshPending:!!activePriceIncreaseGrant(this.journal,task.shopId,this.now())&&isAutomaticPriceIncrease(review)}));}
+        try{
+          const validatedAt=this.now(),probe=structuredClone(error.detail.priceProbe);
+          for(const review of makePriceReviews(task,probe,validatedAt))priceReviews.push(this.journal.recordPriceReview(review,this.now(),{
+            refreshPending:!!activePriceIncreaseGrant(this.journal,task.shopId,this.now())&&isAutomaticPriceIncrease(review)}));
+          priceFailure={code:error.code,taskId:task.id,shopId:task.shopId,plansFingerprint:fingerprint(task.plans),probe,validatedAt,
+            recordedReviews:priceReviews.map(({id,key,shopId,productId})=>({id,key,shopId,productId}))};
+        }
         catch(proposalError){error=proposalError;}
       }
       const current=this.journal.get(task.id),reason=`${error.code||'ERROR'}: ${String(error.message).slice(0,800)}`;
@@ -180,7 +186,7 @@ export class GuardianService {
           this.priceIncreaseFollowups.add(review.productId);
         }catch(approvalError){this.journal.event(null,'price-increase-review-required',{shopId:task.shopId,productId:review.productId,code:approvalError.code,message:approvalError.message},this.now());}
       }
-      return {error};
+      return {error,priceFailure};
     }finally{if(this.platform.release)await this.platform.release(this.journal.get(task.id),draft).catch(()=>{});}
   }
   async recoverPriceIncreases(){
@@ -211,7 +217,7 @@ export class GuardianService {
     if(this.priceIncreaseFollowups.size||submitted)this.priorityResume=true;
     return submitted;
   }
-  async recoverBatch(members,blocked,{capacityRetry=0}={}){
+  async recoverBatch(members,blocked,{capacityRetry=0,priceIsolationDepth=0}={}){
     const observed=await readBatchProducts(this.platform,members),ready=[];
     for(const entry of observed){
       if(entry.error){blocked(entry.member,entry.error);continue;}
@@ -233,7 +239,7 @@ export class GuardianService {
           const middle=Math.ceil(group.length/2);
           for(const part of [group.slice(0,middle),group.slice(middle)]){
             if(this.stopRequested)break;
-            const result=await this.recoverBatch(part,blocked);
+            const result=await this.recoverBatch(part,blocked,{capacityRetry,priceIsolationDepth});
             submitted=submitted||result.submitted;differentActivity=differentActivity||result.differentActivity;
           }
         }else for(const member of group)blocked(member,error);
@@ -289,9 +295,27 @@ export class GuardianService {
         const selected=eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId));
         for(const part of recoveryBatches(selected,{maxProducts:capacity.pageSize,key:m=>restorationGroupKey(m.plan)})){
           if(this.stopRequested)break;
-          const result=await this.recoverBatch(part,blocked,{capacityRetry:1});submitted=submitted||result.submitted;differentActivity=differentActivity||result.differentActivity;
+          const result=await this.recoverBatch(part,blocked,{capacityRetry:1,priceIsolationDepth});submitted=submitted||result.submitted;differentActivity=differentActivity||result.differentActivity;
         }
         continue;
+      }
+      if(!this.stopRequested&&execution?.priceFailure&&priceIsolationDepth<50){
+        let isolation=null;
+        try{isolation=isolateDraftPriceFailure(task,execution.priceFailure,this.now());}
+        catch(error){this.journal.event(task.id,'batch-price-isolation-refused',{shopId:this.policy.shopId,code:error.code||'ERROR',message:error.message},this.now());}
+        if(isolation){
+          const selected=eligible.filter(m=>isolation.cleanProductIds.includes(m.baseline.productId));
+          requireThat(selected.length===isolation.cleanProductIds.length&&selected.length<plans.length,
+            'PRICE_ISOLATION_EVIDENCE','重新核对的商品集合不完整或未缩小');
+          this.journal.event(task.id,'batch-draft-price-isolated',{shopId:this.policy.shopId,...isolation,submitAttempts:0,riskAttempts:0},this.now());
+          for(const member of eligible.filter(m=>isolation.rejectedProductIds.includes(m.baseline.productId)))
+            blocked(member,Object.assign(new Error(task.reason||'商品价格需要确认'),{code:'PRICE_REVIEW_REQUIRED'}));
+          // Keep every clean member together, within the normal 50/500 budgets.
+          // A new task must obtain new absence, SKU, price and draft evidence.
+          const result=await this.recoverBatch(selected,blocked,{capacityRetry,priceIsolationDepth:priceIsolationDepth+1});
+          submitted=submitted||result.submitted;differentActivity=differentActivity||result.differentActivity;
+          continue;
+        }
       }
       for(const member of eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId))){
         if(task.phase==='verified')this.journal.clearProductCheck(this.policy.shopId,member.baseline.productId);

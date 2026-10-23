@@ -1,14 +1,18 @@
 import {requireThat,restorationGroupKey} from './policy.mjs';
+import {RECOVERY_MAX_PRODUCTS,RECOVERY_MAX_SKUS} from './recovery-capacity.mjs';
 
 // These are application budgets, not a claim about the platform's limits.
-export function recoveryBatches(members,{key=m=>restorationGroupKey(m.baseline),maxProducts=50,maxSkus=500}={}){
+export function recoveryBatches(members,{key=m=>restorationGroupKey(m.baseline),maxProducts=RECOVERY_MAX_PRODUCTS,maxSkus=RECOVERY_MAX_SKUS}={}){
  const groups=new Map();
  for(const member of members){const k=key(member);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(member);}
  const batches=[];
  for(const group of groups.values()){
   let batch=[],skus=0;
   for(const member of group){
-   const count=member.baseline.skus.length;
+   // Historical oversized products get an independent read first. Once the
+   // current plan exists, restorePlan/Journal enforce hard execution bounds;
+   // never truncate history to manufacture a batch under the budget.
+   const count=(member.plan||member.baseline).skus.length;
    if(batch.length&&(batch.length>=maxProducts||skus+count>maxSkus)){batches.push(batch);batch=[];skus=0;}
    batch.push(member);skus+=count;
   }

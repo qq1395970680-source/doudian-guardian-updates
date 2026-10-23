@@ -78,8 +78,11 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
   const c=checks.find(c=>c.shopId===shopId&&c.productId===p.productId);
   if(c&&!p.current.length&&!p.scheduled.length){
    p.check=c;p.reason=p.reason||c.message;
-   if(c.code==='PRECHECK_MEMBERSHIP'&&!p.pending&&!p.excluded)p.recoveryFailure={stage:'precheck',code:c.code,message:c.message,at:c.at,retryAt:c.retryAt||null,
-    detail:c.precheckMembership||null,submission:'本次预查失败，尚未进入恢复任务入队和提交'};
+   if(['PRECHECK_MEMBERSHIP','RESTORE_SKU_BUDGET','RESTORE_PRODUCT_BUDGET'].includes(c.code)&&!p.pending&&!p.excluded)p.recoveryFailure={
+    stage:c.code==='PRECHECK_MEMBERSHIP'?'precheck':'planning',code:c.code,message:c.message,at:c.at,retryAt:c.retryAt||null,
+    detail:c.code==='PRECHECK_MEMBERSHIP'?c.precheckMembership||null:null,
+    ...(c.code==='PRECHECK_MEMBERSHIP'?{}:{capacity:c.restoreCapacity||null}),
+    submission:'本次恢复检查未通过，尚未进入恢复任务入队和提交'};
    const proof=c.productState,recycled=c.code==='PRODUCT_RECYCLED'&&proof?.kind==='recycled'&&proof.source==='live-platform-product-recycle'&&proof.complete===true&&proof.shopId===shopId&&proof.productId===p.productId;
    if(recycled&&!p.pending&&!p.excluded&&!p.ambiguous){
     const recent=fresh(proof.observedAt,now);p.state=recent?'recycled':'unconfirmed';p.observedAt=proof.observedAt;p.stale=!recent;

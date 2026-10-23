@@ -112,3 +112,19 @@ test('last-read prices cannot override pending submissions, exclusions or fresh 
   assert.equal(p.state,state);assert.equal(p.current.length,0);assert.equal(p.lastObserved.length,1);assert.equal(result.counts.observedCurrentProducts,0);assert.equal(result.counts.missingProducts,0);
  }
 });
+
+for(const code of ['RESTORE_SKU_BUDGET','RESTORE_PRODUCT_BUDGET'])test('program capacity failure is visible without claiming current loss or platform price rejection: '+code,()=>{
+ const capacity={source:'program-execution-budget',productCount:code==='RESTORE_PRODUCT_BUDGET'?51:1,skuCount:501,maxProducts:50,maxSkus:500};
+ const check={shopId,productId:'300001',code,message:'本次501个当前规格超过程序每批500个规格的执行容量',at:now,retryAt:now+900000,restoreCapacity:capacity};
+ const r=buildCatalog({...base(),inventory:null,checks:[check]}),p=r.products[0];
+ assert.equal(r.counts.recoveryFailedProducts,1);assert.equal(p.recoveryFailure.stage,'planning');assert.equal(p.recoveryFailure.code,code);
+ assert.deepEqual(p.recoveryFailure.capacity,capacity);assert.equal(p.recoveryFailure.detail,null);assert.equal(p.state,'unconfirmed');
+ assert.match(p.recoveryFailure.submission,/尚未进入恢复任务入队和提交/);assert.equal(p.history.skus.length,1);
+});
+
+for(const mode of ['active','unknown','excluded'])test('an older capacity check cannot override a current '+mode+' state',()=>{
+ const check={shopId,productId:'300001',code:'RESTORE_SKU_BUDGET',message:'程序容量不足',at:now,retryAt:now+900000};
+ const args={...base(),checks:[check],...(mode==='active'?{}:{inventory:null}),...(mode==='unknown'?{tasks:[{shopId,phase:'unknown',plans:[{productId:'300001'}]}]}:{}),...(mode==='excluded'?{excluded:['300001']}:{})};
+ const r=buildCatalog(args);assert.equal(r.counts.recoveryFailedProducts,0);assert.equal(r.products[0].recoveryFailure,undefined);
+ assert.equal(r.products[0].state,mode==='unknown'?'pending':mode);
+});

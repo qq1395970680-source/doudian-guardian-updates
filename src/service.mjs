@@ -7,6 +7,7 @@ import {activePriceIncreaseGrant,isAutomaticPriceIncrease} from './price-increas
 import {recoveryBatches,readBatchProducts} from './recovery-batches.mjs';
 import {checkRemovalPrices} from './removal-export.mjs';
 import {isolateDraftPriceFailure} from './draft-price-isolation.mjs';
+import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -15,7 +16,7 @@ const blockerDelay=code=>unavailableProduct(code)?86400000:15*60000;
 // Confirmed unavailable products only need a daily state recheck. A positive
 // current activity clears the check; a changed baseline also bypasses it.
 const knownBlockerCoolingDown=(prior,baseline,now)=>prior?.contextKey===fingerprint(baseline)&&
- ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED'].includes(prior.code)&&
+ ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED','RESTORE_SKU_BUDGET'].includes(prior.code)&&
  Math.max(prior.retryAt||0,unavailableProduct(prior.code)?(prior.at||0)+blockerDelay(prior.code):0)>now;
 const lossEvidenceFor=losses=>({complete:true,observedAt:Math.min(...losses.map(l=>l.observedAt)),
  lossKey:fingerprint(losses.map(l=>l.lossKey)),
@@ -67,7 +68,7 @@ export class GuardianService {
     }
     let plan=planOriginalRestore(source,current,this.policy,this.now());
     if(source!==baseline){const {fingerprint:previous,...body}=plan;plan={...body,durationMs:baseline.durationMs};plan.fingerprint=fingerprint(plan);}
-    try{return applyCampaignPolicy(applyPriceTarget(plan,review),this.journal);}
+    try{const result=applyCampaignPolicy(applyPriceTarget(plan,review),this.journal);assertRecoveryCapacity([result]);return result;}
     catch(error){
       if(error.code!=='PRICE_APPROVAL_CHANGED')throw error;
       const proposal=this.journal.recordPriceReconfirmation(applyCampaignPolicy(plan,this.journal),this.now());
@@ -206,7 +207,7 @@ export class GuardianService {
     }
     const blocked=(member,error)=>{
       if(error.code==='STOPPED')throw error;
-      const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000)};
+      const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),restoreCapacity:error.detail?.restoreCapacity};
       this.journal.putProductCheck(this.policy.shopId,productId,{...detail,lossKey:member.loss?.lossKey,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
       this.journal.event(null,'price-increase-recovery-pending',detail,this.now());
     };
@@ -377,7 +378,7 @@ export class GuardianService {
       result=await this.recoverBatch(batch,(member,error)=>{
         if(error.code==='STOPPED')throw error;
         const {baseline,hint}=member;
-        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership};
+        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity};
         this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       });
@@ -393,7 +394,7 @@ export class GuardianService {
     const groups=new Map(),inspectionStarted=this.now();let inspected=0,changed=false,differentActivity=false;
     const blocked=(baseline,hint,error)=>{
       if(error.code==='STOPPED')throw error;
-      const prior=checks.get(baseline.productId),detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership};
+      const prior=checks.get(baseline.productId),detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity};
       this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
       if(prior?.code!==detail.code||prior?.watchKey!==hint.watchKey)this.journal.event(null,'product-blocked',detail,this.now());
     };
@@ -509,7 +510,7 @@ export class GuardianService {
       const groups=new Map(),candidates=[],checks=new Map(this.journal.productChecks(this.policy.shopId).map(c=>[c.productId,c]));
       const blocked=(baseline,loss,error)=>{
         if(error.code==='STOPPED')throw error;
-        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:error.message,productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership};
+        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:error.message,productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity};
         this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,lossKey:loss?.lossKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       };

@@ -1,11 +1,13 @@
 import {fingerprint,requireThat,validateHistorical,isLimited,restorationGroupKey,normalizeName} from './policy.mjs';
 import {setCampaignPolicy,campaignPolicy} from './campaign-policy.mjs';
 import {readBatchProducts,recoveryBatches} from './recovery-batches.mjs';
+import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 
 const active=c=>['进行中','未开始'].includes(c.status);
 const importable=b=>{
  requireThat(b.skus.every(s=>s.discount>=10&&s.discount<=95),'TEMPLATE_RANGE','现有折扣超出已验证导入范围，原活动尚未作废');
  requireThat(new Set(b.skus.map(s=>normalizeName(s.name))).size===b.skus.length,'DUPLICATE_SKU','同名规格不能唯一回读，原活动尚未作废');
+ assertRecoveryCapacity([b]);
 };
 export const conversionKey=shopId=>'campaign-conversion:'+shopId;
 const cancellationConfirmationLimit=(state,entry)=>{

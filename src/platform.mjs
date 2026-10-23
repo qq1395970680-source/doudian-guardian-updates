@@ -11,6 +11,7 @@ import {draftPriceWarnings} from './draft-price-warnings.mjs';
 import {chooseReadonlyDateRange} from './date-picker.mjs';
 import {dateControlSnapshot} from './date-control-snapshot.mjs';
 import {ReadOperations,currentReadOperation,rawReadObject,bounded} from './read-operations.mjs';
+import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -755,6 +756,7 @@ export class DoudianPlatform {
    ...(isLimited(task.plans[0])?{productLimits:products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
  }
  async prepare(task){
+  assertRecoveryCapacity(task.plans);
   requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed,'CUTOVER_REQUIRED','尚未切换执行权');
   this.progress={stage:'准备独立的干净创建页',taskId:task.id,at:Date.now()};const page=await this.open(LIST+'/create');
   this.drafts.set(task.id,page);

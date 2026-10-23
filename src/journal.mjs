@@ -8,6 +8,7 @@ import {assertCampaignPolicy} from './campaign-policy.mjs';
 import {makeRemovalPriceReview} from './ratio-prices.mjs';
 import {priceOptions} from './price-options.mjs';
 import {makePriceReconfirmation,assertPriceReconfirmation,needsPriceReconfirmation} from './price-reconfirmation.mjs';
+import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -53,6 +54,7 @@ export class Journal {
   list(shopId) { return this.db.prepare('SELECT id FROM tasks WHERE shop=? ORDER BY updated DESC').all(shopId).map(row => this.get(row.id)); }
   enqueue(shopId, plans, lossEvidence, now = Date.now()) {
     requireThat(plans.length && plans.every(p => p.shopId === shopId), 'SHOP_MISMATCH', '任务不能跨店');
+    assertRecoveryCapacity(plans);
     requireThat(lossEvidence?.complete === true && lossEvidence.observedAt > 0 && now-lossEvidence.observedAt<=120000 && lossEvidence.observedAt<=now+5000 &&
       typeof lossEvidence.lossKey==='string' && lossEvidence.lossKey.length>0, 'LOSS_UNPROVEN', '缺少当前活动失效证明');
     const dedupe = fingerprint({ shopId, plans: plans.map(p => [p.productId, p.historicalFingerprint, p.skus,
@@ -84,7 +86,7 @@ export class Journal {
   }
   beginSubmit(taskId, proof, now = Date.now()) {
     const task = this.get(taskId);
-    if(task)this.assertPricePlans(task.shopId,task.plans);
+    if(task){this.assertPricePlans(task.shopId,task.plans);assertRecoveryCapacity(task.plans);}
     requireThat(task?.phase === 'prepared' && knownUnsubmitted(task) && proof?.taskId === taskId && proof.at > 0 && now - proof.at <= 30000,
       'SUBMIT_PROOF', '提交证明缺失、过期或已尝试提交');
     const verified=proveDraft(task,proof.observation,now);
@@ -94,6 +96,7 @@ export class Journal {
   beginRiskConfirmation(taskId, proof, now = Date.now()) {
     return this.transaction(() => {
       const task = this.get(taskId);
+      if(task)assertRecoveryCapacity(task.plans);
       requireThat(task && ['submitting', 'unknown', 'verifying'].includes(task.phase) && task.riskAttempts === 0 &&
         task.plans.every(p => p.originalRiskAllowed||p.approvedRiskAllowed&&p.priceApprovalId) && proof?.taskId === taskId && proof.kind==='original-discount-risk' &&
         proof.at>0 && proof.at<=now+5000 && now-proof.at<=30000 && proof.observation &&

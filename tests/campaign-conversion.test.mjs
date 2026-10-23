@@ -17,6 +17,14 @@ function example(){
  const service=new GuardianService({journal,platform,policy}),conversion=new CampaignConversion(service);
  return{journal,conversion,campaign,detail,platform,get cancels(){return cancels;},set fail(v){fail=v;}};
 }
+
+test('conversion refuses an over-budget full product before cancelling its valid activity and preserves every historical SKU',async()=>{
+ const x=example();try{
+  x.detail.products[0].skus=Array.from({length:501},(_,i)=>({id:String(500001+i),name:'规格'+i,baseFen:10000+i,discount:60,saleFen:Math.ceil((10000+i)*0.6)}));
+  await assert.rejects(()=>x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'capacity-test'}),{code:'RESTORE_SKU_BUDGET'});
+  assert.equal(x.cancels,0);assert.equal(x.campaign.status,'进行中');assert.equal(x.conversion.state(),null);assert.equal(x.journal.histories('900001')[0].skus.length,501);
+ }finally{x.journal.close();}
+});
 test('conversion preserves live baseline before cancellation and rechecks prices',async()=>{
  const x=example();try{
   await x.conversion.capture(target,{confirmed:true,source:'human-request',requestId:'test'});

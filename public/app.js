@@ -56,6 +56,8 @@ function renderCatalog(force=false){
    if(p.recoveryFailure){
     const f=p.recoveryFailure;inner.append(node('p','detail-note',`最近预查失败：${time(f.at)} · ${f.code} · ${f.submission}`));
     inner.append(node('p','detail-note',f.retryAt?`重试最早时间：${time(f.retryAt)}；需守护运行且当前仍满足恢复条件。`:'等待下一轮核查恢复条件'));
+    if(f.capacity?.source==='program-execution-budget'&&[f.capacity.productCount,f.capacity.skuCount,f.capacity.maxProducts,f.capacity.maxSkus].every(Number.isSafeInteger))
+     inner.append(node('p','detail-note',`程序执行容量：本次 ${f.capacity.productCount} 件商品、${f.capacity.skuCount} 个当前规格；每批最多 ${f.capacity.maxProducts} 件商品、${f.capacity.maxSkus} 个规格。完整历史保留。`));
     if(f.detail){const d=f.detail,box=node('details'),heading=node('summary','detail-note','查看商品集合与分页诊断');box.append(heading);
      for(const [label,values] of [['目标商品ID',d.targetProductIds],['实际商品ID',d.actualProductIds],['缺失商品ID',d.missingProductIds],['额外商品ID',d.unexpectedProductIds],['重复商品ID',d.duplicateProductIds]])box.append(node('p','detail-note',label+'：'+(values?.join('、')||'无')));
      box.append(node('p','detail-note',`数量：目标 ${d.targetCount}，实际 ${d.actualCount}，实际去重 ${d.actualUniqueCount}；页面数量 ${JSON.stringify(d.snapshot?.counts||[])}；分页 ${JSON.stringify(d.snapshot?.pagination||{page:d.snapshot?.page})}`));inner.append(box);

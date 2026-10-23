@@ -35,7 +35,13 @@ export class Journal {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   event(task, kind, detail, now = Date.now()) {
-    this.db.prepare('INSERT INTO events(task,at,kind,body) VALUES(?,?,?,?)').run(task, now, kind, JSON.stringify(detail));
+    const body=this.diagnosticContext?{...detail,runtimeBuild:this.diagnosticContext}:detail;
+    this.db.prepare('INSERT INTO events(task,at,kind,body) VALUES(?,?,?,?)').run(task, now, kind, JSON.stringify(body));
+  }
+  setDiagnosticContext({version,sourceBuild,instance,startedAt}){
+    requireThat(/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/.test(version)&&/^[a-f0-9]{64}$/.test(sourceBuild)&&/^[a-f0-9]{32}$/.test(instance)&&Number.isSafeInteger(startedAt)&&startedAt>0,
+      'DIAGNOSTIC_BUILD','运行版本来源不完整');
+    this.diagnosticContext=Object.freeze({version,sourceBuild,instance,startedAt});
   }
   get(taskId) {
     const row = this.db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
@@ -282,7 +288,7 @@ export class Journal {
     }
   }
   productChecks(shopId){return this.db.prepare('SELECT body FROM product_checks WHERE shop=?').all(shopId).map(r=>JSON.parse(r.body));}
-  putProductCheck(shopId,productId,check){this.db.prepare('INSERT INTO product_checks VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET body=excluded.body').run(shopId,productId,JSON.stringify({shopId,productId,...check}));}
+  putProductCheck(shopId,productId,check){this.db.prepare('INSERT INTO product_checks VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET body=excluded.body').run(shopId,productId,JSON.stringify({shopId,productId,...check,...(this.diagnosticContext?{runtimeBuild:this.diagnosticContext}:{})}));}
   clearProductCheck(shopId,productId){this.db.prepare('DELETE FROM product_checks WHERE shop=? AND product=?').run(shopId,productId);}
   putSettings(shopId, settings) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(shop) DO UPDATE SET body=excluded.body').run(shopId, JSON.stringify(settings)); }
   settings(shopId) { const row = this.db.prepare('SELECT body FROM settings WHERE shop=?').get(shopId); return row ? JSON.parse(row.body) : null; }

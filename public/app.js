@@ -81,7 +81,10 @@ $('prev-page').onclick=()=>{pageIndex--;renderCatalog();};$('next-page').onclick
 function renderActivity(s){const signature=JSON.stringify([s.tasks,s.events]);if(signature===activitySignature)return;activitySignature=signature;
  const tasks=document.createDocumentFragment();for(const t of s.tasks||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',t.title),node('p','',t.products.join('、')),node('p','',t.reason||`独立回读：${t.receipt?.skuCount||0} 个规格`));item.append(badge(phases[t.phase]||t.phase,t.phase==='verified'?'green':t.phase==='blocked'?'amber':'purple'),body,node('time','',time(t.updatedAt)));tasks.append(item);}if(!s.tasks?.length)tasks.append(node('div','empty','尚无恢复任务'));$('tasks').replaceChildren(tasks);
  const events=document.createDocumentFragment();const kinds={'product-blocked':'商品等待处理','control-error':'连接 / 操作提示',verified:'规格回读通过',unknown:'等待平台确认',queued:'已生成恢复任务',submitting:'已记录提交尝试',verifying:'正在独立回读','verification-pending':'继续核实平台结果'};
- for(const e of s.events||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',kinds[e.kind]||'任务状态更新'),node('p','',friendly(e.detail.message||e.detail.reason||e.detail.productId||'记录已保存')));item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);}if(!s.events?.length)events.append(node('div','empty','新的运行动态会显示在这里'));$('events').replaceChildren(events);
+ for(const e of s.events||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',kinds[e.kind]||'任务状态更新'),node('p','',friendly(e.detail.message||e.detail.reason||e.detail.productId||'记录已保存')));
+  if(e.detail.runtimeBuild?.version)body.append(node('small','detail-note',`发生版本：${e.detail.runtimeBuild.version}${e.detail.runtimeBuild.sourceBuild===s.sourceBuild?' · 当前运行构建':' · 其他运行构建'}`));
+  else body.append(node('small','detail-note','此记录未保存发生时的版本，不能归入当前版本错误'));
+  item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);}if(!s.events?.length)events.append(node('div','empty','新的运行动态会显示在这里'));$('events').replaceChildren(events);
 }
 function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s.running,s.busy,s.action,s.unknown]);if(signature!==accountSignature){accountSignature=signature;const fragment=document.createDocumentFragment();for(const a of s.accounts||[]){const row=node('div','setting-row'),body=node('div');body.append(node('strong','',a.name||'店铺'),node('p','',a.shopId));row.append(body);if(a.shopId===s.shopId)row.append(badge('当前店铺','blue'));else{const b=node('button','button small secondary','切换店铺');b.disabled=!!(s.running||s.busy||s.action||s.unknown);b.onclick=()=>act('accounts/select',{shopId:a.shopId});row.append(b);}fragment.append(row);}if(!s.accounts?.length)fragment.append(node('div','empty','登录后自动添加店铺，无需填写店铺 ID'));$('account-list').replaceChildren(fragment);}
  text('connection',s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':'登录后自动读取店铺名称、当前活动与规格价格');
@@ -150,7 +153,8 @@ $('export-diagnostics').onclick=async()=>{
  if(!state?.shopId){toast('请先选择需要诊断的店铺');return;}
  $('export-diagnostics').disabled=true;text('diagnostics-status','正在整理当前店铺诊断，不会停止守护…');
  try{const result=await post('diagnostics/export',{shopId:state.shopId,includeScreenshots:$('diagnostics-screenshots').checked});
-  text('diagnostics-status',`已保存：${result.path}（${result.events} 条事件，${result.evidenceFiles} 个故障证据文件${result.skipped?'；部分历史证据缺失或达到上限，详见包内 summary.json':''}）。将此 ZIP 发来即可排查。`);
+  const f=result.failureSummary,origin=f?`错误记录：当前构建 ${f.currentBuild} 条，其他构建 ${f.otherBuild} 条，来源未记录 ${f.unattributed} 条；正常维护 ${f.normalMaintenance||0} 条，结果待核实 ${f.pendingResults||0} 条。${f.latest?' 最近错误：'+time(f.latest.at)+'。':''}`:'';
+  text('diagnostics-status',`已保存：${result.path}（${result.events} 条事件，${result.evidenceFiles} 个故障证据文件${result.skipped?'；部分历史证据缺失或达到上限，详见包内 summary.json':''}）。${origin}将此 ZIP 发来即可排查。`);
   if(window.guardianDesktop?.action)await window.guardianDesktop.action('diagnostics');
  }catch(e){text('diagnostics-status','导出未完成：'+friendly(e.message));}finally{$('export-diagnostics').disabled=false;}
 };

@@ -24,6 +24,8 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  const journal=dependencies.journal||new Journal(join(runtime,'guardian.sqlite')),accounts=new AccountRegistry(journal);
  if(config?.shopId)accounts.register(config,config.profileKey||'shop-'+id(config.shopId),{...config,captureExistingOnly:config.captureExistingOnly===true});
  const browser=dependencies.browser||new DedicatedBrowser(runtime),token=randomBytes(32).toString('hex'),instance=randomBytes(16).toString('hex');
+ const startedAt=Date.now(),runtimeBuild={version,sourceBuild,instance,startedAt};
+ journal.setDiagnosticContext(runtimeBuild);browser.diagnosticContext=Object.freeze(runtimeBuild);
  let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,migrationPreview=null,exportingDiagnostics=false;
  function bind(account){
   shopId=account?.shopId||null;saved=shopId?journal.settings(shopId)||{}:{};
@@ -34,7 +36,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   connection=null;migrationPreview=null;
  }
  bind(accounts.selected());
- const snapshot=()=>({version,build:'isolated-headless-journal',sourceBuild,instance,shopId,name:policy.name||null,connection,action,lastAction,
+ const snapshot=()=>({version,build:'isolated-headless-journal',sourceBuild,instance,startedAt,shopId,name:policy.name||null,connection,action,lastAction,
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
   automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId),

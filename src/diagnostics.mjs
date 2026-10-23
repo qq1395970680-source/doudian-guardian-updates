@@ -7,7 +7,7 @@ import {requireThat} from './policy.mjs';
 // Diagnostic files are output only. No execution/planning path imports them.
 export function redactDiagnostic(value){
  if(Array.isArray(value))return value.map(redactDiagnostic);
- if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([k])=>!/(?:cookie|token|authorization|password|secret|storageState|profileKey|headers|environment)/i.test(k)).map(([k,v])=>[k,redactDiagnostic(v)]));
+ if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([k])=>k==='tableHeaders'||!/(?:cookie|token|authorization|password|secret|storageState|profileKey|headers|environment)/i.test(k)).map(([k,v])=>[k,redactDiagnostic(v)]));
  if(typeof value==='string')return value.replace(/\u001b\[[0-9;]*m/g,'').replace(/(?:Bearer\s+)[\w.+/=-]+/gi,'Bearer [REDACTED]')
   .replace(/\b(cookie|authorization|token|password|secret)\s*[:=]\s*[^\r\n]+/gi,'$1: [REDACTED]')
   .replace(/https?:\/\/[^\s"<>]+/g,s=>{try{const u=new URL(s);u.username='';u.password='';u.search='';u.hash='';return u.toString();}catch{return '[URL]';}});
@@ -15,8 +15,9 @@ export function redactDiagnostic(value){
 }
 export async function exportDiagnostics({root,runtime,journal,shopId,status,catalog,includeScreenshots=false}){
  requireThat(shopId&&/^\d{3,25}$/.test(shopId),'ACCOUNT_UNKNOWN','请先选择需要诊断的店铺');
- const at=Date.now(),files={},skipped=[],maxBytes=48*1024*1024;let bytes=0;
- const add=(name,data)=>{const b=Buffer.isBuffer(data)?data:Buffer.from(data);if(bytes+b.length>maxBytes){skipped.push({name,reason:'archive-size-limit'});return false;}files[name]=b;bytes+=b.length;return true;};
+ const at=Date.now(),files={},skipped=[],maxBytes=48*1024*1024,metadataReserve=2*1024*1024;let bytes=0;
+ const add=(name,data)=>{const b=Buffer.isBuffer(data)?data:Buffer.from(data),metadata=['summary.json','manifest.json','README.txt'].includes(name);
+  if(bytes+b.length>maxBytes-(metadata?0:metadataReserve)){skipped.push({name,reason:'archive-size-limit'});return false;}files[name]=b;bytes+=b.length;return true;};
  const json=(name,value)=>add(name,JSON.stringify(redactDiagnostic(value),null,2)+'\n');
  const safeRead=async(base,path,max=8*1024*1024)=>{
   const target=resolve(base,path),rel=relative(resolve(base),target);requireThat(rel&&!rel.startsWith('..')&&!isAbsolute(rel),'DIAGNOSTIC_PATH','诊断路径越界');
@@ -28,7 +29,7 @@ export async function exportDiagnostics({root,runtime,journal,shopId,status,cata
  const rows=journal.db.prepare("SELECT seq,task,at,kind,body FROM events WHERE json_extract(body,'$.shopId')=? OR task IN (SELECT id FROM tasks WHERE shop=?) ORDER BY seq DESC LIMIT 2001").all(shopId,shopId);
  let events=rows.slice(0,2000).map(({body,...r})=>({...r,detail:JSON.parse(body)}));
  while(events.length>1&&Buffer.byteLength(JSON.stringify(events))>8*1024*1024)events=events.slice(0,Math.ceil(events.length/2));
- const statusFields=['version','sourceBuild','build','shopId','name','running','busy','nextAt','lastRun','lastSuccessfulRun','lastPriorityCheck','progress','unknown','verified','blocked','action','lastAction','loginOpen','originalRestoreAuthorized','automaticPriceIncreaseEnabled','priceReviewsPending'];
+ const statusFields=['version','sourceBuild','build','startedAt','shopId','name','running','busy','nextAt','lastRun','lastSuccessfulRun','lastPriorityCheck','progress','unknown','verified','blocked','action','lastAction','loginOpen','originalRestoreAuthorized','automaticPriceIncreaseEnabled','priceReviewsPending'];
  json('status.json',Object.fromEntries(statusFields.filter(k=>Object.hasOwn(status,k)).map(k=>[k,status[k]])));
  json('events.json',events);json('product-checks.json',checks);json('tasks.json',tasks);json('catalog.json',catalog);
  json('price-reviews.json',journal.priceReviews(shopId));
@@ -62,9 +63,19 @@ export async function exportDiagnostics({root,runtime,journal,shopId,status,cata
   try{add('source/'+directory+'/'+name,await safeRead(root,join(directory,name),2*1024*1024));}catch(e){skipped.push({name:directory+'/'+name,reason:e.code||'unreadable'});}
  }
  for(const name of ['package.json','package-lock.json'])add('source/'+name,await safeRead(root,name,2*1024*1024));
+ const maintenance=e=>e.detail?.code==='STOPPED'||/^STOPPED(?::|$)/.test(e.detail?.reason||'')||e.detail?.reason==='pre-submit-proof-expired-on-restart';
+ const failures=events.filter(e=>!maintenance(e)&&['product-blocked','control-error','readback-error','verification-pending','blocked'].includes(e.kind));
+ const recorded=e=>e.detail?.runtimeBuild;
+ const validBuild=e=>/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/.test(recorded(e)?.version)&&/^[a-f0-9]{64}$/.test(recorded(e)?.sourceBuild);
+ const latest=failures.reduce((a,b)=>!a||b.at>a.at?b:a,null);
+ const failureSummary={events:failures.length,normalMaintenance:events.filter(maintenance).length,pendingResults:events.filter(e=>e.kind==='unknown'&&!maintenance(e)).length,
+  currentBuild:failures.filter(e=>validBuild(e)&&recorded(e).sourceBuild===status.sourceBuild).length,
+  otherBuild:failures.filter(e=>validBuild(e)&&recorded(e).sourceBuild!==status.sourceBuild).length,unattributed:failures.filter(e=>!validBuild(e)).length,
+  latest:latest?{at:latest.at,kind:latest.kind,code:latest.detail?.code||null,runtimeBuild:validBuild(latest)?recorded(latest):null}:null,
+  scope:'exported event window only; absent build information is not assigned to the current version'};
  const summary={schema:1,diagnosticOnly:true,notRecoveryInput:true,at,shopId,version:status.version,sourceBuild:status.sourceBuild,
   events:events.length,eventsTruncated:rows.length>events.length,eventCursor:events[0]?.seq||null,taskCount:tasks.length,productCheckCount:checks.length,
-  precheckFailures:events.filter(e=>e.detail?.code==='PRECHECK_MEMBERSHIP').length,evidenceFiles,includeScreenshots,skipped,
+  precheckFailures:events.filter(e=>e.detail?.code==='PRECHECK_MEMBERSHIP').length,failureSummary,evidenceFiles,includeScreenshots,skipped,
   snapshotConsistency:'Read-only snapshot taken while service may be running; files retain their individual timestamps. Historical errors are not current loss proof.',
   excluded:['browser profiles','cookies','credentials','complete database','environment','arbitrary local files','other shops']};
  json('summary.json',summary);
@@ -73,5 +84,5 @@ export async function exportDiagnostics({root,runtime,journal,shopId,status,cata
  const name=`DoudianGuardian-Diagnostics-${shopId}-${new Date(at).toISOString().replace(/[:.]/g,'-')}-${randomUUID().slice(0,8)}.zip`;
  const directory=join(runtime,'diagnostics');await mkdir(directory,{recursive:true});requireThat(!(await lstat(directory)).isSymbolicLink(),'DIAGNOSTIC_PATH','诊断输出目录不能是链接');
  const path=join(directory,name),archive=zip(files);await writeFile(path,archive,{flag:'wx'});
- return{ok:true,name,path,shopId,bytes:archive.length,sha256:createHash('sha256').update(archive).digest('hex'),events:events.length,evidenceFiles,skipped:skipped.length};
+ return{ok:true,name,path,shopId,bytes:archive.length,sha256:createHash('sha256').update(archive).digest('hex'),events:events.length,evidenceFiles,skipped:skipped.length,omissions:skipped.length,failureSummary};
 }

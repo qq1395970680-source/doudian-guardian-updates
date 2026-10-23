@@ -52,6 +52,10 @@ test('dashboard displays a pre-enqueue failure and retry time with zero tasks',{
  journal.remember(b);journal.putProductCheck(b.shopId,b.productId,{code:'PRECHECK_MEMBERSHIP',message:'目标20件，实际10件',at:now,retryAt:now+900000,
   precheckMembership:{targetCount:20,actualCount:10,actualUniqueCount:10,targetProductIds:[b.productId],actualProductIds:[],missingProductIds:[b.productId],snapshot:{counts:[20],pagination:{page:1}}}});
  const app=await createApp({config:{shopId:'900001',name:'状态测试店铺'},port:0,runtime:join(dir,'server'),dependencies:{journal,service,platform,browser:{close:async()=>{}}}});
+ journal.event(null,'product-blocked',{shopId:b.shopId,productId:b.productId,code:'PRECHECK_MEMBERSHIP',message:'当前构建现场'});
+ // Old records remain attributable only to their original metadata, never to
+ // whichever version happens to export the package later.
+ journal.db.prepare('INSERT INTO events(task,at,kind,body) VALUES(NULL,?,?,?)').run(now-1000,'product-blocked',JSON.stringify({shopId:b.shopId,code:'PRECHECK_MEMBERSHIP',message:'未记录版本的历史错误'}));
  try{
   await browser.open('900001');const page=await browser.page();await page.goto(app.url);
   await page.locator('#recovery-failure-summary').waitFor({state:'visible'});assert.match(await page.locator('#recovery-failure-summary').innerText(),/1 件商品恢复预查失败/);
@@ -63,6 +67,8 @@ test('dashboard displays a pre-enqueue failure and retry time with zero tasks',{
   await page.getByRole('button',{name:'程序工具',exact:true}).click();await page.locator('[data-tool="diagnostics"]').click();
   await page.getByRole('button',{name:'导出诊断包',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#diagnostics-status')?.textContent.startsWith('已保存：'));
   assert.match(await page.locator('#diagnostics-status').innerText(),/\.zip/);assert.equal(journal.list(b.shopId).length,0);
+  assert.match(await page.locator('#diagnostics-status').innerText(),/当前构建 1 条/);assert.match(await page.locator('#diagnostics-status').innerText(),/来源未记录 1 条/);
+  assert.match(await page.locator('#events').innerText(),/发生版本/);assert.match(await page.locator('#events').innerText(),/未保存发生时的版本/);
   await page.screenshot({path:resolve('artifacts/diagnostics-export-ui.png'),fullPage:true});
  }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
 });

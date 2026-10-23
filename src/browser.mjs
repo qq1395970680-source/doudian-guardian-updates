@@ -44,7 +44,7 @@ export class DedicatedBrowser {
       if(screenshot){await writeFile(join(folder,record+'.png'),screenshot);await writeFile(join(folder,stage+'.png'),screenshot);}
     }
     // No cookies, browser storage, request headers, or auth-bearing URLs.
-    const data=JSON.stringify(redactDiagnostic({at,stage,code:error.code||'PAGE_ERROR',message:String(error.message).slice(0,1200),...(observation?{observation}: {})}),null,2);
+    const data=JSON.stringify(redactDiagnostic({at,stage,code:error.code||'PAGE_ERROR',message:String(error.message).slice(0,1200),...(observation?{observation}: {}),...(this.diagnosticContext?{runtimeBuild:this.diagnosticContext}:{})}),null,2);
     await writeFile(join(folder,record+'.json'),data,'utf8');await writeFile(join(folder,stage+'.json'),data,'utf8');
     // Keep five occurrences per stage, plus the compatible latest files.
     const records=(await readdir(folder)).filter(n=>n.startsWith(stage+'-')&&/\d+\.json$/.test(n)).sort().reverse();

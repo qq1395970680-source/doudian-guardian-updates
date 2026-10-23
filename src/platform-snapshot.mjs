@@ -47,8 +47,17 @@ export function formSlice() {
   const renew=selected.some(label=>/^(?:开启|开启自动续期)(?:推荐)?$/.test(label.replace(/\s/g,'')))?true:
     selected.includes('不开启')?false:title==='限量抢购'?null:false;
   const order=text(document.querySelector('#order_expire_time')?.closest('.ecom-mcenter-select')?.querySelector('.ecom-mcenter-select-selection-item'));
-  const counts=[...text(document.body).matchAll(/已完成\s*\d+\s*\/\s*(\d+)|已选数量\s*(\d+)\s*个/g)].map(m=>Number(m[1]||m[2]));
+  const countDetails=[...text(document.body).matchAll(/已完成\s*(\d+)\s*\/\s*(\d+)|已选数量\s*(\d+)\s*个/g)]
+    .map(m=>({kind:m[3]!==undefined?'selected':'completed',text:m[0],total:Number(m[2]??m[3]),...(m[1]!==undefined?{completed:Number(m[1])}:{})}));
+  const counts=countDetails.map(c=>c.total);
   const pager=all('li.ecom-mcenter-pagination-item-active[title]').filter(e=>visible(e)&&!e.closest('.ecom-mcenter-drawer-open'));
+  const formControl=e=>visible(e)&&!e.closest('.ecom-mcenter-drawer-open,[role="dialog"]');
+  const next=all('li[title="下一页"] button').filter(formControl),prev=all('li[title="上一页"] button').filter(formControl);
+  const pagerRoot=pager.length===1?(pager[0].closest('ul,.ecom-mcenter-pagination')||pager[0].parentElement):null;
+  const pagerText=text(pagerRoot),disabled=e=>e.disabled||e.getAttribute('aria-disabled')==='true'||e.closest('li')?.getAttribute('aria-disabled')==='true'||/pagination-disabled/.test(e.closest('li')?.className||'');
+  const pagination={page:pager.length===1?Number(pager[0].title):null,activeCount:pager.length,nextCount:next.length,
+    nextDisabled:next.length===1?!!disabled(next[0]):null,previousCount:prev.length,previousDisabled:prev.length===1?!!disabled(prev[0]):null,
+    pageSize:Number(pagerText.match(/(\d+)\s*(?:条|个|件)\s*\/\s*页/)?.[1])||null,total:Number(pagerText.match(/共\s*(\d+)\s*(?:条|个|件)/)?.[1])||null,text:pagerText.slice(0,500)};
   const dialogs=all('[role="dialog"]').filter(visible),busyNodes=all('.ecom-mcenter-spin-spinning,.ecom-mcenter-zform-item-is-validating').filter(visible);
   const riskButtons=dialogs.length===1?all('button',dialogs[0]).filter(e=>visible(e)&&text(e).replace(/\s/g,'')==='仍要创建'&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'):[];
   const originalRiskReady=dialogs.length===1&&/^\d+个商品存在低价风险，请谨慎新建/.test(text(dialogs[0]).replace(/\s/g,''))&&riskButtons.length===1;
@@ -56,7 +65,7 @@ export function formSlice() {
     rules:{noLimit:selected.includes('不设置'),noPerUserLimit:selected.includes('不限购'),noWarmup:selected.includes('不预热'),orderMinutes:Number(order.match(/^(\d+)分钟$/)?.[1]),...(title==='限量抢购'?{autoRenew:renew}:{})},
     renew,priceModes,byDiscount:priceModes.length===1&&priceModes[0].value==='打折',
     dates:all('input[placeholder="开始日期"],input[placeholder="结束日期"]').map(e=>e.value),counts,grids:grids.length,total:inner?Number.parseFloat(inner.style.height):1,cells,
-    page:pager.length?Number(pager[0].title):1,pagerCount:pager.length,
+    page:pager.length?Number(pager[0].title):1,pagerCount:pager.length,pagination,countDetails,
     busy:busyNodes.length>0,formBusy:busyNodes.some(e=>!e.matches('.ecom-mcenter-spin-spinning')||!e.closest('#marketing-global-spin-portal')),originalRiskReady,
     warnings:all(warningSelector).filter(visible).filter(e=>!e.classList.contains('ecom-mcenter-alert-success')||!/^全部\d+个商品（共\d+个规格）上传成功$/.test(text(e).replace(/\s+/g,''))).map(text).filter(Boolean),
     warningDetails:all(warningSelector).filter(visible).map(e=>({text:text(e),tag:e.tagName,role:e.getAttribute('role'),className:String(e.className)})),
@@ -71,6 +80,20 @@ export function scrollForm(offset) {
   if(parent){const base=grid.getBoundingClientRect().top-parent.getBoundingClientRect().top+parent.scrollTop;parent.scrollTo({top:Math.max(0,base+offset),behavior:'instant'});}
   else window.scrollTo({top:Math.max(0,grid.getBoundingClientRect().top+window.scrollY+offset),behavior:'instant'});
   return true;
+}
+// Structural evidence, not raw HTML. Never collect scripts, hidden inputs,
+// arbitrary attributes, authentication fields, links or browser storage.
+export function formStructureSnapshot(){
+ const visible=e=>e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+ const all=s=>[...document.querySelectorAll(s)].filter(visible);
+ const descriptor=e=>({tag:e.tagName,className:String(e.className).slice(0,300),role:e.getAttribute('role'),disabled:e.disabled===true,readOnly:e.readOnly===true});
+ const controls=all('input').filter(e=>e.getAttribute('role')==='spinbutton'||['开始日期','结束日期'].includes(e.getAttribute('placeholder')));
+ return {capturedAt:Date.now(),viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},scroll:{x:scrollX,y:scrollY},
+  controls:controls.slice(0,200).map(e=>({...descriptor(e),placeholder:e.getAttribute('placeholder'),value:e.value})),controlsTruncated:controls.length>200,
+  pagers:all('li[title="下一页"],li[title="上一页"],li.ecom-mcenter-pagination-item-active').slice(0,20).map(e=>({...descriptor(e),title:e.title,text:e.innerText.slice(0,100),parentClass:String(e.parentElement?.className||'').slice(0,300)})),
+  grids:all('.ReactVirtualized__Grid').map(e=>({...descriptor(e),height:e.clientHeight,scrollHeight:e.scrollHeight,scrollTop:e.scrollTop})),
+  tableHeaders:all('th').slice(0,40).map(e=>({...descriptor(e),text:e.innerText.slice(0,200)})),
+  scope:'visible price/date controls, pagination and grid structure only; not raw page HTML'};
 }
 export function listSlice() {
   const text=e=>(e?.innerText||e?.textContent||'').trim();

@@ -15,6 +15,7 @@ import {buildRecoveryHistory} from './recovery-history.mjs';
 import {checkForUpdates,UPDATE_REPOSITORY} from './updates.mjs';
 import {projectBuild} from './build.mjs';
 import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from './migration.mjs';
+import {exportDiagnostics} from './diagnostics.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export async function createApp({config=null,rootDir=root,port=19417,runtime=join(rootDir,'runtime'),dependencies={}}={}){
@@ -23,7 +24,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  const journal=dependencies.journal||new Journal(join(runtime,'guardian.sqlite')),accounts=new AccountRegistry(journal);
  if(config?.shopId)accounts.register(config,config.profileKey||'shop-'+id(config.shopId),{...config,captureExistingOnly:config.captureExistingOnly===true});
  const browser=dependencies.browser||new DedicatedBrowser(runtime),token=randomBytes(32).toString('hex'),instance=randomBytes(16).toString('hex');
- let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,migrationPreview=null;
+ let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,migrationPreview=null,exportingDiagnostics=false;
  function bind(account){
   shopId=account?.shopId||null;saved=shopId?journal.settings(shopId)||{}:{};
   const enabled=saved.executionEnabled===true||saved.cutoverConfirmed===true;
@@ -89,6 +90,15 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    const body=Buffer.concat(chunks).toString('utf8');
    const args=JSON.parse(body||'{}');requireThat(args&&typeof args==='object'&&!Array.isArray(args),'REQUEST_REJECTED','请求内容无效');
    if(path==='/api/updates/check'){json(200,await checkForUpdates(version));return;}
+   if(path==='/api/diagnostics/export'){
+    requireThat(shopId&&args.shopId===shopId,'SHOP_MISMATCH','当前店铺已变化，请重新导出');
+    requireThat(!exportingDiagnostics,'BUSY','诊断包正在导出');exportingDiagnostics=true;
+    try{
+     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:journal.settings('catalog-view:'+shopId),histories:journal.histories(shopId),tasks:journal.list(shopId),checks:journal.productChecks(shopId),excluded:policy.excludedProductIds||[]});
+     json(200,await exportDiagnostics({root,runtime,journal,shopId,status:snapshot(),catalog,includeScreenshots:args.includeScreenshots===true}));
+    }finally{exportingDiagnostics=false;}
+    return;
+   }
    if(path.startsWith('/api/migration/')){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先登录并连接备份对应的店铺');
     if(path==='/api/migration/preview'){

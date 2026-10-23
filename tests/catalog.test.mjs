@@ -7,6 +7,17 @@ const baseline={shopId,productId:'300001',name:'历史商品',campaignId:'400001
 const campaign={id:'400002',name:'当前活动',status:'进行中',startAt:now-50000,endAt:now+100000};
 const inventory={listing:{complete:true,observedAt:now,campaigns:[campaign]},activeComplete:true,details:new Map([[campaign.id,{complete:true,observedAt:now-1000,products:[{productId:'300001',name:'当前商品',skus:[sku]}]}]])};
 const base=()=>({shopId,inventory,histories:[baseline],tasks:[],excluded:[],now});
+
+test('pre-enqueue failures expose counts and retry time without claiming recovery or overriding current activity',()=>{
+ const check={shopId,productId:baseline.productId,code:'PRECHECK_MEMBERSHIP',message:'目标20件，实际10件',at:now-1000,retryAt:now+900000,precheckMembership:{targetCount:20,actualCount:10}};
+ const missing={listing:{complete:true,observedAt:now,campaigns:[]},activeComplete:true,details:new Map()};
+ const result=buildCatalog({...base(),inventory:missing,checks:[check]});
+ assert.equal(result.counts.recoveryFailedProducts,1);assert.equal(result.counts.pendingProducts,0);
+ assert.equal(result.products[0].recoveryFailure.retryAt,check.retryAt);
+ assert.equal(result.products[0].recoveryFailure.detail.actualCount,10);
+ assert.equal(buildCatalog({...base(),checks:[check]}).counts.recoveryFailedProducts,0);
+ assert.equal(buildCatalog({...base(),inventory:missing,checks:[{...check,shopId:'another'}]}).counts.recoveryFailedProducts,0);
+});
 test('current SKU prices and historical prices remain distinct, including computed price provenance',()=>{
  const result=buildCatalog(base()),p=result.products[0];
  assert.equal(result.counts.observedCurrentProducts,1);assert.equal(p.state,'active');

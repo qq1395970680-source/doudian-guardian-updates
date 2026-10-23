@@ -1,8 +1,9 @@
 import { chromium } from 'playwright';
-import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, writeFile, readdir, unlink } from 'node:fs/promises';
 import { resolve, relative, isAbsolute, join } from 'node:path';
 import { id, requireThat } from './policy.mjs';
 import {randomUUID} from 'node:crypto';
+import {redactDiagnostic} from './diagnostics.mjs';
 
 export class DedicatedBrowser {
   constructor(root, { viewport = {width:1440,height:960}, deviceScaleFactor = 1, test = false } = {}) {
@@ -35,8 +36,18 @@ export class DedicatedBrowser {
   async close() { const context=this.context;this.context=null;this.loginMode=false;this.shopId=null;if(context)await context.close(); }
   async failure(page,taskId,stage,error,observation=null) {
     const folder=join(this.root,'evidence',taskId.replace(/[^a-zA-Z0-9-]/g,''));await mkdir(folder,{recursive:true});
-    await page.screenshot({path:join(folder,stage+'.png'),fullPage:false}).catch(()=>{});
+    const at=Date.now(),record=stage+'-'+at;
+    // Never associate a fresh error JSON with a stale screenshot.
+    await unlink(join(folder,stage+'.png')).catch(()=>{});
+    if(!/LOGIN|ACCOUNT|SHOP_MISMATCH/.test(error.code||'')){
+      const screenshot=await page.screenshot({fullPage:false}).catch(()=>null);
+      if(screenshot){await writeFile(join(folder,record+'.png'),screenshot);await writeFile(join(folder,stage+'.png'),screenshot);}
+    }
     // No cookies, browser storage, request headers, or auth-bearing URLs.
-    await writeFile(join(folder,stage+'.json'),JSON.stringify({at:Date.now(),stage,code:error.code||'PAGE_ERROR',message:String(error.message).slice(0,1200),...(observation?{observation}: {})},null,2),'utf8');
+    const data=JSON.stringify(redactDiagnostic({at,stage,code:error.code||'PAGE_ERROR',message:String(error.message).slice(0,1200),...(observation?{observation}: {})}),null,2);
+    await writeFile(join(folder,record+'.json'),data,'utf8');await writeFile(join(folder,stage+'.json'),data,'utf8');
+    // Keep five occurrences per stage, plus the compatible latest files.
+    const records=(await readdir(folder)).filter(n=>n.startsWith(stage+'-')&&/\d+\.json$/.test(n)).sort().reverse();
+    for(const name of records.slice(5))for(const file of [name,name.replace(/\.json$/,'.png')])await unlink(join(folder,file)).catch(()=>{});
   }
 }

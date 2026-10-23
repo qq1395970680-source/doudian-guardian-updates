@@ -78,6 +78,8 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
   const c=checks.find(c=>c.shopId===shopId&&c.productId===p.productId);
   if(c&&!p.current.length&&!p.scheduled.length){
    p.check=c;p.reason=p.reason||c.message;
+   if(c.code==='PRECHECK_MEMBERSHIP'&&!p.pending&&!p.excluded)p.recoveryFailure={stage:'precheck',code:c.code,message:c.message,at:c.at,retryAt:c.retryAt||null,
+    detail:c.precheckMembership||null,submission:'本次预查失败，尚未进入恢复任务入队和提交'};
    const proof=c.productState,recycled=c.code==='PRODUCT_RECYCLED'&&proof?.kind==='recycled'&&proof.source==='live-platform-product-recycle'&&proof.complete===true&&proof.shopId===shopId&&proof.productId===p.productId;
    if(recycled&&!p.pending&&!p.excluded&&!p.ambiguous){
     const recent=fresh(proof.observedAt,now);p.state=recent?'recycled':'unconfirmed';p.observedAt=proof.observedAt;p.stale=!recent;
@@ -89,7 +91,7 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
  const counts={products:rows.length,observedCurrentProducts:rows.filter(p=>p.current.length&&listingFresh&&!p.stale&&!p.ambiguous).length,
   missingProducts:rows.filter(p=>p.state==='missing').length,pendingProducts:rows.filter(p=>p.pending).length,
   unconfirmedProducts:rows.filter(p=>p.state==='unconfirmed').length,excludedProducts:rows.filter(p=>p.excluded).length,recycledProducts:rows.filter(p=>p.state==='recycled').length,
-  historicalProducts:rows.filter(p=>p.history).length};
+  recoveryFailedProducts:rows.filter(p=>p.recoveryFailure).length,historicalProducts:rows.filter(p=>p.history).length};
  const result={shopId,observedAt,listingObservedAt:listingObservedAt||null,complete,stale,restoredObservation,counts,products:rows};
  return{...result,revision:fingerprint(result)};
 }

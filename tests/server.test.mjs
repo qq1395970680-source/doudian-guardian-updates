@@ -16,6 +16,9 @@ test('local workbench rejects foreign origin and cannot enable writes before log
   const html=await(await fetch(app.url)).text(),token=html.match(/script nonce="([a-f0-9]+)"/)[1];
   const post=(path,args={},origin=app.url)=>fetch(app.url+'/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token,Origin:origin},body:JSON.stringify(args)});
   assert.equal((await post('login',{},'https://attacker.example')).status,400);assert.equal(browser.loginMode,false);
+  assert.equal((await post('diagnostics/export',{shopId:'900001'},'https://attacker.example')).status,400);
+  assert.equal((await post('diagnostics/export',{shopId:'900002'})).status,400);
+  const diagnostics=await post('diagnostics/export',{shopId:'900001'});assert.equal(diagnostics.status,200);assert.equal((await diagnostics.json()).shopId,'900001');assert.equal(starts,0);
   assert.equal((await post('start',{legacyStopped:true})).status,400);assert.equal(starts,0);
   assert.equal(app.snapshot().automaticPriceIncreaseEnabled,false);
   assert.equal((await post('price-increase-policy',{shopId:'900001',enabled:true,acceptHigherPricesAndRisk:true})).status,400);

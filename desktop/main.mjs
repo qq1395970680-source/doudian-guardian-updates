@@ -101,7 +101,7 @@ async function desktopAction(action){
   const next=action==='zoom-reset'?1:Math.max(.8,Math.min(1.5,window.webContents.getZoomFactor()+(action==='zoom-in'?.1:-.1)));
   window.webContents.setZoomFactor(next);return{zoom:next};
  }
- const actions={reconnect:connect,source:sourceProject,data:()=>shell.openPath(runtime),information,
+ const actions={reconnect:connect,source:sourceProject,data:()=>shell.openPath(runtime),diagnostics:async()=>{const folder=join(runtime,'diagnostics');await mkdir(folder,{recursive:true});await shell.openPath(folder);},information,
   'quit-window':()=>{exiting=true;setTimeout(()=>app.quit(),50);},'stop-quit':stopAndQuit};
  if(!Object.hasOwn(actions,action))throw Error('程序操作无效');await actions[action]();return{ok:true};
 }

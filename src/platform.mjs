@@ -1,6 +1,6 @@
 import {GuardError,requireThat,id,fingerprint,saleFen,validateHistorical,proveDraft,proveOriginalRisk,proveReadback,isLimited} from './policy.mjs';
-import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice,scrollForm} from './platform-snapshot.mjs';
-import {until,delay,parseDate,collectForm,bindFormProducts} from './collector.mjs';
+import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice,scrollForm,formStructureSnapshot} from './platform-snapshot.mjs';
+import {until,delay,parseDate,collectForm,bindFormProducts,assertPrecheckMembership} from './collector.mjs';
 import {makeWorkbook} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
@@ -43,8 +43,15 @@ export class DoudianPlatform {
   let observation=null;
   if(['prepare','submit'].includes(stage))try{const s=await page.evaluate(formSlice);observation={warnings:s.warnings,warningDetails:s.warningDetails,dialogs:s.dialogs,busy:s.busy,counts:s.counts,title:s.title,type:s.type,rules:s.rules,mode:s.mode,priceModes:s.priceModes,byDiscount:s.byDiscount,renew:s.renew};}catch{}
   if(error.code==='DRAFT_PRICE'&&error.detail?.mismatches)observation={...observation,mismatches:error.detail.mismatches};
+  if(stage==='precheck'){
+   try{const s=await page.evaluate(formSlice);observation={counts:s.counts,countDetails:s.countDetails,page:s.page,pagerCount:s.pagerCount,pagination:s.pagination,
+    grids:s.grids,total:s.total,busy:s.busy,mode:s.mode,visibleProductIds:s.cells.flatMap(c=>c.rows).filter(r=>r.kind==='product').map(r=>r.productId),visibleRowsOnly:true};}catch{}
+   if(error.detail?.precheckMembership)observation={...observation,precheckMembership:error.detail.precheckMembership};
+  }
   if(['prepare','submit'].includes(stage)&&/DRAFT_TIME|picker|calendar|日期|时分秒/.test(String(error.code)+' '+String(error.message)))
    try{observation={...observation,dateControls:await page.evaluate(dateControlSnapshot)};}catch{}
+  observation={...observation,shopId:this.policy.shopId,...(error.detail?{errorDetail:error.detail}:{})};
+  if(!/LOGIN|ACCOUNT|SHOP_MISMATCH/.test(error.code||''))try{observation={...observation,formStructure:await page.evaluate(formStructureSnapshot)};}catch{}
   await this.browser.failure(page,task,stage,error,observation).catch(()=>{});
  }
  async captureFailure(task,draft,phase,error){
@@ -584,8 +591,8 @@ export class DoudianPlatform {
    await page.locator('#title').waitFor();const initial=await page.evaluate(formSlice);
    requireThat(!initial.counts.some(n=>n>0)&&!initial.cells.some(c=>c.rows.length),'DRAFT_NOT_EMPTY','新的预查页已有商品');
    await this.selectProduct(page,baseline.productId);await this.expand(page);
-   const {products,snapshot}=await collectForm(page,{precheck:true});
-   requireThat(products.length===1&&products[0].productId===baseline.productId&&snapshot.counts.length&&snapshot.counts.every(n=>n===1),'PRECHECK_MEMBERSHIP','预查商品集合不一致');
+   const collected=await collectForm(page,{precheck:true}),{products}=collected;
+   assertPrecheckMembership([baseline.productId],collected);
    await this.identity(page);return {shopId:this.policy.shopId,productId:baseline.productId,complete:true,observedAt:Date.now(),offShelf:products[0].offShelf,skus:products[0].skus};
   }catch(e){
    if(e.code==='NOT_FOUND'&&!recycleChecked){await page.close();await checkRecycle();}
@@ -601,15 +608,15 @@ export class DoudianPlatform {
    await page.locator('#title').waitFor();const initial=await page.evaluate(formSlice);
    requireThat(!initial.counts.some(n=>n>0)&&!initial.cells.some(c=>c.rows.length),'DRAFT_NOT_EMPTY','新的批量预查页已有商品');
    await this.selectProducts(page,baselines.map(b=>b.productId));await this.expand(page);
-   const {products,snapshot}=await collectForm(page,{precheck:true});
-   requireThat(products.length===baselines.length&&products.every(p=>baselines.some(b=>b.productId===p.productId))&&
-    snapshot.counts.length&&snapshot.counts.every(n=>n===baselines.length),'PRECHECK_MEMBERSHIP','批量预查商品集合不一致');
+   const collected=await collectForm(page,{precheck:true}),{products}=collected;
+   const membership=assertPrecheckMembership(baselines.map(b=>b.productId),collected);
+   this.journal?.event?.(null,'batch-precheck-verified',{shopId:this.policy.shopId,precheckMembership:membership},Date.now());
    await this.identity(page);const observedAt=Date.now();
    return baselines.map(b=>{
     const p=products.find(p=>p.productId===b.productId);
     return{shopId:this.policy.shopId,productId:b.productId,complete:true,observedAt,offShelf:p.offShelf,skus:p.skus};
    });
-  }catch(e){await this.fault(page,baselines[0].productId+'-batch','precheck',e);throw e;}
+  }catch(e){e.detail={...e.detail,precheckContext:{targetProductIds:baselines.map(b=>b.productId),targetCount:baselines.length,stage:'precheck'}};await this.fault(page,baselines[0].productId+'-batch','precheck',e);throw e;}
   finally{if(!page.isClosed())await page.close();}
  }
  async radio(page,label){

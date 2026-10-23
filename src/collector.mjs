@@ -65,7 +65,7 @@ export async function collectForm(page,{precheck=false,originalRisk=false}={}){
    const key=fingerprint({products:value.products.map(p=>({productId:p.productId,offShelf:p.offShelf,
     ...(!precheck&&Object.hasOwn(p,'activityLimit')?{activityLimit:p.activityLimit}:{}),skus:p.skus.map(r=>materialRow(r,precheck))})),
     counts:value.snapshot.counts,page:value.snapshot.page,mode:value.snapshot.mode,...(!precheck?{title:value.snapshot.title,type:value.snapshot.type,rules:value.snapshot.rules,dates:value.snapshot.dates,byDiscount:value.snapshot.byDiscount,renew:value.snapshot.renew}: {})});
-   if(previous===key)return value;previous=key;
+   if(previous===key)return {...value,traversal:{materialAttempts,layoutRestarts,completePages:[value.snapshot.page],cellCount:value.cells.length}};previous=key;
   }catch(e){
    if(!['VIRTUAL_CHANGED','FORM_CHANGED','VIRTUAL_GAP'].includes(e.code))throw e;
    if(e.code==='FORM_CHANGED')materialAttempts++;else layoutRestarts++;
@@ -73,6 +73,35 @@ export async function collectForm(page,{precheck=false,originalRisk=false}={}){
   }
  }
  throw lastError||new GuardError('FORM_UNSTABLE','两次完整采集未能一致');
+}
+export function precheckMembershipDiagnostic(targetProductIds,{products,snapshot,cells=[],traversal=null}){
+ const actualProductIds=products.map(p=>p.productId),targets=new Set(targetProductIds),actual=new Set(actualProductIds);
+ const missingProductIds=targetProductIds.filter(id=>!actual.has(id)),unexpectedProductIds=actualProductIds.filter(id=>!targets.has(id));
+ const duplicateProductIds=[...actual].filter(id=>actualProductIds.filter(x=>x===id).length>1),failedConditions=[];
+ if(actualProductIds.length!==targetProductIds.length)failedConditions.push('PRODUCT_COUNT');
+ if(duplicateProductIds.length)failedConditions.push('DUPLICATE_PRODUCT_IDS');
+ if(missingProductIds.length)failedConditions.push('MISSING_PRODUCT_IDS');
+ if(unexpectedProductIds.length)failedConditions.push('UNEXPECTED_PRODUCT_IDS');
+ if(!snapshot.counts?.length)failedConditions.push('COUNT_MISSING');
+ else if(!snapshot.counts.every(n=>n===targetProductIds.length))failedConditions.push('COUNT_MISMATCH');
+ // Paging is diagnostic until the failing shop's DOM establishes which pager
+ // owns the form. Do not turn unrelated visible navigation into a new blocker.
+ const pagingWarnings=[];
+ if(snapshot.pagination?.nextCount===1&&snapshot.pagination.nextDisabled===false)pagingWarnings.push('NEXT_PAGE_VISIBLE');
+ if((snapshot.pagerCount||0)>1||(snapshot.pagination?.nextCount||0)>1)pagingWarnings.push('MULTIPLE_PAGERS_VISIBLE');
+ return {stage:'precheck',capturedAt:Date.now(),targetProductIds:[...targetProductIds],actualProductIds,missingProductIds,unexpectedProductIds,duplicateProductIds,
+  targetCount:targetProductIds.length,actualCount:actualProductIds.length,actualUniqueCount:actual.size,failedConditions,
+  snapshot:{counts:[...(snapshot.counts||[])],countDetails:snapshot.countDetails||[],page:snapshot.page,pagerCount:snapshot.pagerCount,
+   pagination:snapshot.pagination||null,grids:snapshot.grids,total:snapshot.total,mode:snapshot.mode,busy:snapshot.busy},
+  pagingWarnings,cells:cells.map(c=>({top:c.top,height:c.height,productIds:(c.rows||[]).filter(r=>r.kind==='product').map(r=>r.productId),skuCount:(c.rows||[]).filter(r=>r.kind==='sku').length})),
+  traversal:traversal||{cellCount:cells.length},enqueued:false,submitAttempts:0};
+}
+export function assertPrecheckMembership(targetProductIds,value){
+ const d=precheckMembershipDiagnostic(targetProductIds,value);
+ if(d.failedConditions.length)throw new GuardError('PRECHECK_MEMBERSHIP',
+  `批量预查商品集合不一致：目标${d.targetCount}件，实际${d.actualCount}件，缺失${d.missingProductIds.length}件，额外${d.unexpectedProductIds.length}件；页面数量[${d.snapshot.counts.join(',')}]，第${d.snapshot.page??'未知'}页；失败条件 ${d.failedConditions.join('、')}。尚未入队或提交。`,
+  {precheckMembership:d});
+ return d;
 }
 export function bindFormProducts(products,plans){
  requireThat(products.length===plans.length&&products.every(p=>plans.some(q=>q.productId===p.productId)),'DRAFT_MEMBERSHIP','草稿商品集合不一致');

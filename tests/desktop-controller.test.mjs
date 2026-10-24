@@ -54,15 +54,15 @@ test('desktop navigation is limited to its local workbench, never arbitrary file
  assert.equal(isAllowedNavigation(origin+'/',origin),true);
  for(const target of ['file:///C:/secret','https://evil.example','http://127.0.0.1:19418/','http://127.0.0.1:19417@evil.example/','javascript:alert(1)'])assert.equal(isAllowedNavigation(target,origin),false);
 });
-test('a newer bundle waits for idle and resolved submissions; it never interrupts a writer',async()=>{
+test('a newer bundle has a bounded visible wait and never interrupts unproven or unresolved work',async()=>{
  for(const pending of [{busy:true},{unknown:1},{action:'login'}]){
-  let stopped=0;const result=await upgradeService({shopId:status.shopId,expectedBuild:'new',probe:async()=>({state:'ready',status:{...status,...pending}}),control:async()=>stopped++});
-  assert.equal(result.state,'pending');assert.equal(stopped,0);
+  let stopped=0,time=0;const result=await upgradeService({shopId:status.shopId,expectedBuild:'new',probe:async()=>({state:'ready',status:{...status,...pending}}),control:async()=>stopped++,timeoutMs:100,now:()=>time,sleep:async ms=>{time+=ms;},pollMs:10});
+  assert.equal(result.state,'blocked');assert.equal(stopped,0);
  }
 });
 test('idle upgrade preserves resume intent and waits for confirmed old service exit',async()=>{
  const calls=[];let reads=0;
- const result=await upgradeService({shopId:status.shopId,expectedBuild:'new',probe:async()=>({state:++reads===1?'ready':'absent',status}),
+ const result=await upgradeService({shopId:status.shopId,expectedBuild:'new',probe:async()=>++reads===1?{state:'ready',status}:reads===2?{state:'absent'}:{state:'ready',status:{...status,sourceBuild:'new',instance:'new-instance'}},
   control:async c=>calls.push([c.path,c.args]),sleep:async()=>{},start:async()=>calls.push('launch')});
  assert.equal(result.state,'upgraded');assert.deepEqual(calls,[['shutdown',{resumeOnLaunch:true}],'launch']);
 });

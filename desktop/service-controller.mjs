@@ -1,4 +1,5 @@
 import {compareVersions} from '../src/updates.mjs';
+import {BackendUpgrade} from './backend-upgrade.mjs';
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 function refused(error){
  if(error?.code==='ECONNREFUSED')return true;
@@ -28,9 +29,10 @@ export async function ensureService(options){
  while(now()<until){await sleep(400);const next=await probe(options);if(next.state==='ready')return{reused:false,status:next.status};}
  throw Error('后台尚未就绪，请查看运行日志；没有重复启动。');
 }
-export async function postControl({url,shopId,path,args={},timeoutMs=10000}){
+export async function postControl({url,shopId,path,args={},timeoutMs=10000,expectedInstance}){
  if(!['stop','shutdown'].includes(path))throw Error('桌面控制操作无效');
  const s=await probeService({url,shopId,timeoutMs});if(s.state!=='ready')throw Error('后台尚未连接');
+ if(expectedInstance&&s.status.instance!==expectedInstance)throw Error('后台实例已变化，未发送维护控制');
  const page=await fetch(url+'/',{redirect:'error',signal:AbortSignal.timeout(timeoutMs)});
  if(!page.ok)throw Error('无法核对本机工作台');
  const token=(await page.text()).match(/<script nonce="([a-f0-9]{64})"/)?.[1];
@@ -58,20 +60,10 @@ export async function shutdownService(options){
  throw Error('当前动作仍在收尾，已请求停止守护。保留后台与任务记录，请稍后再次退出。');
 }
 export async function upgradeService(options){
- const {probe=probeService,control=postControl,sleep=pause,now=Date.now,start,expectedBuild,timeoutMs=60000}=options;
- const p=await probe(options);if(p.state!=='ready')return{state:'absent'};
- const s=p.status;if(s.sourceBuild===expectedBuild)return{state:'current'};
- if(options.expectedVersion&&compareVersions(options.expectedVersion,s.version)<=0)return{state:'newer-service'};
- if(s.busy||s.action||s.unknown!==0)return{state:'pending'};
- // The server independently rejects BUSY if a new patrol started in this gap.
- // Unknown submissions are never cleared or reconstructed by the launcher.
- await control({...options,path:'shutdown',args:{resumeOnLaunch:s.running===true}});
- const until=now()+timeoutMs;
- while(now()<until){
-  await sleep(400);let after;
-  try{after=await probe(options);}catch{continue;}
-  if(after.state==='absent'){await start();return{state:'upgraded'};}
-  if(after.status?.instance!==s.instance)throw Error('后台实例已改变，取消自动切换');
- }
- throw Error('旧后台尚未确认退出，没有启动新版本');
+ const probe=options.probe||probeService,first=await probe(options);
+ if(first.state!=='ready')return{state:'absent'};
+ if(options.expectedVersion&&compareVersions(options.expectedVersion,first.status.version)<0&&first.status.sourceBuild!==options.expectedBuild)
+  return{state:'newer-service',status:first.status};
+ let initial=true;
+ return (options.coordinator||new BackendUpgrade()).run({...options,probe:async args=>{if(initial){initial=false;return first;}return probe(args);},control:options.control||postControl});
 }

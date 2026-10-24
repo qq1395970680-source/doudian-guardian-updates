@@ -148,7 +148,8 @@ document.addEventListener('visibilitychange',()=>{document.body.classList.toggle
 function renderUpdate(u){
  lastUpdate=u;
  const message={checking:'正在连接 GitHub…',available:'发现新版本 '+u.release?.version,current:'当前已是最新发布版本',unpublished:'尚未发布可用安装包',downloading:'正在下载并校验更新…',ready:'更新已校验，准备安装',installing:'正在安装，程序将自动重新打开',error:u.message||'检查失败，请稍后再试'};
- text('update-status',message[u.state]||'点击检查，获取最新版本');$('check-updates').disabled=['checking','downloading','installing'].includes(u.state);
+ const mismatch=window.guardianDesktop?.version&&state?.version&&window.guardianDesktop.version!==state.version;
+ text('update-status',u.state==='current'&&mismatch?'桌面安装包已是最新，实际后台仍为 '+state.version+'，后台切换尚未完成':message[u.state]||'点击检查，获取最新版本');$('check-updates').disabled=['checking','downloading','installing'].includes(u.state);
  $('install-update').hidden=u.state!=='available';$('install-update').disabled=updateBusy;
  if(u.release){text('release-notes',u.release.notes||'此版本没有附加说明');$('release-notes').hidden=false;}
  $('download-progress').hidden=u.state!=='downloading';if(u.progress)$('download-progress').value=Math.round(u.progress.received/u.progress.total*100);

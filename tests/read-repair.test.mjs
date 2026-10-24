@@ -20,7 +20,7 @@ for(const failure of ['none','missing-stop-ack','different-instance','running-af
  try{
   const action=repairReadonlyService({url:'http://127.0.0.1:19000',runtime,validate:async()=>{},sleep:async()=>{},
    readRecord:async()=>({pid:123,sourceRoot:root,url:'http://127.0.0.1:19000',startedAt:original.startedAt,sourceBuild:original.sourceBuild,shopId:original.shopId}),
-   probe:async()=>++probes===1?{state:'ready',status:original}:probes===2?{state:'ready',status:failure==='different-instance'?{...stopped,instance:'changed'}:failure==='running-after-stop'?original:stopped}:{state:'absent'},
+   probe:async()=>++probes===1?{state:'ready',status:original}:probes<=3?{state:'ready',status:failure==='different-instance'?{...stopped,instance:'changed'}:failure==='running-after-stop'?original:stopped}:{state:'absent'},
    control:async()=>{calls.push('stop');return failure==='missing-stop-ack'?{...stopped,ok:false}:stopped;},
    inspect:async()=>{calls.push('inspect');return[{pid:123,created:'exact'}];},terminate:async()=>{calls.push('terminate');},start:async()=>calls.push('start')});
   if(failure==='none'){assert.equal((await action).state,'restarted');assert.deepEqual(calls,['inspect','stop','terminate','start']);}

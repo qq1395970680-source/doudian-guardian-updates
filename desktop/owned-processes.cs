@@ -21,13 +21,16 @@ public class OwnedProcesses {
  static string PathOf(string p){return Path.GetFullPath(p).TrimEnd('\\');}
  static bool SamePath(string a,string b){return String.Equals(PathOf(a),PathOf(b),StringComparison.OrdinalIgnoreCase);}
  static double Epoch(Entry e){return (ManagementDateTimeConverter.ToDateTime(e.created).ToUniversalTime()-new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;}
+ // ParentProcessId may refer to a dead parent whose PID Windows has since
+ // reused. A process older than this parent instance is not its descendant.
+ static bool IsChildOf(Entry parent,Entry child){return child.parentPid==parent.pid&&Epoch(child)>=Epoch(parent);}
  static List<Entry> Query(string filter){
   using(var search=new ManagementObjectSearcher("SELECT ProcessId,ParentProcessId,ExecutablePath,CreationDate,CommandLine FROM Win32_Process WHERE "+filter))
    return search.Get().Cast<ManagementObject>().Select(p=>new Entry{pid=Convert.ToInt32(p["ProcessId"]),parentPid=Convert.ToInt32(p["ParentProcessId"]),exe=p["ExecutablePath"] as string,created=p["CreationDate"] as string,commandLine=p["CommandLine"] as string}).ToList();
  }
  static List<Entry> Tree(int pid){
   var result=Query("ProcessId="+pid);if(result.Count!=1)throw new Exception("目标进程不存在或不唯一");
-  for(int i=0;i<result.Count;i++){if(result.Count>1000)throw new Exception("进程树超过维护上限");foreach(var p in Query("ParentProcessId="+result[i].pid))if(!result.Any(v=>v.pid==p.pid))result.Add(p);}
+  for(int i=0;i<result.Count;i++){if(result.Count>1000)throw new Exception("进程树超过维护上限");foreach(var p in Query("ParentProcessId="+result[i].pid))if(IsChildOf(result[i],p)&&!result.Any(v=>v.pid==p.pid))result.Add(p);}
   return result;
  }
  static void Validate(Expected expected,List<Entry> tree){
@@ -65,7 +68,7 @@ public class OwnedProcesses {
     var immediate=Tree(request.expected.pid);Validate(request.expected,immediate);if(immediate.Count!=tree.Count||!immediate.All(p=>tree.Any(e=>Same(p,e))))throw new Exception("关闭前进程集合变化，取消维护");
     foreach(var p in handles){if(!p.HasExited)p.Kill();if(!p.WaitForExit(5000))throw new Exception("目标进程退出未确认");}
     foreach(var entry in tree){if(Query("ProcessId="+entry.pid).Any(p=>p.created==entry.created))throw new Exception("目标进程仍在运行");
-     if(Query("ParentProcessId="+entry.pid).Any(p=>!tree.Any(e=>Same(p,e))))throw new Exception("发现未记录子进程，未确认完整关闭");}
+     if(Query("ParentProcessId="+entry.pid).Any(p=>IsChildOf(entry,p)&&!tree.Any(e=>Same(p,e))))throw new Exception("发现未记录子进程，未确认完整关闭");}
     Console.Write("{\"closed\":true}");return 0;
    }finally{foreach(var p in handles)p.Dispose();}
   }catch(Exception error){Console.Error.Write(error.Message);return 1;}

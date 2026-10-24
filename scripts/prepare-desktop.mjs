@@ -15,7 +15,9 @@ const service=join(stage,'service'),source=join(stage,'source');await mkdir(serv
 for(const dir of ['src','public'])await cp(join(root,dir),join(service,dir),{recursive:true});
 await mkdir(join(service,'config'));await cp(join(root,'config/default.json'),join(service,'config/default.json'));
 await mkdir(join(service,'scripts'));await cp(join(root,'scripts/start-local.mjs'),join(service,'scripts/start-local.mjs'));
-await mkdir(join(service,'desktop'));await cp(join(root,'desktop/service-controller.mjs'),join(service,'desktop/service-controller.mjs'));
+await mkdir(join(service,'desktop'));
+for(const file of ['service-controller.mjs','backend-upgrade.mjs','upgrade-journal-worker.mjs','upgrade-journal-snapshot.mjs'])
+ await cp(join(root,'desktop',file),join(service,'desktop',file));
 for(const file of ['package.json','package-lock.json','README.md','USER-GUIDE.md','DEVELOPMENT.md','Start.ps1'])await cp(join(root,file),join(service,file));
 await mkdir(join(service,'node_modules'));
 // The runtime dependency closure is exactly Playwright + playwright-core.

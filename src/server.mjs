@@ -18,7 +18,7 @@ import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from '.
 import {exportDiagnostics} from './diagnostics.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-export async function createApp({config=null,rootDir=root,port=19417,runtime=join(rootDir,'runtime'),dependencies={}}={}){
+export async function createApp({config=null,rootDir=root,port=19417,runtime=join(rootDir,'runtime'),dependencies={},resumeOnUpgrade=false}={}){
  const sourceBuild=await projectBuild(root),version=JSON.parse(await readFile(join(root,'package.json'),'utf8')).version;
  await mkdir(runtime,{recursive:true});
  const journal=dependencies.journal||new Journal(join(runtime,'guardian.sqlite')),accounts=new AccountRegistry(journal);
@@ -173,8 +173,14 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  await new Promise((accept,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',()=>{boundPort=server.address().port;accept();});});
  async function close(){if(closing)return;closing=true;service.stop();platform.stopping=true;
   while(service.busy||action)await new Promise(r=>setTimeout(r,100));await browser.close();await new Promise(r=>{server.close(r);server.closeIdleConnections();});journal.close();}
+ // A desktop upgrade may have paused an older backend using its existing stop
+ // API, which clears autoStart. Resume only an already authorized shop; this
+ // flag never creates execution, original-discount or price-increase consent.
+ const authorizedUpgradeResume=resumeOnUpgrade===true&&shopId&&policy.originalRiskAllowed===true&&
+  (saved.executionEnabled===true||saved.cutoverConfirmed===true);
+ if(authorizedUpgradeResume){saved.autoStart=true;journal.putSettings(shopId,saved);}
  if(shopId&&(saved.autoStart===true&&(saved.executionEnabled===true||saved.cutoverConfirmed===true))){
-  await background('连接店铺',async()=>{platform.stopping=false;connection=await platform.probe();service.start();return connection;});
+  await background('连接店铺',async()=>{platform.stopping=false;connection=await platform.probe();if(saved.autoStart===true&&!platform.stopping)service.start();return connection;});
  }else if(shopId&&!config&&!dependencies.platform&&!dependencies.service){await background('连接店铺并同步折扣',readCurrent);}
  const url='http://127.0.0.1:'+boundPort;
  await writeFile(join(runtime,'service-status.json'),JSON.stringify({pid:process.pid,url,shopId,startedAt:Date.now(),version,sourceRoot:root,sourceBuild},null,2),'utf8');
@@ -183,7 +189,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const flag=process.argv.indexOf('--shop');let config=null;
  if(flag>=0){const shop=id(process.argv[flag+1]);config=JSON.parse(await readFile(join(root,'config','shop-'+shop+'.json'),'utf8'));}
- const app=await createApp({config,runtime:process.env.GUARDIAN_RUNTIME||join(process.env.LOCALAPPDATA||root,'DoudianDiscountGuardianV2')});
+ const app=await createApp({config,runtime:process.env.GUARDIAN_RUNTIME||join(process.env.LOCALAPPDATA||root,'DoudianDiscountGuardianV2'),resumeOnUpgrade:process.env.GUARDIAN_UPGRADE_RESUME==='1'});
  console.log(JSON.stringify({ready:true,url:app.url,shopId:app.snapshot().shopId}));
  for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>{void app.close();});
 }

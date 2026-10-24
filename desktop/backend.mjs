@@ -25,13 +25,13 @@ export async function prepareBackend({bundleRoot,runtime}){
  const staging=join(versions,bundleId+'.install-'+process.pid+'-'+Date.now());
  await cp(bundleRoot,staging,{recursive:true,errorOnExist:true,force:false});await validateBundle(staging);await rename(staging,target);return await realpath(target);
 }
-export async function launchBackend({root,runtime,shopId}){
+export async function launchBackend({root,runtime,shopId,resumeOnUpgrade=false}){
  await mkdir(runtime,{recursive:true});
  root=await realpath(root);runtime=await realpath(runtime);
  const out=openSync(join(runtime,'service-out.log'),'a'),err=openSync(join(runtime,'service-error.log'),'a');let child;
  try{
   child=spawn(join(root,'engine','node.exe'),['src/server.mjs',...(shopId?['--shop',shopId]:[])],{cwd:root,windowsHide:true,detached:true,
-   stdio:['ignore',out,err],env:{...process.env,GUARDIAN_RUNTIME:runtime,PLAYWRIGHT_BROWSERS_PATH:join(root,'browsers')}});
+   stdio:['ignore',out,err],env:{...process.env,GUARDIAN_RUNTIME:runtime,GUARDIAN_UPGRADE_RESUME:resumeOnUpgrade===true?'1':'0',PLAYWRIGHT_BROWSERS_PATH:join(root,'browsers')}});
   await new Promise((accept,reject)=>{child.once('spawn',accept);child.once('error',reject);});child.unref();
  }finally{closeSync(out);closeSync(err);}
  return child.pid;

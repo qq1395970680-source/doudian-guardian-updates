@@ -42,10 +42,11 @@ function renderCatalog(force=false){
  for(const p of rows.slice(pageIndex*pageSize,(pageIndex+1)*pageSize)){
   const detail=node('details','product'),summary=node('summary','product-summary');detail.dataset.productId=p.productId;detail.dataset.shopId=catalog.shopId;
   const title=node('div','product-title'),initial=node('span','product-mark',(p.name||'商品').replace(/^适配|适用/,'').slice(0,1)),titleBody=node('div');titleBody.append(node('strong','',p.name||'商品 '+p.productId),node('small','',p.productId));title.append(initial,titleBody);
-  if(p.recoveryFailure)titleBody.append(node('small','reason','恢复预查失败 · '+friendly(p.recoveryFailure.message)));
+  const failureLabel=p.recoveryFailure?.code==='REBUILD_REVIEW_REQUIRED'?'重建待确认':p.recoveryFailure?.stage==='pricing'?'价格待确认':p.recoveryFailure?.stage==='eligibility'?'恢复依据待核验':'预查失败';
+  if(p.recoveryFailure)titleBody.append(node('small','reason',failureLabel+' · '+friendly(p.recoveryFailure.message)));
   const lastOnly=!p.current.length&&p.state==='unconfirmed'&&p.lastObserved?.length>0,shown=lastOnly?p.lastObserved:p.current,skus=shown.flatMap(a=>a.skus),price=node('span','price',range(skus.map(s=>s.saleFen),money));
   if(lastOnly)price.append(node('small','last-price-note','上次读取 '+time(Math.min(...shown.map(a=>a.observedAt)))));
-  summary.append(title,price,node('span','discount',range(skus.map(s=>s.discount),discount)),badge(p.recoveryFailure?'预查失败':labels[p.state],p.recoveryFailure?'amber':p.state==='active'?'green':p.state==='missing'?'amber':p.state==='pending'?'purple':'neutral'),icon('chevron'));
+  summary.append(title,price,node('span','discount',range(skus.map(s=>s.discount),discount)),badge(p.recoveryFailure?failureLabel:labels[p.state],p.recoveryFailure?'amber':p.state==='active'?'green':p.state==='missing'?'amber':p.state==='pending'?'purple':'neutral'),icon('chevron'));
   detail.append(summary);let populated=false;const populate=()=>{if(populated)return;populated=true;const inner=node('div','sku-detail');
    const addActivity=(a,title)=>{inner.append(node('h3','',title+' · '+(a.campaignId||'')));const table=node('table','sku-table'),head=node('thead'),tr=node('tr');for(const h of ['规格','原价','折后价','折扣'])tr.append(node('th','',h));head.append(tr);table.append(head);const body=node('tbody');for(const s of a.skus){const row=node('tr');for(const cell of [s.name||s.id,money(s.baseFen),money(s.saleFen),discount(s.discount)])row.append(node('td','',cell));body.append(row);}table.append(body);inner.append(table);if(a.skus.some(s=>s.saleSource==='computed-from-verified-base-and-discount'))inner.append(node('p','detail-note','部分折后价由已核对的原价 × 折扣计算。'));};
    for(const a of p.current)addActivity(a,p.stale?'上次读到的活动（待刷新）':'当前活动');for(const a of p.scheduled)addActivity(a,'即将开始');
@@ -53,9 +54,16 @@ function renderCatalog(force=false){
    if(!p.current.length&&!p.scheduled.length)inner.append(node('p','detail-note','当前折后价尚未确认，历史价格仅供对照。'));
    if(p.history){const history=node('details'),hs=node('summary','detail-note','查看完整历史规格');history.append(hs);history.addEventListener('toggle',()=>{if(history.open&&!history.dataset.loaded){history.dataset.loaded='1';const box=node('div');const before=inner.childNodes.length;addActivity(p.history,'历史折扣');for(const child of [...inner.childNodes].slice(before))box.append(child);history.append(box);}});inner.append(history);}
    if(p.reason)inner.append(node('div','reason',friendly(p.reason)));
+   if(!p.excluded&&!p.pending&&!p.current.length&&!p.scheduled.length&&p.history){
+    const request=node('button','button small secondary','立即核验恢复');request.disabled=!online||state?.connection?.shopId!==catalog.shopId||!state?.originalRestoreAuthorized;
+    request.onclick=async()=>{request.disabled=true;try{await post('recovery/request',{shopId:catalog.shopId,productId:p.productId});toast('已加入优先恢复队列，当前读取收尾后立即核验；价格变更仍需确认。');}catch(error){toast(error.message);}finally{request.disabled=false;}};inner.append(request);
+   }
    if(p.recoveryFailure){
     const f=p.recoveryFailure;inner.append(node('p','detail-note',`最近预查失败：${time(f.at)} · ${f.code} · ${f.submission}`));
     inner.append(node('p','detail-note',f.retryAt?`重试最早时间：${time(f.retryAt)}；需守护运行且当前仍满足恢复条件。`:'等待下一轮核查恢复条件'));
+    if(f.stage==='pricing'){const go=node('button','button small secondary','打开价格确认');go.onclick=()=>navigate('prices');inner.append(go);}
+    if(f.limitedLoss){const l=f.limitedLoss;inner.append(node('p','detail-note',`核对来源活动：${l.referenceCampaignId||'尚未找到'} · ${l.status||'状态未核实'}；开始 ${time(l.startAt)}；结束 ${time(l.endAt)}`));
+     inner.append(node('p','detail-note',`恢复依据：${l.branch}；退出表读取 ${time(l.export?.observedAt)}；本商品匹配 ${l.export?.productMatched?'是':'否'}；${l.nextAction||''}`));}
     if(f.capacity?.source==='program-execution-budget'&&[f.capacity.productCount,f.capacity.skuCount,f.capacity.maxProducts,f.capacity.maxSkus].every(Number.isSafeInteger))
      inner.append(node('p','detail-note',`程序执行容量：本次 ${f.capacity.productCount} 件商品、${f.capacity.skuCount} 个当前规格；每批最多 ${f.capacity.maxProducts} 件商品、${f.capacity.maxSkus} 个规格。完整历史保留。`));
     if(f.detail){const d=f.detail,box=node('details'),heading=node('summary','detail-note','查看商品集合与分页诊断');box.append(heading);
@@ -89,7 +97,7 @@ function renderActivity(s){const signature=JSON.stringify([s.tasks,s.events]);if
   item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);}if(!s.events?.length)events.append(node('div','empty','新的运行动态会显示在这里'));$('events').replaceChildren(events);
 }
 function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s.running,s.busy,s.action,s.unknown]);if(signature!==accountSignature){accountSignature=signature;const fragment=document.createDocumentFragment();for(const a of s.accounts||[]){const row=node('div','setting-row'),body=node('div');body.append(node('strong','',a.name||'店铺'),node('p','',a.shopId));row.append(body);if(a.shopId===s.shopId)row.append(badge('当前店铺','blue'));else{const b=node('button','button small secondary','切换店铺');b.disabled=!!(s.running||s.busy||s.action||s.unknown);b.onclick=()=>act('accounts/select',{shopId:a.shopId});row.append(b);}fragment.append(row);}if(!s.accounts?.length)fragment.append(node('div','empty','登录后自动添加店铺，无需填写店铺 ID'));$('account-list').replaceChildren(fragment);}
- text('connection',s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':'登录后自动读取店铺名称、当前活动与规格价格');
+ text('connection',s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':s.authentication?.required?'店铺登录已失效，请重新登录本店；历史折扣和确认方案已保留':s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:'登录后自动读取店铺名称、当前活动与规格价格');
  text('consent-status',s.originalRestoreAuthorized?'已确认原折扣恢复':'尚未确认');$('consent-wrap').hidden=!!s.originalRestoreAuthorized;text('exclusions',s.excluded?.length?s.excluded.join('、'):'当前没有排除商品');
  const automatic=s.automaticPriceIncreaseEnabled===true,signaturePolicy=JSON.stringify([s.shopId,automatic]);
  if(signaturePolicy!==pricePolicySignature){pricePolicySignature=signaturePolicy;$('price-increase-consent').checked=false;}
@@ -100,8 +108,13 @@ function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s
 }
 function render(s){
  if(s.instance&&s.instance!==instance){location.reload();return;}state=s;
+ const loginRequired=s.authentication?.required===true||s.lastRun?.code==='LOGIN_REQUIRED'&&!s.action&&!s.running&&!s.authentication;
+ $('login-alert').hidden=!loginRequired&&!s.loginOpen;text('login-alert-message',s.loginOpen?'请在专用窗口完成登录，再点击“登录完成”':'店铺登录已失效，守护已暂停；历史折扣与价格确认保留');
+ text('reauthenticate',s.loginOpen?'登录完成':'重新登录本店');$('reauthenticate').disabled=pending||!online||!!s.action||!!s.busy||s.running;
+ const sessionWarning=s.authentication?.persistentSession?.available===false;$('session-alert').hidden=!sessionWarning;
+ if(sessionWarning)text('session-alert',s.authentication.persistentSession.message);
  $('action-alert').hidden=s.lastAction?.ok!==false||!!s.action;if(s.lastAction?.ok===false)text('action-alert',friendly(s.lastAction.message));
- text('shop',s.shopId?(s.name||'店铺')+' · '+s.shopId:'尚未登录店铺');text('avatar',(s.name||'店').slice(0,1));$('shop-dot').classList.toggle('online',!!s.connection);
+ text('shop',s.shopId?(s.name||'店铺')+' · '+s.shopId:'尚未登录店铺');text('avatar',(s.name||'店').slice(0,1));$('shop-dot').classList.toggle('online',!!s.connection&&!loginRequired);
  const desktopVersion=window.guardianDesktop?.version,versionMismatch=!!desktopVersion&&desktopVersion!==s.version;
  text('version','后台 v'+s.version);text('update-version',desktopVersion?'桌面 '+desktopVersion+' · 后台 '+s.version+(versionMismatch?'（后台尚未切换）':''):'后台 '+s.version);text('footer-state',s.running?'守护正在后台运行':'后台已连接');
  text('connection-label',online?(s.running?'后台守护中':'后台已连接'):'正在重新连接');$('connection-dot').classList.toggle('online',online);
@@ -113,7 +126,7 @@ function render(s){
  text('progress',[s.action,p.stage,Number.isInteger(p.activeRead)&&Number.isInteger(p.activeTotal)?p.activeRead+' / '+p.activeTotal+' 个当前活动':''].filter(Boolean).join(' · ')||(s.running?'等待下一轮巡检':'守护尚未开启'));
  text('schedule','上次成功：'+time(s.lastSuccessfulRun?.finishedAt||(s.lastRun?.ok?s.lastRun.finishedAt:null))+'　'+(working?'本轮进行中':s.nextAt?'下一轮：'+time(s.nextAt):'等待开启'));
  text('patrol-status',working?'同步中':s.running?'自动巡检':'待机');text('unknown-count',s.unknown||0);text('verified',s.verified||0);text('blocked',s.blocked||0);text('nav-count',s.unknown||0);$('nav-count').hidden=!s.unknown;
- const reads=s.readHealth?.active||[],blockedCleanup=s.readHealth?.quarantined===true,loginRequired=s.lastRun?.code==='LOGIN_REQUIRED'&&!working&&!s.running;
+ const reads=s.readHealth?.active||[],blockedCleanup=s.readHealth?.quarantined===true;
  if(reads.length){
   const op=reads.reduce((a,b)=>a.startedAt<b.startedAt?a:b),remaining=Math.max(0,Math.ceil((op.deadline-Date.now())/1000));
   text('progress',[s.action,p.stage,op.kind+(op.campaignId?' · 活动 '+op.campaignId:''),'步骤 '+op.lastStep,'读取期限剩余 '+remaining+' 秒'].filter(Boolean).join(' · '));
@@ -122,10 +135,12 @@ function render(s){
   if(age>=120){text('patrol-status','读取较慢');text('run-pill','正在等待平台读取');}
  }
  if(blockedCleanup){text('progress','读取已中止，专用浏览器关闭尚未确认。请使用程序工具中的“修复只读后台”。');text('patrol-status','清理待核实');text('run-pill','守护已暂停');}
- if(loginRequired){text('progress','平台登录已失效，守护已暂停。请在店铺管理重新登录。');text('patrol-status','需要登录');text('run-pill','等待重新登录');}
+ if(s.immediateRecovery?.pending&&!s.immediateRecovery.paused&&!loginRequired&&!blockedCleanup){text('run-pill',`优先恢复 ${s.immediateRecovery.pending} 件已请求商品`);text('patrol-status','优先恢复');}
+ if(loginRequired){text('progress','平台登录已失效，守护已暂停。请重新登录本店。');text('patrol-status','需要登录');text('run-pill','等待重新登录');text('hero-title','店铺登录已失效');text('hero-detail','重新登录本店后重新核对活动；原有守护、商品历史和确切价格方案保留。');text('footer-state','店铺需要重新登录');text('connection-label','后台在线 · 店铺需登录');$('connection-dot').classList.remove('online');}
  if(!working&&!loginRequired&&!blockedCleanup&&s.lastRun?.ok===false){text('patrol-status','巡检未完成');text('progress',p.stage+' · '+(s.lastRun.message||s.lastRun.code));text('run-pill',s.running?'等待下一轮核对':'守护已暂停');}
  $('login').disabled=pending||!online||working||s.running||!!s.unknown;$('finish-login').disabled=pending||!online||working||s.running||(!s.loginOpen&&!s.shopId);text('finish-login',s.loginOpen?'登录完成':'重新连接');
- $('audit').disabled=pending||!online||working||s.running||!s.shopId;$('start').disabled=pending||!online||working||s.running||!s.connection;
+ $('audit').disabled=pending||!online||working||s.running||!s.shopId;$('start').disabled=pending||!online||working||s.running||!s.connection||loginRequired;
+ text('login',s.shopId?'重新登录本店':'登录店铺');$('add-account').disabled=pending||!online||working||s.running||!!s.unknown;
  $('stop').disabled=pending||!online||!(s.running||s.busy);
  text('price-count',s.priceReviewsPending||0);$('price-count').hidden=!s.priceReviewsPending;priceReviews.sync();
  renderAccounts(s);migration.sync();recoveries.sync();if(view==='activity')renderActivity(s);
@@ -133,7 +148,10 @@ function render(s){
 async function post(path,args={}){const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token},body:JSON.stringify(args),signal:AbortSignal.timeout(25000)});const result=await response.json();if(!response.ok)throw Error(result.message||'操作未完成');return result;}
 async function act(name,args={}){if(pending)return;if(name==='start'&&!state.originalRestoreAuthorized&&!$('original-consent').checked){navigate('accounts');toast('请先确认本店的原折扣恢复规则，然后开启守护。');$('original-consent').focus();return;}
  pending=true;if(state)render(state);try{await post(name,{...args,...(name==='start'?{originalDiscountConsent:$('original-consent').checked}:{})});toast(name==='login'?'登录窗口正在打开，完成后点击“登录完成”。':name==='stop'?'已请求暂停，正在安全收尾。':'已开始处理');catalogAt=0;}catch(e){toast(e.message);}finally{pending=false;await poll();}}
-for(const name of ['login','finish-login','audit','start','stop'])$(name).onclick=()=>act(name);
+for(const name of ['finish-login','audit','start','stop'])$(name).onclick=()=>act(name);
+$('login').onclick=()=>act('login',state?.shopId?{reauthenticate:true}:{});
+$('add-account').onclick=()=>act('login',{newAccount:true});
+$('reauthenticate').onclick=()=>act(state?.loginOpen?'finish-login':'login',{reauthenticate:true});
 $('price-increase-consent').onchange=()=>{if(state)renderAccounts(state);};
 $('price-increase-policy').onclick=()=>{if(!state)return;const enabled=!state.automaticPriceIncreaseEnabled;if(enabled&&!$('price-increase-consent').checked)return;
  void act('price-increase-policy',{shopId:state.shopId,enabled,acceptHigherPricesAndRisk:enabled&&$('price-increase-consent').checked});};

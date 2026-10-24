@@ -16,6 +16,7 @@ import {checkForUpdates,UPDATE_REPOSITORY} from './updates.mjs';
 import {projectBuild} from './build.mjs';
 import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from './migration.mjs';
 import {exportDiagnostics} from './diagnostics.mjs';
+import {authenticationView,markAuthenticationRequired,markAuthenticated} from './authentication.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export async function createApp({config=null,rootDir=root,port=19417,runtime=join(rootDir,'runtime'),dependencies={},resumeOnUpgrade=false}={}){
@@ -26,17 +27,28 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  const browser=dependencies.browser||new DedicatedBrowser(runtime),token=randomBytes(32).toString('hex'),instance=randomBytes(16).toString('hex');
  const startedAt=Date.now(),runtimeBuild={version,sourceBuild,instance,startedAt};
  journal.setDiagnosticContext(runtimeBuild);browser.diagnosticContext=Object.freeze(runtimeBuild);
- let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,migrationPreview=null,exportingDiagnostics=false;
+ let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,loginExpectedShop=null,migrationPreview=null,exportingDiagnostics=false;
  function bind(account){
   shopId=account?.shopId||null;saved=shopId?journal.settings(shopId)||{}:{};
   const enabled=saved.executionEnabled===true||saved.cutoverConfirmed===true;
   policy={...account,shopId,liveEnabled:enabled,cutoverConfirmed:enabled};
   platform=dependencies.platformFactory?.(policy)||dependencies.platform||new DoudianPlatform({browser,policy,journal});
-  service=dependencies.serviceFactory?.({policy,platform})||dependencies.service||new GuardianService({journal,platform,policy});
+  service=dependencies.serviceFactory?.({policy,platform})||dependencies.service||new GuardianService({journal,platform,policy,immediate:true});
+  const bound=platform,boundShop=shopId;
+  const authenticationFailed=error=>{
+   if(bound!==platform)return;
+   connection=null;markAuthenticationRequired(journal,boundShop,error);service.stop();platform.stopping=true;platform.cancelReads?.();
+  };
+  platform.onAuthenticationFailure=authenticationFailed;service.onAuthenticationFailure=authenticationFailed;
+  platform.onAuthenticated=identity=>{if(bound===platform&&identity.shopId===boundShop){connection=identity;markAuthenticated(journal,identity);}};
+  service.canRunImmediate=()=>!action&&!authView().required&&connection?.shopId===boundShop;
   connection=null;migrationPreview=null;
  }
  bind(accounts.selected());
- const snapshot=()=>({version,build:'isolated-headless-journal',sourceBuild,instance,startedAt,shopId,name:policy.name||null,connection,action,lastAction,
+ const authView=()=>authenticationView({shopId,record:shopId?journal.settings('authentication:'+shopId):null,connection,
+  lastRun:service.status().lastRun,lastAction,readHealth:platform.readHealth?.(),loginOpen:browser.loginMode===true,persistence:browser.sessionPersistence||null});
+ const acceptConnection=identity=>{connection=identity;markAuthenticated(journal,identity,Date.now(),{force:true});return identity;};
+ const snapshot=()=>({version,build:'isolated-headless-journal',sourceBuild,instance,startedAt,shopId,name:policy.name||null,connection:authView().required?null:connection,authentication:authView(),action,lastAction,
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
   automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId),
@@ -48,11 +60,16 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  async function background(kind,fn){
   requireThat(!action&&!service.busy,'BUSY','当前任务完成前不能执行另一操作');action=kind;
   void(async()=>{try{const result=await fn();lastAction={kind,ok:true,at:Date.now(),result};}
-   catch(e){lastAction={kind,ok:false,at:Date.now(),code:e.code||'ERROR',message:e.message};journal.event(null,'control-error',{shopId,...lastAction});}
-   finally{action=null;}})();
+   catch(e){lastAction={kind,ok:false,at:Date.now(),code:e.code||'ERROR',message:e.message};if(e.code==='LOGIN_REQUIRED'){connection=null;markAuthenticationRequired(journal,shopId,e);}journal.event(null,'control-error',{shopId,...lastAction});}
+   finally{action=null;service.wakeImmediate?.();}})();
  }
  async function readCurrent(){
-  platform.stopping=false;connection=await platform.probe();const d=await platform.discover({historyReadLimit:0});
+  platform.stopping=false;acceptConnection(await platform.probe());const d=await platform.discover({historyReadLimit:0,
+   onReadBoundary:async()=>{
+    if(!service.immediateEnabled||!policy.liveEnabled||!policy.cutoverConfirmed||!policy.originalRiskAllowed)return;
+    const result=await service.runImmediate({atBoundary:true});
+    if(result.submitted||result.refreshRequired)return{refreshRequired:true,listing:await platform.listActive()};
+   }});
   for(const b of d.baselines)journal.remember(b);return{products:journal.histories(shopId).length,complete:d.activeComplete,errors:d.errors};
  }
  const html=(await readFile(join(rootDir,'public','index.html'),'utf8')).replace('__SESSION_TOKEN__',token).replace('__SERVICE_INSTANCE__',instance);
@@ -126,11 +143,17 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }else if(path==='/api/price-reviews/decide'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先连接并核对当前店铺');
     const review=service.decidePriceReview(args);json(200,{ok:true,review});return;
+   }else if(path==='/api/recovery/request'){
+    requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'LOGIN_REQUIRED','请先登录并核对当前店铺');
+    const productId=id(args.productId,'商品ID');const result=service.requestRecovery([productId],{reason:'user-recheck'});json(202,{ok:true,...result});return;
    }else if(path==='/api/login'){
-    requireThat(!action&&!service.running&&!service.busy&&!snapshot().unknown,'BUSY','请等待当前守护停止并核实未完成结果，再登录店铺');
+    const selected=accounts.selected(),reauthenticate=!!selected&&args.newAccount!==true&&(args.reauthenticate===true||authView().required);
+    requireThat(!action&&!service.running&&!service.busy&&(!snapshot().unknown||reauthenticate),'BUSY','请等待当前工作停止；未知提交仅允许重新登录同一家店铺后回读');
     await background('打开店铺登录窗口',async()=>{
      await browser.close();connection=null;platform.stopping=false;
-     if(browser.openLogin){loginProfile=await browser.openLogin();}else{loginProfile='shop-'+shopId;await browser.open(shopId,{login:true});}
+     loginExpectedShop=reauthenticate?selected.shopId:null;
+     if(browser.openLogin){loginProfile=await browser.openLogin(reauthenticate?{shopId:selected.shopId,profileKey:selected.profileKey}:{});}
+     else{loginProfile=selected?.profileKey||'shop-'+shopId;await browser.open(shopId,{login:true,profileKey:loginProfile});}
      const page=await browser.page();await page.goto(platform.base+LIST,{waitUntil:'domcontentloaded'});return'在专用窗口登录后，点击“登录完成”';
     });
    }else if(path==='/api/finish-login'){
@@ -139,10 +162,15 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
      if(browser.loginMode){
       platform.stopping=false;const page=await browser.page();await page.goto(platform.base+LIST,{waitUntil:'domcontentloaded'});
       const identity=await (platform.identify?platform.identify(page):platform.identity(page));
+      requireThat(!loginExpectedShop||identity.shopId===loginExpectedShop,'SHOP_MISMATCH','重新登录的店铺与原店铺不同；请切回原店铺，或使用添加店铺入口');
       await browser.close();bind(accounts.register(identity,loginProfile||'shop-'+identity.shopId));loginProfile=null;
+      loginExpectedShop=null;
      }
      requireThat(shopId,'LOGIN_REQUIRED','请先登录店铺');
-     if(platform.discover)await readCurrent();else connection=await platform.probe();return connection;
+     if(platform.discover)await readCurrent();else acceptConnection(await platform.probe());
+     const latestSettings=journal.settings(shopId)||{};
+     if(latestSettings.autoStart===true&&policy.originalRiskAllowed===true&&policy.liveEnabled&&!platform.stopping)service.start();
+     return connection;
     });
    }else if(path==='/api/accounts/select'){
     requireThat(!action&&!service.running&&!service.busy&&!snapshot().unknown,'BUSY','请先停止当前店铺守护并完成结果核实');
@@ -161,7 +189,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     saved.executionEnabled=true;saved.autoStart=true;journal.putSettings(shopId,saved);
     Object.assign(policy,{cutoverConfirmed:true,liveEnabled:true});platform.stopping=false;service.start();
    }else if(path==='/api/stop'){
-    service.stop();platform.stopping=true;if(shopId){saved.autoStart=false;journal.putSettings(shopId,saved);}
+    service.stop({pauseRequests:args.forUpgrade!==true});platform.stopping=true;if(shopId){saved.autoStart=false;journal.putSettings(shopId,saved);}
    }else if(path==='/api/shutdown'){
     const resumeIdle=args.resumeOnLaunch===true&&(saved.executionEnabled===true||saved.cutoverConfirmed===true)&&saved.autoStart===true;
     requireThat((!service.running||resumeIdle)&&!service.busy&&!action,'BUSY','后台空闲后才可维护退出');
@@ -180,7 +208,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   (saved.executionEnabled===true||saved.cutoverConfirmed===true);
  if(authorizedUpgradeResume){saved.autoStart=true;journal.putSettings(shopId,saved);}
  if(shopId&&(saved.autoStart===true&&(saved.executionEnabled===true||saved.cutoverConfirmed===true))){
-  await background('连接店铺',async()=>{platform.stopping=false;connection=await platform.probe();if(saved.autoStart===true&&!platform.stopping)service.start();return connection;});
+  await background('连接店铺',async()=>{platform.stopping=false;acceptConnection(await platform.probe());if(saved.autoStart===true&&!platform.stopping)service.start();return connection;});
  }else if(shopId&&!config&&!dependencies.platform&&!dependencies.service){await background('连接店铺并同步折扣',readCurrent);}
  const url='http://127.0.0.1:'+boundPort;
  await writeFile(join(runtime,'service-status.json'),JSON.stringify({pid:process.pid,url,shopId,startedAt:Date.now(),version,sourceRoot:root,sourceBuild},null,2),'utf8');

@@ -6,13 +6,15 @@ import {randomUUID} from 'node:crypto';
 import {redactDiagnostic} from './diagnostics.mjs';
 import {currentReadOperation,bounded,rawReadObject} from './read-operations.mjs';
 import {accountSlice} from './platform-snapshot.mjs';
+import {loadProfileSession,saveProfileSession} from './profile-session.mjs';
 
 export class DedicatedBrowser {
-  constructor(root, { viewport = {width:1440,height:960}, deviceScaleFactor = 1, test = false } = {}) {
+  constructor(root, { viewport = {width:1440,height:960}, deviceScaleFactor = 1, test = false,closeTimeoutMs=15000 } = {}) {
     this.root = resolve(root);this.viewport=viewport;this.deviceScaleFactor=deviceScaleFactor;this.test=test;
-    this.context=null;this.loginMode=false;this.shopId=null;
+    this.context=null;this.loginMode=false;this.shopId=null;this.sessionTimer=null;this.sessionSaving=null;this.sessionPersistence=null;
+    this.closeTimeoutMs=test?closeTimeoutMs:15000;
   }
-  async openLogin(){const profileKey='signin-'+randomUUID();await this.open(null,{login:true,profileKey});return profileKey;}
+  async openLogin({shopId=null,profileKey=null}={}){profileKey??='signin-'+randomUUID();await this.open(shopId,{login:true,profileKey});return profileKey;}
   async open(shopId, {login=false,profileKey=null}={}) {
     if(shopId!==null)id(shopId,'店铺ID');
     requireThat(shopId!==null||login,'ACCOUNT_UNKNOWN','尚未识别店铺');
@@ -27,15 +29,40 @@ export class DedicatedBrowser {
     this.context=await chromium.launchPersistentContext(actual,{channel:'chromium',headless:!login,
       chromiumSandbox:true,viewport:this.viewport,deviceScaleFactor:this.deviceScaleFactor,
       locale:'zh-CN',timezoneId:'Asia/Shanghai',acceptDownloads:true,timeout:45000});
-    this.shopId=shopId;this.loginMode=login;
+    this.shopId=shopId;this.loginMode=login;this.profilePath=actual;
     this.context.setDefaultTimeout(20000);this.context.setDefaultNavigationTimeout(45000);
     if(this.test)await this.context.route('**/*',route=>{
       const url=new URL(route.request().url());return ['127.0.0.1','localhost'].includes(url.hostname)?route.continue():route.abort();
     });
+    try{
+      const saved=await loadProfileSession(actual),present=await this.context.cookies();
+      const known=new Set(present.map(c=>[c.name,c.domain,c.path,c.partitionKey||''].join('\u0000')));
+      const restore=saved.filter(c=>!known.has([c.name,c.domain,c.path,c.partitionKey||''].join('\u0000')));
+      if(restore.length)await this.context.addCookies(restore);
+      this.sessionPersistence={state:'ready',available:true,at:Date.now()};
+    }catch{this.sessionPersistence={state:'unavailable',available:false,at:Date.now(),message:'登录会话读取失败，原资料保留；请重新登录或检查本机用户与数据目录'};}
+    this.sessionTimer=setInterval(()=>{void this.checkpointSession();},60000);this.sessionTimer.unref();
     return this.context;
   }
   async page() { requireThat(this.context,'NO_BROWSER','专用浏览器未启动');const context=this.context,op=currentReadOperation();return op?op.newPage(()=>context.newPage()):context.newPage(); }
-  async close() { const context=this.context;if(context)await context.close();if(this.context===context){this.context=null;this.loginMode=false;this.shopId=null;} }
+  async checkpointSession(){
+    if(this.sessionSaving)return this.sessionSaving;
+    const context=this.context,profile=this.profilePath;if(!context||!profile)return;
+    const run=(async()=>{
+      try{
+        const cookies=await bounded(context.cookies(),3000,Error('登录会话读取超时'));
+        if(this.context!==context)return;
+        await saveProfileSession(profile,cookies);
+        this.sessionPersistence={state:'saved',available:true,at:Date.now()};
+      }catch{this.sessionPersistence={state:'unavailable',available:false,at:Date.now(),message:'登录会话保存失败，原资料保留；请检查本机存储与权限'};}
+    })();
+    this.sessionSaving=run;try{await run;}finally{if(this.sessionSaving===run)this.sessionSaving=null;}
+  }
+  async close() {
+    const context=this.context;clearInterval(this.sessionTimer);this.sessionTimer=null;
+    if(context){await this.checkpointSession();await bounded(context.close(),this.closeTimeoutMs,Object.assign(Error('专用浏览器关闭尚未确认，登录操作已停止等待；请在程序工具中修复只读后台，任务记录保留'),{code:'BROWSER_CLOSE_UNCONFIRMED'}));}
+    if(this.context===context){this.context=null;this.loginMode=false;this.shopId=null;this.profilePath=null;}
+  }
   async failure(page,taskId,stage,error,observation=null,captureObservation=null) {
     const folder=join(this.root,'evidence',taskId.replace(/[^a-zA-Z0-9-]/g,''));await mkdir(folder,{recursive:true});
     const at=Date.now(),record=stage+'-'+at;

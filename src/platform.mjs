@@ -12,6 +12,8 @@ import {chooseReadonlyDateRange} from './date-picker.mjs';
 import {dateControlSnapshot} from './date-control-snapshot.mjs';
 import {ReadOperations,currentReadOperation,rawReadObject,bounded} from './read-operations.mjs';
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
+import {currentLimitedReference,resolveLimitedLoss} from './limited-continuity.mjs';
+import {confirmedRebuildContinuity} from './rebuild-review.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -27,6 +29,7 @@ export class DoudianPlatform {
    if(this.drafts.size||this.journal?.list(this.policy.shopId).some(t=>['submitting','verifying','unknown'].includes(t.phase)))return false;
    await this.browser.close();this.monitorPages.clear();return true;
   },onEvent:(kind,detail)=>{
+   if(kind==='read-operation-failed'&&detail.code==='LOGIN_REQUIRED')this.onAuthenticationFailure?.(detail);
    this.journal?.event(null,kind,{shopId:this.policy.shopId,...detail});
    if(kind==='read-operation-failed')return this.browser.failure(null,detail.campaignId||'inventory',detail.kind,
     Object.assign(new Error(detail.message),{code:detail.code}),{shopId:this.policy.shopId,readOperation:detail}).catch(()=>{});
@@ -54,9 +57,10 @@ export class DoudianPlatform {
   if(opened){await page.keyboard.press('Escape');await page.locator('body').hover({position:{x:5,y:5}});}
   return {shopId:result.ids[0],name:result.names[0],observedAt:Date.now()};
  }
- async identity(page){const account=await this.identify(page);requireThat(account.shopId===this.policy.shopId,'SHOP_MISMATCH','专用浏览器登录店铺与当前店铺不一致');return account;}
+ async identity(page){const account=await this.identify(page);requireThat(account.shopId===this.policy.shopId,'SHOP_MISMATCH','专用浏览器登录店铺与当前店铺不一致');this.onAuthenticated?.(account);return account;}
  async open(path){await this.ensure();const page=await this.browser.page();try{await page.goto(this.base+path,{waitUntil:'domcontentloaded'});await this.identity(page);return page;}catch(e){await page.close().catch(()=>{});throw e;}}
  async fault(page,task,stage,error){
+  if(error.code==='LOGIN_REQUIRED')this.onAuthenticationFailure?.(error);
   const base={shopId:this.policy.shopId,...(error.detail?{errorDetail:error.detail}:{}),readOperations:this.readHealth()};
   await this.browser.failure(page,task,stage,error,base,async()=>{
   page=rawReadObject(page);let observation=null;
@@ -165,6 +169,25 @@ export class DoudianPlatform {
   original.currentObservedAt=listing.observedAt;
   this.publishCatalog();
   return true;
+ }
+ async refreshAfterReadback(task,observation){
+  const listing=await this.listActive(),campaign=listing.campaigns.find(c=>c.id===observation.campaignId);
+  requireThat(campaign&&campaign.name===task.title&&campaign.type===observation.type&&campaign.startAt===observation.startAt&&campaign.endAt===observation.endAt,
+   'READBACK_CHANGED','恢复回读后活动已变化，当前显示等待重新核对');
+  const previous=this.inventory,details=new Map();
+  for(const c of listing.campaigns){
+   const old=previous?.listing.campaigns.find(p=>p.id===c.id),d=previous?.details.get(c.id);
+   if(old&&fingerprint(old)===fingerprint(c)&&d?.complete===true)details.set(c.id,d);
+  }
+  // These values come from the just-verified independent platform read, never
+  // an old journal receipt or a diagnostic. Global absence still requires all
+  // other currently listed details to have been obtained independently.
+  details.set(campaign.id,{complete:true,observedAt:observation.observedAt,rules:structuredClone(observation.rules),
+   products:task.plans.map(plan=>({productId:plan.productId,name:plan.name,
+    skus:observation.rows.filter(r=>r.productId===plan.productId).map(({productId,...row})=>structuredClone(row)),
+    ...(isLimited(plan)?{activityLimit:observation.productLimits.find(p=>p.productId===plan.productId).activityLimit,soldOut:false,removalRiskConfirmed:false}:{}),
+    removalConfirmed:false,removalAmbiguous:false}))});
+  this.inventory={listing,details,activeComplete:listing.campaigns.every(c=>details.has(c.id)),readOnlyReuseMaxAgeMs:0};this.publishCatalog();
  }
  async detail(campaign){
   id(campaign.id);const page=await this.open(LIST+`/view?refer=view&id=${campaign.id}&is_new_limit=1&operate_use_mode=0`);
@@ -379,6 +402,8 @@ export class DoudianPlatform {
      const title=reference.title||this.inventory?.listing.campaigns.find(c=>c.id===reference.campaignId)?.name;
      const origin=await list(title?{title}:{});
      requireThat(origin.complete===true,'ACTIVE_UNKNOWN','原限量活动尚未完整重新核对');
+     listing.referenceLookup={campaignId:reference.campaignId,complete:true,observedAt:origin.observedAt,query:origin.query||null,
+      matchingIds:origin.campaigns.filter(c=>c.id===reference.campaignId).map(c=>c.id)};
      const matches=origin.campaigns.filter(c=>c.id===reference.campaignId);
      requireThat(matches.length<=1,'LIMITED_LOSS_UNPROVEN','原限量活动编号重复，不能确定退出结果');
      previous=matches[0];if(previous)listing.campaigns.push(previous);
@@ -393,7 +418,11 @@ export class DoudianPlatform {
    const previous=this.inventory.listing.campaigns.find(c=>c.id===reference.campaignId);
    // Current-only scans omit ended campaigns. Inspect the precise last source
    // independently rather than treating an omitted row as a lost promotion.
-   if(!previous||!this.inventory.details.has(previous.id))return this.loss(baseline,{fresh:true});
+   if(!previous||!this.inventory.details.has(previous.id)){
+    if(reference.rules?.autoRenew===true)throw new GuardError('LOSS_EVIDENCE_EXPIRED','限量活动换期或原活动未在当前列表中，需要批量重新核对',
+     {productId:baseline.productId,campaignId:reference.campaignId});
+    return this.loss(baseline,{fresh:true});
+   }
   }
   try{return this.lossFrom(baseline,this.inventory.listing,this.inventory.details,true);}
   catch(error){
@@ -405,7 +434,8 @@ export class DoudianPlatform {
    if(error.code==='LIMITED_LOSS_UNPROVEN'&&reference.limited&&detail?.complete===true&&!product?.soldOut&&
     source?.source==='live-platform-removal-export'&&source.complete===true&&source.shopId===this.policy.shopId&&
     source.campaignId===reference.campaignId&&source.observedAt>0&&now-source.observedAt>120000&&
-    campaign?.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)&&
+    (campaign?.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)||
+     reference.rules?.autoRenew===true&&['已结束','已失效'].includes(campaign?.status)&&campaign.endAt<=now)&&
     source.records.some(r=>r.productId===baseline.productId))
     throw new GuardError('LOSS_EVIDENCE_EXPIRED','早先读取的本商品退出明细已过期，需要重新批量核对',
      {productId:baseline.productId,campaignId:reference.campaignId});
@@ -421,6 +451,8 @@ export class DoudianPlatform {
   if((this.inventory?.listing.campaigns.filter(active).length||0)>8)return this.scopedLossBatch(baselines);
   // Small queues benefit from exact product queries. Large queues share one
   // complete current inventory instead of reopening it for every product.
+  if(this.inventory?.activeComplete&&baselines.some(b=>isLimited(b)&&b.rules?.autoRenew===true&&
+   !this.inventory.details.has(this.limitedReference(b).campaignId)))return this.scopedLossBatch(baselines);
   if(baselines.length<=5){
    const results=[];
    for(let i=0;i<baselines.length;i+=2){
@@ -531,11 +563,13 @@ export class DoudianPlatform {
    'BATCH_PROOF_EXPIRED','批量核对耗时超过证据有效期，不能使用过期结果');
   return{listing,details,observedAt};
  }
- limitedReference(baseline){
+ limitedReference(baseline,listing=this.inventory?.listing,details=this.inventory?.details){
   const task=this.journal?.list(this.policy.shopId).filter(t=>t.phase==='verified'&&t.plans.some(p=>p.productId===baseline.productId))
    .sort((a,b)=>b.receipt.verifiedAt-a.receipt.verifiedAt)[0];
-  if(task&&task.receipt.verifiedAt>=(baseline.historyAt||0))return{limited:isLimited(task.plans.find(p=>p.productId===baseline.productId)),campaignId:task.receipt.campaignId,title:task.title};
-  return{limited:isLimited(baseline),campaignId:baseline.campaignId};
+  const useTask=task&&task.receipt.verifiedAt>=(baseline.historyAt||0),plan=useTask?task.plans.find(p=>p.productId===baseline.productId):baseline;
+  const base={limited:isLimited(plan),campaignId:useTask?task.receipt.campaignId:baseline.campaignId,
+   ...(useTask?{title:task.title}:{}),rules:plan.rules,durationMs:plan.durationMs,activityLimit:plan.activityLimit};
+  return currentLimitedReference(base,baseline,listing,details,this.policy.shopId);
  }
  lossFrom(baseline,listing,details,complete,productScoped=false){
   const related=[];
@@ -546,24 +580,28 @@ export class DoudianPlatform {
    if(p)related.push(c.id+':removed');
   }
   const previous=listing.campaigns.find(c=>c.id===baseline.campaignId);
-  const reference=this.limitedReference(baseline);let removal=null,removalEvidence=null;
+  const reference=this.limitedReference(baseline,listing,details);let removal=null,removalEvidence=null,continuity=null;
   if(reference.limited){
-   const detail=details.get(reference.campaignId),p=detail?.products.find(p=>p.productId===baseline.productId);
-   const source=detail?.removalExport,campaign=listing.campaigns.find(c=>c.id===reference.campaignId),now=Date.now();
-   if(source?.source==='live-platform-removal-export'&&source.complete===true&&source.shopId===this.policy.shopId&&
-    source.campaignId===reference.campaignId&&source.observedAt>0&&now-source.observedAt<=120000&&source.observedAt<=now+5000&&
-    campaign?.risk===true&&campaign.endAt>now&&['进行中','未开始','已失效'].includes(campaign.status)&&!p?.soldOut)
-    removal=source.records.find(r=>r.productId===baseline.productId)||null;
-   if(removal)removalEvidence={source:source.source,complete:true,shopId:source.shopId,campaignId:source.campaignId,activityType:campaign.type,
-    observedAt:source.observedAt,sha256:source.sha256,record:structuredClone(removal)};
-   requireThat(p?.removalConfirmed===true&&p.removalRiskConfirmed===true&&!p.soldOut||removal,
-    'LIMITED_LOSS_UNPROVEN','限量活动尚无本商品被异常剔除的明确证据；售罄、到期或不明消失不自动补量');
+   try{({removal,removalEvidence,continuity}=resolveLimitedLoss({baseline,reference,listing,details,shopId:this.policy.shopId}));}
+   catch(error){
+    if(error.code!=='LIMITED_LOSS_UNPROVEN')throw error;
+    const times=[listing.observedAt,...listing.campaigns.filter(active).map(c=>details.get(c.id)?.observedAt)],at=Math.min(...times),now=Date.now();
+    const detail=error.detail?.limitedLoss;
+    if(detail&&complete===true&&listing.complete===true&&times.every(t=>Number.isFinite(t)&&t>0&&t<=now+5000&&now-t<=120000)){
+     detail.currentAbsence={source:'live-platform-current-absence',complete:true,shopId:this.policy.shopId,productId:baseline.productId,
+      observedAt:at,listingFingerprint:fingerprint(listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt]).sort())};
+     detail.referenceLookup=listing.referenceLookup||null;
+     continuity=confirmedRebuildContinuity(this.journal?.priceTarget?.(this.policy.shopId,baseline.productId),baseline,detail,now);
+    }
+    if(!continuity)throw error;
+   }
   }
   // Routine full/current-only listings describe the same missing product even
   // when ended history is omitted or rows reorder. Keep its retry budget stable.
   // Fresh product-scoped evidence retains campaign history to distinguish a
   // later platform removal from a previously verified restoration.
-  return {complete,active:false,observedAt:Date.now(),...(removal?{removal,removalEvidence}:{}),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,related:related.sort(),...(removal?{removal}:{}),
+  return {complete,active:false,observedAt:Date.now(),...(removal?{removal,removalEvidence}:{}),...(continuity?{continuity}:{}),lossKey:fingerprint({productId:baseline.productId,history:baseline.campaignId,related:related.sort(),...(removal?{removal}:{}),
+   ...(continuity?{continuity:[continuity.kind,continuity.referenceCampaignId,continuity.status,continuity.startAt,continuity.endAt,continuity.rebuildApprovalId||null]}:{}),
    ...(productScoped?{status:previous?.status||'absent',campaigns:listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt,c.risk]).sort((a,b)=>a[0].localeCompare(b[0]))}: {})})};
  }
  async selectProduct(page,productId){return this.selectProducts(page,[productId]);}

@@ -10,6 +10,7 @@ export class AccountRegistry {
  select(shopId){id(shopId);requireThat(this.data.accounts.some(a=>a.shopId===shopId),'ACCOUNT_UNKNOWN','请先登录这家店铺');this.data.selected=shopId;this.save();return this.selected();}
  register(identity,profileKey,explicitPolicy=null){
   const shopId=id(identity.shopId);requireThat(/^(shop-\d+|signin-[a-zA-Z0-9-]+)$/.test(profileKey),'PROFILE_SCOPE','专用登录资料无效');
+  requireThat(!this.data.accounts.some(a=>a.shopId!==shopId&&a.profileKey===profileKey),'PROFILE_SCOPE','此登录目录已属于另一家店铺，请使用添加店铺创建独立登录');
   let account=this.data.accounts.find(a=>a.shopId===shopId);
   if(!account){account={shopId,name:identity.name||'店铺',profileKey,excludedProductIds:[],allowMissingHistoricalSkus:true,originalRiskAllowed:false,
    allowFurtherPriceReduction:false,captureExistingOnly:true};this.data.accounts.push(account);}

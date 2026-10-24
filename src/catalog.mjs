@@ -78,10 +78,11 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
   const c=checks.find(c=>c.shopId===shopId&&c.productId===p.productId);
   if(c&&!p.current.length&&!p.scheduled.length){
    p.check=c;p.reason=p.reason||c.message;
-   if(['PRECHECK_MEMBERSHIP','RESTORE_SKU_BUDGET','RESTORE_PRODUCT_BUDGET'].includes(c.code)&&!p.pending&&!p.excluded)p.recoveryFailure={
-    stage:c.code==='PRECHECK_MEMBERSHIP'?'precheck':'planning',code:c.code,message:c.message,at:c.at,retryAt:c.retryAt||null,
+   if(['PRECHECK_MEMBERSHIP','RESTORE_SKU_BUDGET','RESTORE_PRODUCT_BUDGET','LIMITED_LOSS_UNPROVEN','SKU_RATIO_REVIEW_REQUIRED','PRICE_REVIEW_REQUIRED','REBUILD_REVIEW_REQUIRED'].includes(c.code)&&!p.pending&&!p.excluded)p.recoveryFailure={
+    stage:c.code==='PRECHECK_MEMBERSHIP'?'precheck':c.code==='LIMITED_LOSS_UNPROVEN'?'eligibility':['SKU_RATIO_REVIEW_REQUIRED','PRICE_REVIEW_REQUIRED','REBUILD_REVIEW_REQUIRED'].includes(c.code)?'pricing':'planning',code:c.code,message:c.message,at:c.at,retryAt:c.retryAt||null,
     detail:c.code==='PRECHECK_MEMBERSHIP'?c.precheckMembership||null:null,
     ...(c.code==='PRECHECK_MEMBERSHIP'?{}:{capacity:c.restoreCapacity||null}),
+    ...(c.limitedLoss?{limitedLoss:c.limitedLoss}:{}),
     submission:'本次恢复检查未通过，尚未进入恢复任务入队和提交'};
    const proof=c.productState,recycled=c.code==='PRODUCT_RECYCLED'&&proof?.kind==='recycled'&&proof.source==='live-platform-product-recycle'&&proof.complete===true&&proof.shopId===shopId&&proof.productId===p.productId;
    if(recycled&&!p.pending&&!p.excluded&&!p.ambiguous){

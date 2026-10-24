@@ -81,7 +81,16 @@ export function makeRemovalPriceReview(plan,loss,now=Date.now()){
  const previous=plan.skus.map(s=>s.saleFen);
  requireThat(Math.max(...previous)*ratio.denominator>Math.min(...previous)*ratio.numerator,
   'PRICE_REVIEW_UNNEEDED','当前守护价格已满足倍率，无需生成调整建议');
- const selected=selectRatioPrices(plan.skus,ratio);
+ let selected,originalUnavailable=null;
+ try{selected=selectRatioPrices(plan.skus,ratio);}
+ catch(error){
+  if(error.code!=='NO_FEASIBLE_PRICE')throw error;
+  // Keep the complete product visible in price confirmation even when the
+  // known type has no legal discount combination. These unchanged display
+  // rows cannot be approved as a supposedly feasible original proposal.
+  originalUnavailable={code:error.code,message:error.message};
+  selected=plan.skus.map(s=>({discount:s.discount,saleFen:s.saleFen}));
+ }
  const rows=plan.skus.map((sku,i)=>({id:sku.id,name:normalizeName(sku.name),baseFen:sku.baseFen,
   historicalDiscount:sku.originalDiscount??sku.discount,previousDiscount:sku.discount,previousFen:sku.saleFen,
   ...selected[i],bounds:{},evidence:[record.reason]}));
@@ -89,6 +98,7 @@ export function makeRemovalPriceReview(plan,loss,now=Date.now()){
  const value={kind:'sku-price-ratio',shopId:plan.shopId,productId:plan.productId,name:plan.name,
   historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,
   type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows,ratio:rule,
+  ...(originalUnavailable?{originalUnavailable}:{}),
   ...(plan.campaignTarget?{campaignTarget:structuredClone(plan.campaignTarget)}:{})};
  return {...value,key:fingerprint(value),source:'live-platform-removal-export',taskId:null,
   sourceProof:{...structuredClone(proof),planFingerprint:planHash,lossKey:loss.lossKey},

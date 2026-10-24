@@ -44,13 +44,14 @@ test('native desktop window, tray hide, single instance, isolated renderer, and 
   await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
   const reopen=spawn(executablePath,args,{env,windowsHide:true,stdio:'ignore'});
   assert.equal(await new Promise((ok,no)=>{reopen.once('error',no);reopen.once('exit',ok);}),0);
-  const recoveryDeadline=Date.now()+15000;
+  const recoveryDeadline=Date.now()+15000;let rendered='';
   while(Date.now()<recoveryDeadline){
-   const ready=await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];return !w.webContents.isCrashed()&&!w.webContents.isLoading();});
-   if(ready)break;await new Promise(r=>setTimeout(r,100));
+   // Navigation can finish before app.js has received the first API response.
+   // Verify the account content the user needs, within the same time budget.
+   try{rendered=await desktop.evaluate(async({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];return w.webContents.isCrashed()||w.webContents.isLoading()?'':await w.webContents.executeJavaScript('document.body?.innerText||""');});}catch{}
+   if(rendered.includes('桌面隔离验收 · 900001'))break;await new Promise(r=>setTimeout(r,100));
   }
   assert.equal(await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.isCrashed()),false);
-  const rendered=await desktop.evaluate(async({BrowserWindow})=>await BrowserWindow.getAllWindows()[0].webContents.executeJavaScript('document.body.innerText'));
   assert.ok(rendered.includes('桌面隔离验收 · 900001'));
   assert.equal(service.running,true);assert.equal(stops,0);
   const exited=desktop.waitForEvent('close');

@@ -6,6 +6,8 @@ import './create-desktop-icon.mjs';
 import {projectBuild} from '../src/build.mjs';
 const helperBuild=spawnSync('pwsh.exe',['-NoLogo','-File',resolve(import.meta.dirname,'build-owned-processes.ps1')],{stdio:'inherit',windowsHide:true});
 if(helperBuild.status!==0)throw Error('Owned process helper build failed');
+const vaultBuild=spawnSync('pwsh.exe',['-NoLogo','-File',resolve(import.meta.dirname,'build-profile-vault.ps1')],{stdio:'inherit',windowsHide:true});
+if(vaultBuild.status!==0)throw Error('Profile session vault build failed');
 const root=resolve(import.meta.dirname,'..'),stage=join(root,'.desktop');
 await cp(join(root,'desktop/assets'),join(root,'build-assets'),{recursive:true});
 // This is build-only staging, never a runtime or a user-data directory.
@@ -13,6 +15,7 @@ if(relative(root,stage)!=='.desktop')throw Error('Invalid staging directory');
 await rm(stage,{recursive:true,force:true});await mkdir(stage,{recursive:true});
 const service=join(stage,'service'),source=join(stage,'source');await mkdir(service);await mkdir(source);
 for(const dir of ['src','public'])await cp(join(root,dir),join(service,dir),{recursive:true});
+await mkdir(join(service,'native'));await cp(join(root,'desktop/assets/GuardianProfileVault.exe'),join(service,'native/GuardianProfileVault.exe'));
 await mkdir(join(service,'config'));await cp(join(root,'config/default.json'),join(service,'config/default.json'));
 await mkdir(join(service,'scripts'));await cp(join(root,'scripts/start-local.mjs'),join(service,'scripts/start-local.mjs'));
 await mkdir(join(service,'desktop'));

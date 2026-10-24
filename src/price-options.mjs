@@ -2,6 +2,7 @@ import {fingerprint,saleFen} from './policy.mjs';
 import {selectRatioPrices,describeRatio} from './ratio-prices.mjs';
 import {selectClosestPriceStep} from './price-constraints.mjs';
 import {campaignChoice} from './campaign-choice.mjs';
+import {rebuildMaterial} from './rebuild-review.mjs';
 
 const cache=new Map();
 const descriptions=[
@@ -10,6 +11,18 @@ const descriptions=[
  ['balanced','综合建议方案','所有规格均不降价，同时满足已读限制，尽量减少总涨价金额。']
 ];
 export function priceOptions(review){
+ if(review.kind==='limited-rebuild'){
+  const rows=structuredClone(review.rows),target=structuredClone(review.rebuildTarget);
+  const options=[{id:'rebuild-confirmed',label:'保留已有价格 · 重新创建',available:true,activityType:target.type,rows,rebuildTarget:target,
+   validationStatus:'unverified',description:'缺少原活动退出依据。明确确认价格、时长及重新提供的活动额度后，先重新核对当前活动，再创建。'}];
+  if(['限量抢购','限时抢购'].includes(review.type)){
+   const alternate=campaignChoice(review.type==='限量抢购'?'限时抢购':'限量抢购');
+   options.push({id:'rebuild-switch',label:'保留已有价格 · 改为'+alternate.type,available:true,activityType:alternate.type,rows:structuredClone(rows),
+    rebuildTarget:rebuildMaterial(alternate),campaignTarget:alternate,validationStatus:'unverified',description:'价格保持本表不变，按所示另一活动类型重新创建，仍须通过平台当前价格核验。'});
+  }
+  return options.map(option=>({...option,reason:'重新创建不代表已恢复；须新鲜核对、合法价格和逐规格独立回读。',
+   key:fingerprint({algorithm:'explicit-rebuild-v1',sourceKey:review.key,option})}));
+ }
  if(review.kind==='rounding-reconfirmation')return [{id:'reconfirm-rounding',label:'保留折扣 · 重新确认金额',
   description:'原确认记录完整保留；本表按新的取整规则列出确切金额，活动类型和时长沿用现有设置。',
   available:true,rows:structuredClone(review.rows),activityType:review.type,validationStatus:'unverified',
@@ -26,6 +39,7 @@ export function priceOptions(review){
  const options=descriptions.map(([id,label,description])=>{
   try{
    let rows=structuredClone(review.rows),ratio=review.ratio;
+   if(id==='original'&&review.originalUnavailable)throw Object.assign(new Error(review.originalUnavailable.message),{code:'NO_FEASIBLE_PRICE'});
    if(id!=='original'){
     const bounds=review.rows.map(row=>({...row.bounds,minFen:Math.max(row.previousFen,row.bounds?.minFen??0),
      ...(id==='raise-low'&&row.previousFen===highest?{maxFen:Math.min(row.previousFen,row.bounds?.maxFen??Infinity)}:{})}));
@@ -38,7 +52,7 @@ export function priceOptions(review){
     key:fingerprint({algorithm:'price-strategies-v1',sourceKey:review.key,id,rows,ratio:ratio||null})};
   }catch(error){
    if(error.code!=='NO_FEASIBLE_PRICE')throw error;
-   return{id,label,description,available:false,rows:[],reason:'在当前商品原价、可用折扣档位和已读平台价格上下限内，没有满足条件的不降价方案。程序不会改商品原价或绕过平台限制。'};
+   return{id,label,description,available:false,rows:[],reason:id==='original'?error.message:'在当前商品原价、可用折扣档位和已读平台价格上下限内，没有满足条件的不降价方案。程序不会改商品原价或绕过平台限制。'};
   }
  });
  if(['限量抢购','限时抢购'].includes(review.type)){

@@ -29,18 +29,18 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
   action=r.id;loadVersion++;for(const c of cards.values())updateControls(c);pagination();directionHeading();
   try{
    const args={shopId:r.shopId,reviewId:r.id,key:r.key,decision};
-   if(decision==='approve')Object.assign(args,{confirmedSkuIds:r.rows.map(row=>row.id),acceptPriceAndRisk:true,...(card.option?{optionId:card.option.id,optionKey:card.option.key}:{})});
+   if(decision==='approve')Object.assign(args,{confirmedSkuIds:r.rows.map(row=>row.id),acceptPriceAndRisk:true,...(card.source.kind==='limited-rebuild'?{confirmRebuild:true}:{}),...(card.option?{optionId:card.option.id,optionKey:card.option.key}:{})});
    const result=await post('price-reviews/decide',args);
    if(shop!==r.shopId)return;
    reviews=reviews.map(row=>row.id===r.id?result.review:row);render();
-   toast(decision==='approve'?'表内价格已确认。开启守护时，后台会重新核对后执行。':decision==='decline'?'已保留原设置，不采用这份调价建议。':'已请求重新核对；新的建议仍需你确认。');
+   toast(decision==='approve'?'已确认并加入优先恢复队列，当前读取收尾后立即核验恢复。':decision==='decline'?'已保留原设置，不采用这份调价建议。':'已请求重新核对；新的建议仍需你确认。');
   }catch(e){toast(e.message);readAt=0;}
   finally{action=null;loadVersion++;readAt=0;for(const c of cards.values())updateControls(c);pagination();directionHeading();void refresh();}
  }
  function buildCard(r,previous,first){
   const source=r,signature=JSON.stringify(source),options=source.options||[];
   const wanted=previous?.signature===signature?previous.selectedOptionId:null;
-  const option=options.find(o=>o.id===wanted&&o.available)||(!wanted?options.find(o=>['balanced','reconfirm-rounding'].includes(o.id)&&o.available):null);
+  const option=options.find(o=>o.id===wanted&&o.available)||(!wanted?options.find(o=>['balanced','reconfirm-rounding','rebuild-confirmed'].includes(o.id)&&o.available):null);
   if(options.length)r={...source,rows:option?.rows||[],ratio:option?.ratio,type:option?.activityType||source.type};
   const el=node('details','panel price-review'),summary=node('summary','price-review-heading'),title=node('div');
   el.dataset.reviewId=r.id;el.open=previous?.el.open??(first&&r.status==='pending');
@@ -50,6 +50,12 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
   function populate(){if(populated)return;populated=true;
    const body=node('div','price-review-body'),caption=node('p','helper','下表包含本商品全部规格。已有守护价与建议价由已核对原价 × 折扣计算；未调整的规格保持原设置。');
    body.append(caption);
+   if(source.kind==='limited-rebuild'){
+    const target=option?.rebuildTarget||source.rebuildTarget,seconds=target.durationMs/1000;
+    caption.textContent='当前完整活动列表已核对，商品没有有效活动；原活动的退出性质尚未证实。下表保持已有守护价，确认后按所列规则重新创建，不把缺失当作异常剔除。';
+    body.append(node('p','price-lower-warning',`重新创建：${target.type} · ${Math.floor(seconds/86400)}天 ${Math.floor(seconds%86400/3600)}时 ${Math.floor(seconds%3600/60)}分 ${seconds%60}秒 · ${target.activityLimit!=null?'重新提供总限量 '+target.activityLimit+' 件':'不限量'} · 不限购、不预热 · ${target.rules.orderMinutes}分钟取消订单。`));
+    body.append(node('p','detail-note',`原活动：${source.rebuildSource.referenceCampaignId} · ${source.rebuildSource.status||'未找到'}；${source.sourceDetail?.nextAction||'退出原因尚未完整证明'}。`));
+   }
    if(source.kind==='rounding-reconfirmation'){
     caption.textContent='旧确认金额因取整规则更新而失效。左列来自原确认单，右列按相同折扣向上取分；旧确认金额与完整历史均保留。必须重新确认后才能执行。';
     const duration=source.durationMs,seconds=Number.isSafeInteger(duration)?duration/1000:null;
@@ -127,8 +133,8 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
     const consent=node('label','check-label price-consent'),checkbox=node('input');checkbox.type='checkbox';
     // Never preserve consent across a changed/expired proposal or account.
     checkbox.checked=previous?.signature===card.signature&&previous.selectedOptionId===card.selectedOptionId&&previous.checkbox?.checked===true;
-    consent.append(checkbox,node('span','',`我已核对本商品全部 ${r.rows.length} 个规格，同意${card.option?'所选「'+card.option.label+'」及活动类型「'+r.type+'」、':''}表内价格及对应的低价风险提示，并按这些确切价格继续守护。`));body.append(consent);
-    const actions=node('div','price-review-actions'),approve=node('button','button primary','确认表内价格并继续守护'),decline=node('button','button secondary','暂不调整');
+    consent.append(checkbox,node('span','',`我已核对本商品全部 ${r.rows.length} 个规格，同意${card.option?'所选「'+card.option.label+'」及活动类型「'+r.type+'」、':''}表内价格及对应的低价风险提示，并按这些确切价格继续守护。${source.kind==='limited-rebuild'?'我理解原活动退出原因尚未证实，明确同意按上方确切时长及限量额度重新创建活动。':''}`));body.append(consent);
+    const actions=node('div','price-review-actions'),approve=node('button','button primary',source.kind==='limited-rebuild'?'确认重新创建并继续守护':'确认表内价格并继续守护'),decline=node('button','button secondary','暂不调整');
     actions.append(approve,decline);body.append(actions);Object.assign(card,{checkbox,approve,decline});
     checkbox.onchange=()=>updateControls(card);approve.onclick=()=>void decide(card,'approve');decline.onclick=()=>void decide(card,'decline');
    }

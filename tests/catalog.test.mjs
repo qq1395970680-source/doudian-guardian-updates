@@ -8,6 +8,16 @@ const campaign={id:'400002',name:'当前活动',status:'进行中',startAt:now-5
 const inventory={listing:{complete:true,observedAt:now,campaigns:[campaign]},activeComplete:true,details:new Map([[campaign.id,{complete:true,observedAt:now-1000,products:[{productId:'300001',name:'当前商品',skus:[sku]}]}]])};
 const base=()=>({shopId,inventory,histories:[baseline],tasks:[],excluded:[],now});
 
+test('timed exit evidence failures expose the precise reason without counting a recovery or hiding a valid activity',()=>{
+ const timedLoss={branch:'export-unproven',referenceCampaignId:'400003',exportError:{code:'REMOVAL_EXPORT_READ',message:'退出表下载失败'}};
+ const check={shopId,productId:baseline.productId,code:'TIMED_LOSS_UNPROVEN',message:'对应限时活动退出明细未完整核对',at:now-1000,timedLoss};
+ const missing={listing:{complete:true,observedAt:now,campaigns:[]},activeComplete:true,details:new Map()};
+ const result=buildCatalog({...base(),inventory:missing,checks:[check]});
+ assert.equal(result.counts.recoveryFailedProducts,1);assert.equal(result.counts.pendingProducts,0);
+ assert.equal(result.products[0].recoveryFailure.stage,'eligibility');assert.deepEqual(result.products[0].recoveryFailure.timedLoss,timedLoss);
+ assert.equal(buildCatalog({...base(),checks:[check]}).counts.recoveryFailedProducts,0);
+});
+
 test('pre-enqueue failures expose counts and retry time without claiming recovery or overriding current activity',()=>{
  const check={shopId,productId:baseline.productId,code:'PRECHECK_MEMBERSHIP',message:'目标20件，实际10件',at:now-1000,retryAt:now+900000,precheckMembership:{targetCount:20,actualCount:10}};
  const missing={listing:{complete:true,observedAt:now,campaigns:[]},activeComplete:true,details:new Map()};

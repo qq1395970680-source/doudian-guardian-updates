@@ -285,9 +285,9 @@ test('expired whole-store evidence falls back to scoped proofs without reducing 
  const platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'}});platform.ensure=async()=>{};
  platform.readFreshCurrentInventory=async()=>{throw Object.assign(Error('slow entire store'),{code:'BATCH_PROOF_EXPIRED'});};
  let queries=0;
- platform.list=async({productId})=>{assert.ok(bs.some(b=>b.productId===productId));queries++;return{complete:true,observedAt:Date.now(),campaigns:[]};};
+ platform.list=async({productId})=>{if(productId)assert.ok(bs.some(b=>b.productId===productId));queries++;return{complete:true,observedAt:Date.now(),campaigns:[]};};
  const result=await platform.lossBatch(bs);
- assert.equal(queries,50);assert.equal(result.length,50);assert.ok(result.every(r=>r.loss?.complete&&!r.loss.active));
+ assert.equal(queries,51,'50 product queries share one exact origin lookup');assert.equal(result.length,50);assert.ok(result.every(r=>r.loss?.complete&&!r.loss.active));
 });
 
 test('scoped readers preserve stale timestamps and drain outstanding readers on a stop',async()=>{
@@ -311,7 +311,7 @@ test('scoped lookup retries one closed read page timeout but does not loop or re
  let calls=0;
  p.list=async()=>{if(++calls===1)throw Object.assign(Error('slow query'),{name:'TimeoutError'});
   return{complete:true,observedAt:Date.now(),campaigns:[]};};
- assert.equal((await p.scopedLossBatch(bs))[0].loss.active,false);assert.equal(calls,2);
+ assert.equal((await p.scopedLossBatch(bs))[0].loss.active,false);assert.equal(calls,3,'one retried product query and one exact timed origin query');
  calls=0;p.list=async()=>{calls++;throw Object.assign(Error('still slow'),{name:'TimeoutError'});};
  assert.equal((await p.scopedLossBatch(bs))[0].error.name,'TimeoutError');assert.equal(calls,2);
  calls=0;p.list=async()=>{calls++;throw Object.assign(Error('signed out'),{code:'LOGIN_REQUIRED'});};

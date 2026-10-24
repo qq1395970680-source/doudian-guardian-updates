@@ -38,11 +38,14 @@ test('unproven member loss requires in-app explicit rebuild consent before nativ
   await page.waitForFunction(()=>document.querySelector('.price-consent')===null);
   assert.equal(j.priceTarget(policy.shopId,product.productId).consent.rebuildConfirmed,true);assert.equal(fixture.state.submits,0);
   for(let n=0;n<1200&&service.status().verified!==1;n++)await new Promise(r=>setTimeout(r,50));
+  // A verified receipt precedes the priority runner's catalogue refresh.
+  // Let that same runner finish before starting a patrol or closing its browser.
+  await service.immediatePromise;
   assert.equal(service.status().verified,1,JSON.stringify({checks:j.productChecks(policy.shopId),events:j.events(12)}));assert.equal(discoveries,beforeConfirm,'Confirmation restores without a new full patrol');
   const task=j.list(policy.shopId).find(t=>t.phase==='verified');assert.equal(task.lossEvidence.continuities[0].kind,'confirmed-rebuild');
   assert.equal(task.receipt.productLimits[0].activityLimit,1000);assert.equal(task.receipt.skuCount,1);
   await service.tick();assert.equal(fixture.state.submits,1);assert.equal(fixture.state.cancelAttempts,undefined);
   await writeFile(resolve('artifacts/beta38-rebuild-confirmation-native.json'),JSON.stringify({localFixtureOnly:true,unprovenLossDidNotSubmit:true,
    fullActivityAndQuantityConsentInUi:true,immediateWithoutFullPatrol:true,nativeSubmits:1,independentSkuReadback:true,laterPatrol:true,duplicateSubmits:0},null,2)+'\n');
- }finally{await ui?.close();service.stop();await browser.close();if(app)await app.close();else j.close();await fixture.close();await rm(dir,{recursive:true,force:true});}
+ }finally{await ui?.close();service.stop();await service.immediatePromise?.catch(()=>{});await browser.close();if(app)await app.close();else j.close();await fixture.close();await rm(dir,{recursive:true,force:true});}
 });

@@ -14,6 +14,7 @@ import {ReadOperations,currentReadOperation,rawReadObject,bounded} from './read-
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 import {currentLimitedReference,resolveLimitedLoss} from './limited-continuity.mjs';
 import {confirmedRebuildContinuity} from './rebuild-review.mjs';
+import {timedRemovalEvidence} from './timed-removal.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -393,7 +394,7 @@ export class DoudianPlatform {
    for(const c of listing.campaigns.filter(active))details.set(c.id,await detail(c));
    const reference=this.limitedReference(baseline);
    const alreadyActive=listing.campaigns.filter(active).some(c=>details.get(c.id)?.products.some(p=>p.productId===baseline.productId&&!p.removalConfirmed));
-   if(reference.limited&&!alreadyActive){
+   if(reference.campaignId&&!alreadyActive){
     let previous=listing.campaigns.find(c=>c.id===reference.campaignId);
     if(!previous){
      // A removed member can vanish from product-filtered search altogether.
@@ -401,11 +402,11 @@ export class DoudianPlatform {
      // and download its current removal proof; never reuse a saved proof.
      const title=reference.title||this.inventory?.listing.campaigns.find(c=>c.id===reference.campaignId)?.name;
      const origin=await list(title?{title}:{});
-     requireThat(origin.complete===true,'ACTIVE_UNKNOWN','原限量活动尚未完整重新核对');
+     requireThat(origin.complete===true,'ACTIVE_UNKNOWN','原活动尚未完整重新核对');
      listing.referenceLookup={campaignId:reference.campaignId,complete:true,observedAt:origin.observedAt,query:origin.query||null,
       matchingIds:origin.campaigns.filter(c=>c.id===reference.campaignId).map(c=>c.id)};
      const matches=origin.campaigns.filter(c=>c.id===reference.campaignId);
-     requireThat(matches.length<=1,'LIMITED_LOSS_UNPROVEN','原限量活动编号重复，不能确定退出结果');
+     requireThat(matches.length<=1,reference.limited?'LIMITED_LOSS_UNPROVEN':'TIMED_LOSS_UNPROVEN','原活动编号重复，不能确定退出结果');
      previous=matches[0];if(previous)listing.campaigns.push(previous);
     }
     if(previous&&!details.has(previous.id))details.set(previous.id,await detail(previous));
@@ -414,6 +415,13 @@ export class DoudianPlatform {
   }
   requireThat(this.inventory?.activeComplete,'ACTIVE_UNKNOWN','全店有效活动尚未完整核对');
   const reference=this.limitedReference(baseline);
+  if(!reference.limited&&reference.campaignId){
+   const currentMember=this.inventory.listing.campaigns.filter(active).some(c=>
+    this.inventory.details.get(c.id)?.products.some(p=>p.productId===baseline.productId&&!p.removalConfirmed));
+   if(!currentMember&&!this.inventory.details.has(reference.campaignId))
+    throw new GuardError('LOSS_EVIDENCE_EXPIRED','原限时活动未在当前详情中，需要批量重新核对退出原因',
+     {productId:baseline.productId,campaignId:reference.campaignId});
+  }
   if(reference.limited){
    const previous=this.inventory.listing.campaigns.find(c=>c.id===reference.campaignId);
    // Current-only scans omit ended campaigns. Inspect the precise last source
@@ -474,7 +482,7 @@ export class DoudianPlatform {
     const reference=this.limitedReference(b);
     // An ended limited activity needs its own removal proof; omission from
     // the active list cannot authorize replenishment after expiry or sellout.
-    if(reference.limited&&!details.has(reference.campaignId))return this.loss(b,{fresh:true});
+    if(reference.campaignId&&!details.has(reference.campaignId))return this.loss(b,{fresh:true});
     return{...this.lossFrom(b,listing,details,true),observedAt};
    }));
    settled.forEach((r,j)=>results.push({productId:baselines[i+j].productId,...(r.status==='fulfilled'?{loss:r.value}:{error:r.reason})}));
@@ -595,7 +603,7 @@ export class DoudianPlatform {
     }
     if(!continuity)throw error;
    }
-  }
+  }else ({removal,removalEvidence}=timedRemovalEvidence({baseline,reference,listing,details,shopId:this.policy.shopId}));
   // Routine full/current-only listings describe the same missing product even
   // when ended history is omitted or rows reorder. Keep its retry budget stable.
   // Fresh product-scoped evidence retains campaign history to distinguish a

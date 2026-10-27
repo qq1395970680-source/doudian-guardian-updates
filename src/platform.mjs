@@ -664,6 +664,8 @@ export class DoudianPlatform {
     }
     if(observations.length===targets.size){
      if(observations.some(row=>row.status==='active_hint')){
+      const close=button(picker,'取消');requireThat(await close.count()===1,'PICKER_LAYOUT','关闭选品入口不唯一，尚未完成店铺复核');
+      await close.click();await picker.waitFor({state:'hidden'});
       await this.identity(page);this.check();
       // Complete target coverage is a read scheduling hint only. Do not
       // confirm this partial selection or treat it as an effective campaign.

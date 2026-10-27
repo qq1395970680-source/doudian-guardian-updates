@@ -25,12 +25,35 @@ test('one native picker read returns exactly 50 active hints without confirming 
   assert.deepEqual(observed.targetProductIds,products.map(p=>p.productId));assert.equal(observed.rows.length,50);
   assert.ok(observed.rows.every(r=>r.status==='active_hint'&&r.observedAt>0));assert.equal(fixture.state.prechecks,1);
   assert.equal(fixture.state.submits,0);assert.equal(fixture.state.uploads,0);assert.equal(fixture.state.cancelAttempts||0,0);
-  await writeFile(resolve('artifacts/beta49-active-picker-browser.json'),JSON.stringify({at:new Date().toISOString(),sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,
+  assert.equal(fixture.state.pickerCloses,1);
+  await writeFile(resolve('artifacts/beta50-active-picker-browser.json'),JSON.stringify({at:new Date().toISOString(),sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,
    requestedProducts:50,exactHintRows:50,pickerVisits:fixture.state.prechecks,submits:0,priceApprovals:0,
    hintRowsDoNotProveEffectiveActivity:true},null,2)+'\n');
  }finally{
   try{await browser.close();}finally{await fixture.close();}
   assert.ok(resolve(directory).startsWith(resolve(tmpdir())+sep)&&basename(directory).startsWith('guardian-active-picker-'));
+  await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+ }
+});
+
+for(const changedShop of [null,'900002'])test('identity is rechecked only after closing the covering picker: changedShop='+changedShop,{timeout:120000},async()=>{
+ const product={productId:'3950000000000000101',name:'遮挡身份核验商品',skus:[{id:'5950000000000000101',name:'唯一规格',baseFen:10000,discount:50}]};
+ const fixture=await fixtureServer({catalogProducts:[product],activePickerProducts:[product.productId],identityNeedsHover:true,pickerCloseShopId:changedShop});
+ const directory=await mkdtemp(join(tmpdir(),'guardian-active-picker-identity-')),browser=new DedicatedBrowser(directory,{test:true});
+ const platform=new DoudianPlatform({browser,policy:{shopId:'900001'},base:fixture.base});
+ try{
+  let result;
+  await assert.rejects(platform.precheckBatch([{...product,shopId:'900001'}]),error=>{result=error;return error.code===(changedShop?'SHOP_MISMATCH':'PRECHECK_ACTIVE_HINTS');});
+  assert.equal(fixture.state.pickerCloses,1);assert.equal(fixture.state.submits,0);assert.equal(fixture.state.cancelAttempts||0,0);
+  if(changedShop)assert.equal(result.detail?.activePicker,undefined);
+  else assert.equal(result.detail.activePicker.shopId,'900001');
+  await writeFile(resolve('artifacts',changedShop?'beta50-active-picker-wrong-shop.json':'beta50-active-picker-overlay.json'),JSON.stringify({at:new Date().toISOString(),
+   sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,hoverIdentityHiddenUntilRequested:true,
+   pickerCoveredIdentityControl:true,pickerCloses:fixture.state.pickerCloses,identityRecheckedAfterClose:true,
+   changedShop,code:result.code,submits:0,activityCancellations:0,priceApprovals:0},null,2)+'\n');
+ }finally{
+  try{await browser.close();}finally{await fixture.close();}
+  assert.ok(resolve(directory).startsWith(resolve(tmpdir())+sep)&&basename(directory).startsWith('guardian-active-picker-identity-'));
   await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});
  }
 });
@@ -51,7 +74,7 @@ test('a mixed native picker cohort reads exact current SKU data for the selectab
   const plan=planOriginalRestore(baseline,rows[1].current,{shopId:'900001'});
   assert.deepEqual(plan.skus.map(s=>[s.id,s.observedId,s.mapping,s.saleFen]),[[products[1].skus[0].id,null,'unique-name-and-base',6532]]);
   assert.equal(fixture.state.prechecks,2);assert.equal(fixture.state.submits,0);assert.equal(fixture.state.uploads,0);
-  await writeFile(resolve('artifacts/beta49-active-picker-mixed-browser.json'),JSON.stringify({at:new Date().toISOString(),
+  await writeFile(resolve('artifacts/beta50-active-picker-mixed-browser.json'),JSON.stringify({at:new Date().toISOString(),
    sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,pickerVisits:2,independentlyReadSkuProducts:1,
    hintedProducts:2,requestedOrderPreserved:true,submits:0,priceApprovals:0,hintRowsNeverSuppliedPrices:true,
    unshownSkuIdKeptNull:true,uniqueNameAndUnchangedBaseMappedToOriginalHistory:true,plannedSaleFen:6532},null,2)+'\n');

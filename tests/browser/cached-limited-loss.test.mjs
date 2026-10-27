@@ -54,7 +54,7 @@ for(const offShelf of [true,false])test('stale limited-source scope automaticall
   await service.tick();assert.equal(fixture.state.submits,offShelf?0:1);
   if(offShelf)assert.equal(journal.productChecks(policy.shopId).find(c=>c.productId===target.productId)?.code,'OFF_SHELF');
   assert.equal(fixture.state.campaigns[1].status,'进行中');assert.deepEqual(fixture.state.campaigns[1].products,[other]);
-  await writeFile(resolve('artifacts',offShelf?'beta49-cached-loss-off-shelf.json':'beta49-cached-loss-restoration.json'),JSON.stringify({at:new Date().toISOString(),
+  await writeFile(resolve('artifacts',offShelf?'beta50-cached-loss-off-shelf.json':'beta50-cached-loss-restoration.json'),JSON.stringify({at:new Date().toISOString(),
    sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,physicalOtherAccount:false,
    offShelf,staleNestedProductScopeReproduced:true,freshNativePicker:true,submits:fixture.state.submits,
    perProductPriceApprovals:0,laterPatrolNoDuplicate:true,validOtherActivityPreserved:true},null,2)+'\n');

@@ -16,6 +16,7 @@ import {currentLimitedReference,resolveLimitedLoss} from './limited-continuity.m
 import {confirmedRebuildContinuity} from './rebuild-review.mjs';
 import {timedRemovalEvidence} from './timed-removal.mjs';
 import {authorizedOriginalContinuity} from './original-rebuild-policy.mjs';
+import {activeMembershipProofBatches} from './active-membership.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -510,6 +511,7 @@ export class DoudianPlatform {
   }
   return results;
  }
+ async *confirmActiveHintBatches(baselines){yield* activeMembershipProofBatches(this,baselines);}
  async scopedLossBatch(baselines){
   await this.closeMonitorPages();
   const startedAt=Date.now(),cache=new Map(),results=new Array(baselines.length);

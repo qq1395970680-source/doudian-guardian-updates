@@ -355,19 +355,30 @@ export class GuardianService {
     const activeHints=observed.filter(entry=>entry.error?.code==='ALREADY_ACTIVE'),confirmedActive=new Set();
     if(activeHints.length){
       try{
-        const proofs=await this.platform.lossBatch(activeHints.map(entry=>entry.member.baseline));
-        requireThat(proofs.length===activeHints.length&&new Set(proofs.map(p=>p.productId)).size===activeHints.length&&
-          proofs.every(p=>activeHints.some(entry=>entry.member.baseline.productId===p.productId)),'ACTIVE_UNKNOWN','已有活动的独立核对商品集合不一致');
-        for(const entry of activeHints){
-          const productId=entry.member.baseline.productId,proof=proofs.find(p=>p.productId===productId),loss=proof.loss;
+        const targets=new Map(activeHints.map(entry=>[entry.member.baseline.productId,entry])),seen=new Set();
+        const accept=proofs=>{
+          requireThat(Array.isArray(proofs)&&proofs.length>0&&new Set(proofs.map(p=>p.productId)).size===proofs.length&&
+            proofs.every(p=>targets.has(p.productId)&&!seen.has(p.productId)),'ACTIVE_UNKNOWN','已有活动的独立核对商品集合不一致');
+          for(const proof of proofs){
+          const productId=proof.productId,entry=targets.get(productId),loss=proof.loss;seen.add(productId);
           if(proof.error||!loss?.complete||!loss.active||loss.ambiguous||!loss.campaignId||!(loss.observedAt>0&&this.now()-loss.observedAt<=120000&&loss.observedAt<=this.now()+5000)){
-            entry.error=Object.assign(new Error('选品提示已有活动，但独立活动核对尚未确认'+(proof.error?.message?'：'+proof.error.message:'；保留请求，未重复创建')),{code:'ACTIVE_HINT_UNVERIFIED'});continue;
+            const expired=loss&&!(loss.observedAt>0&&this.now()-loss.observedAt<=120000&&loss.observedAt<=this.now()+5000);
+            entry.error=Object.assign(new Error('选品提示已有活动，但独立活动核对尚未确认'+(proof.error?.message?'：'+proof.error.message:expired?'：成员核验证明已过期，等待重新读取':'；保留请求，未重复创建')),{code:'ACTIVE_HINT_UNVERIFIED'});continue;
           }
           this.journal.clearProductCheck(this.policy.shopId,productId);this.journal.supersedePriceReviews(this.policy.shopId,productId,'本次独立核对已有有效活动',this.now());
           if(this.priorityWatch){this.priorityWatch.recordOne(productId,loss.campaignId,loss.observedAt);this.priorityWatch.save();}
           this.recordExistingActivity(productId,loss);confirmedActive.add(productId);differentActivity=true;
-        }
-      }catch(error){if(['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH'].includes(error.code))throw error;}
+          }
+        };
+        if(this.platform.confirmActiveHintBatches){
+          for await(const proofs of this.platform.confirmActiveHintBatches(activeHints.map(entry=>entry.member.baseline)))accept(proofs);
+        }else accept(await this.platform.lossBatch(activeHints.map(entry=>entry.member.baseline)));
+        requireThat(seen.size===activeHints.length,'ACTIVE_UNKNOWN','已有活动的独立核对结果缺少商品');
+      }catch(error){
+        if(['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH'].includes(error.code))throw error;
+        for(const entry of activeHints)if(!confirmedActive.has(entry.member.baseline.productId))
+          entry.error=Object.assign(new Error('已有活动的独立核对尚未完成：'+String(error.message).slice(0,800)),{code:'ACTIVE_HINT_UNVERIFIED'});
+      }
     }
     for(const entry of observed){
       if(confirmedActive.has(entry.member.baseline.productId))continue;

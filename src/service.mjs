@@ -701,7 +701,8 @@ export class GuardianService {
           if(same&&prior.retryAt>this.now())continue;
           candidates.push({baseline,loss,retry:same,priorAt:prior?.at||0});
         }catch(error){
-          const sourceProduct=error.detail?.productId||error.detail?.limitedLoss?.currentAbsence?.productId;
+          const sourceProducts=[error.detail?.productId,error.detail?.limitedLoss?.productId,error.detail?.limitedLoss?.currentAbsence?.productId].filter(value=>value!=null);
+          const sourceProduct=sourceProducts.length&&sourceProducts.every(value=>value===baseline.productId)?baseline.productId:null;
           const sourceCampaign=error.detail?.campaignId||error.detail?.limitedLoss?.referenceCampaignId;
           if(['LOSS_EVIDENCE_EXPIRED','LIMITED_LOSS_UNPROVEN'].includes(error.code)&&this.platform.precheckBatch&&this.platform.lossBatch&&
             sourceProduct===baseline.productId&&sourceCampaign){

@@ -38,7 +38,12 @@ async function harness(run,options={}){
   const open=platform.open.bind(platform);platform.open=async path=>{const page=await open(path),close=page.close.bind(page);page.close=async()=>{if(['/ffa/g/recycle','/ffa/g/list'].includes(path))writes+=await page.evaluate(()=>window.writes||0).catch(()=>0);if(path==='/ffa/g/list')managedQueries.push(await page.getByPlaceholder(searchLabel,{exact:true}).inputValue());return close();};return page;};
   await run({platform,fixture,browser,stats:()=>({visits,writes,managedVisits,managedQueries})});
   assert.equal(fixture.state.uploads,0);assert.equal(fixture.state.submits,0);assert.equal(writes,0);assert.equal(browser.context.pages().length,initialPages);
- }finally{await browser.close();await fixture.close();await rm(dir,{recursive:true,force:true});}
+ }finally{
+  // A failed browser close must still stop this fixture's HTTP listener.
+  // Keep the close error and profile intact; cleanup cannot turn failure into success.
+  try{await browser.close();}finally{await fixture.close();}
+  await rm(dir,{recursive:true,force:true});
+ }
 }
 
 for(const width of [960,1440])test(`missing picker product is independently identified in recycle bin at ${width}`,async()=>harness(async({platform,stats})=>{

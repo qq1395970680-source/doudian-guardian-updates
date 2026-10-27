@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {Journal} from '../src/journal.mjs';
 import {DoudianPlatform} from '../src/platform.mjs';
 import {GuardianService} from '../src/service.mjs';
+import {buildCatalog} from '../src/catalog.mjs';
+import {buildRecoveryIssues} from '../src/recovery-issues.mjs';
+import {fingerprint} from '../src/policy.mjs';
 
 function fixture(t,count=46){
  let clock=1793099000000;
@@ -98,6 +101,57 @@ test('a malformed streamed product set cannot conclude an unrelated request',asy
   });
   assert.deepEqual(blocked,['ACTIVE_HINT_UNVERIFIED']);assert.equal(f.journal.priceRecheckProgress(f.service.policy.shopId).pending,1);
   assert.equal(f.journal.list(f.service.policy.shopId).length,0);
+ }finally{f.service.stop();f.journal.close();}
+});
+
+test('removed picker hints retain a fresh exact platform price restriction in price confirmation without fabricating a current SKU plan',async t=>{
+ const f=fixture(t,2),blocked=[];
+ try{
+  for(const detail of f.details.values())detail.products[0].removalConfirmed=true;
+  f.platform.lossBatch=async bs=>bs.map(b=>{
+   const record={productId:b.productId,name:b.name,reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。'};
+   return{productId:b.productId,loss:{complete:true,active:false,observedAt:f.now(),lossKey:fingerprint(record),removal:record,
+    removalEvidence:{source:'live-platform-removal-export',complete:true,shopId:f.service.policy.shopId,campaignId:b.campaignId,
+     activityType:b.type,observedAt:f.now(),sha256:'a'.repeat(64),record}}};
+  });
+  f.service.restorePlan=()=>assert.fail('A disabled picker and removal report do not supply complete current SKU prices.');
+  f.service.requestRecovery(f.baselines.map(b=>b.productId));
+  await f.service.recoverBatch(f.baselines.map(baseline=>({baseline})),(member,error)=>{
+   const check={shopId:f.service.policy.shopId,productId:member.baseline.productId,code:error.code,message:error.message,
+    activeHintRemoval:error.detail?.activeHintRemoval,at:f.now(),retryAt:f.now()+900000};
+   blocked.push(check);f.journal.putProductCheck(check.shopId,check.productId,check);
+  });
+  assert.deepEqual(blocked.map(c=>c.code),['SKU_RATIO_REVIEW_REQUIRED','SKU_RATIO_REVIEW_REQUIRED']);
+  assert.ok(blocked.every(c=>c.message.includes('3.5')&&c.activeHintRemoval?.pricePlanReady===false));
+  const catalog=buildCatalog({shopId:f.service.policy.shopId,histories:f.journal.histories(f.service.policy.shopId),
+   checks:f.journal.productChecks(f.service.policy.shopId),now:f.now()});
+  const issues=buildRecoveryIssues(catalog,f.journal.priceReviews(f.service.policy.shopId));
+  assert.equal(issues.length,2);assert.ok(issues.every(r=>r.pricing&&r.message.includes('3.5')));
+  assert.equal(f.journal.priceRecheckProgress(f.service.policy.shopId).pending,2);
+  assert.equal(f.journal.list(f.service.policy.shopId).length,0);assert.equal(f.journal.priceReviews(f.service.policy.shopId).length,0);
+  assert.equal(f.journal.events(100).filter(e=>e.kind==='active-hint-removal-confirmed').length,2);
+ }finally{f.service.stop();f.journal.close();}
+});
+
+test('a selectable product is processed before slow unrelated active-hint reads expire its fresh SKU evidence',async t=>{
+ const f=fixture(t,2),blocked=[],order=[];
+ try{
+  f.platform.precheckBatch=async bs=>{throw Object.assign(new Error('Mixed live picker rows'),{code:'PRECHECK_ACTIVE_HINTS',detail:{activePicker:{
+   source:'live-platform-activity-picker',complete:true,shopId:f.service.policy.shopId,observedAt:f.now(),targetProductIds:bs.map(b=>b.productId),
+   rows:bs.map((b,i)=>({productId:b.productId,status:i?'active_hint':'selectable',observedAt:f.now(),page:1}))}}});};
+  f.platform.precheck=async b=>({shopId:b.shopId,productId:b.productId,complete:true,observedAt:f.now(),skus:structuredClone(b.skus)});
+  f.platform.confirmActiveHintBatches=async function*(baselines){
+   order.push('independent-activity-read');f.advance(130000);
+   yield baselines.map(b=>({productId:b.productId,loss:{complete:true,active:true,ambiguous:false,campaignId:b.campaignId,observedAt:f.now()}}));
+  };
+  f.platform.lossBatch=async bs=>bs.map(b=>({productId:b.productId,loss:{complete:true,active:false,observedAt:f.now(),lossKey:fingerprint(b.productId)}}));
+  f.service.execute=async task=>{order.push('execute-ready-product');assert.ok(f.now()-task.plans[0].observedAt<=120000);return null;};
+  f.service.requestRecovery(f.baselines.map(b=>b.productId));
+  await f.service.recoverBatch(f.baselines.map(baseline=>({baseline})),(member,error)=>blocked.push({productId:member.baseline.productId,code:error.code}));
+  assert.deepEqual(blocked,[],'Ready SKU evidence must not expire behind unrelated activity-membership reads.');
+  assert.deepEqual(order,['execute-ready-product','independent-activity-read']);
+  assert.equal(f.journal.list(f.service.policy.shopId).length,1);assert.equal(f.journal.list(f.service.policy.shopId)[0].submitAttempts,0);
+  assert.equal(f.journal.priceReviews(f.service.policy.shopId).length,0);
  }finally{f.service.stop();f.journal.close();}
 });
 

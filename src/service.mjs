@@ -9,6 +9,7 @@ import {checkRemovalPrices} from './removal-export.mjs';
 import {isolateDraftPriceFailure} from './draft-price-isolation.mjs';
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 import {recoveryRequests,requestRecovery,updateRecoveryRequest,pauseRecoveryRequests} from './recovery-requests.mjs';
+import {priceRemovalAfterActiveHint} from './active-hint-removal.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -159,7 +160,7 @@ export class GuardianService {
     const blocked=(member,error)=>{
       attempts.set(member.baseline.productId,error);
       const detail={shopId:this.policy.shopId,productId:member.baseline.productId,code:error.code||'ERROR',message:error.message,
-        productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss};
+        productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
       this.journal.putProductCheck(this.policy.shopId,detail.productId,{...detail,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
       this.journal.event(null,'product-blocked',detail,this.now());
     };
@@ -316,7 +317,7 @@ export class GuardianService {
     }
     const blocked=(member,error)=>{
       if(error.code==='STOPPED')throw error;
-      const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss};
+      const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
       this.journal.putProductCheck(this.policy.shopId,productId,{...detail,lossKey:member.loss?.lossKey,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
       this.journal.event(null,'price-increase-recovery-pending',detail,this.now());
     };
@@ -352,8 +353,9 @@ export class GuardianService {
     const observed=await readBatchProducts(this.platform,members),ready=[];
     // A disabled picker row is only a hint. Resolve it with a separate live
     // activity read before completing a request; never duplicate the activity.
-    const activeHints=observed.filter(entry=>entry.error?.code==='ALREADY_ACTIVE'),confirmedActive=new Set();
-    if(activeHints.length){
+    const activeHints=observed.filter(entry=>entry.error?.code==='ALREADY_ACTIVE'),confirmedActive=new Set(),confirmedRemoval=new Set();
+    const resolveActiveHints=async()=>{
+      if(!activeHints.length||this.stopRequested)return;
       try{
         const targets=new Map(activeHints.map(entry=>[entry.member.baseline.productId,entry])),seen=new Set();
         const accept=proofs=>{
@@ -361,6 +363,12 @@ export class GuardianService {
             proofs.every(p=>targets.has(p.productId)&&!seen.has(p.productId)),'ACTIVE_UNKNOWN','已有活动的独立核对商品集合不一致');
           for(const proof of proofs){
           const productId=proof.productId,entry=targets.get(productId),loss=proof.loss;seen.add(productId);
+          const removal=priceRemovalAfterActiveHint(proof,entry.member.baseline,this.now());
+          if(removal){
+            entry.error=removal;confirmedRemoval.add(productId);
+            this.journal.event(null,'active-hint-removal-confirmed',{shopId:this.policy.shopId,productId,...removal.detail.activeHintRemoval},this.now());
+            continue;
+          }
           if(proof.error||!loss?.complete||!loss.active||loss.ambiguous||!loss.campaignId||!(loss.observedAt>0&&this.now()-loss.observedAt<=120000&&loss.observedAt<=this.now()+5000)){
             const expired=loss&&!(loss.observedAt>0&&this.now()-loss.observedAt<=120000&&loss.observedAt<=this.now()+5000);
             entry.error=Object.assign(new Error('选品提示已有活动，但独立活动核对尚未确认'+(proof.error?.message?'：'+proof.error.message:expired?'：成员核验证明已过期，等待重新读取':'；保留请求，未重复创建')),{code:'ACTIVE_HINT_UNVERIFIED'});continue;
@@ -376,12 +384,12 @@ export class GuardianService {
         requireThat(seen.size===activeHints.length,'ACTIVE_UNKNOWN','已有活动的独立核对结果缺少商品');
       }catch(error){
         if(['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH'].includes(error.code))throw error;
-        for(const entry of activeHints)if(!confirmedActive.has(entry.member.baseline.productId))
+        for(const entry of activeHints)if(!confirmedActive.has(entry.member.baseline.productId)&&!confirmedRemoval.has(entry.member.baseline.productId))
           entry.error=Object.assign(new Error('已有活动的独立核对尚未完成：'+String(error.message).slice(0,800)),{code:'ACTIVE_HINT_UNVERIFIED'});
       }
-    }
+    };
     for(const entry of observed){
-      if(confirmedActive.has(entry.member.baseline.productId))continue;
+      if(entry.error?.code==='ALREADY_ACTIVE')continue;
       if(entry.error){blocked(entry.member,entry.error);continue;}
       try{ready.push({...entry.member,current:entry.current,plan:this.restorePlan(entry.member.baseline,entry.current)});}
       catch(error){blocked(entry.member,error);}
@@ -509,6 +517,12 @@ export class GuardianService {
         else if(task.phase==='blocked')reportTaskBlocked(member,Object.assign(new Error(task.reason||'本批未提交'),{code:'RESTORE_BLOCKED'}));
       }
     }
+    // Fresh selectable products must not wait behind unrelated member reads.
+    // The queued execution path above still rereads loss, SKU prices and draft.
+    await resolveActiveHints();
+    if(!this.stopRequested)for(const entry of activeHints){
+      if(!confirmedActive.has(entry.member.baseline.productId)&&entry.error)blocked(entry.member,entry.error);
+    }
     return{submitted,differentActivity};
   }
   async recoverPriorityBatch(hints){
@@ -529,7 +543,7 @@ export class GuardianService {
       result=await this.recoverBatch(batch,(member,error)=>{
         if(error.code==='STOPPED')throw error;
         const {baseline,hint}=member;
-        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss};
+        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
         this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       });
@@ -545,7 +559,7 @@ export class GuardianService {
     const groups=new Map(),inspectionStarted=this.now();let inspected=0,changed=false,differentActivity=false;
     const blocked=(baseline,hint,error)=>{
       if(error.code==='STOPPED')throw error;
-      const prior=checks.get(baseline.productId),detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss};
+      const prior=checks.get(baseline.productId),detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
       this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
       if(prior?.code!==detail.code||prior?.watchKey!==hint.watchKey)this.journal.event(null,'product-blocked',detail,this.now());
     };
@@ -678,7 +692,7 @@ export class GuardianService {
       const groups=new Map(),candidates=[],checks=new Map(this.journal.productChecks(this.policy.shopId).map(c=>[c.productId,c]));
       const blocked=(baseline,loss,error)=>{
         if(error.code==='STOPPED')throw error;
-        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:error.message,productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,timedLoss:error.detail?.timedLoss};
+        const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:error.message,productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,timedLoss:error.detail?.timedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
         this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,lossKey:loss?.lossKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       };

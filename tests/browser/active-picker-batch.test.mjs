@@ -26,7 +26,7 @@ test('one native picker read returns exactly 50 active hints without confirming 
   assert.ok(observed.rows.every(r=>r.status==='active_hint'&&r.observedAt>0));assert.equal(fixture.state.prechecks,1);
   assert.equal(fixture.state.submits,0);assert.equal(fixture.state.uploads,0);assert.equal(fixture.state.cancelAttempts||0,0);
   assert.equal(fixture.state.pickerCloses,1);
-  await writeFile(resolve('artifacts/beta50-active-picker-browser.json'),JSON.stringify({at:new Date().toISOString(),sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,
+  await writeFile(resolve('artifacts/beta51-active-picker-browser.json'),JSON.stringify({at:new Date().toISOString(),sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,
    requestedProducts:50,exactHintRows:50,pickerVisits:fixture.state.prechecks,submits:0,priceApprovals:0,
    hintRowsDoNotProveEffectiveActivity:true},null,2)+'\n');
  }finally{
@@ -47,7 +47,7 @@ for(const changedShop of [null,'900002'])test('identity is rechecked only after 
   assert.equal(fixture.state.pickerCloses,1);assert.equal(fixture.state.submits,0);assert.equal(fixture.state.cancelAttempts||0,0);
   if(changedShop)assert.equal(result.detail?.activePicker,undefined);
   else assert.equal(result.detail.activePicker.shopId,'900001');
-  await writeFile(resolve('artifacts',changedShop?'beta50-active-picker-wrong-shop.json':'beta50-active-picker-overlay.json'),JSON.stringify({at:new Date().toISOString(),
+  await writeFile(resolve('artifacts',changedShop?'beta51-active-picker-wrong-shop.json':'beta51-active-picker-overlay.json'),JSON.stringify({at:new Date().toISOString(),
    sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,hoverIdentityHiddenUntilRequested:true,
    pickerCoveredIdentityControl:true,pickerCloses:fixture.state.pickerCloses,identityRecheckedAfterClose:true,
    changedShop,code:result.code,submits:0,activityCancellations:0,priceApprovals:0},null,2)+'\n');
@@ -74,7 +74,7 @@ test('a mixed native picker cohort reads exact current SKU data for the selectab
   const plan=planOriginalRestore(baseline,rows[1].current,{shopId:'900001'});
   assert.deepEqual(plan.skus.map(s=>[s.id,s.observedId,s.mapping,s.saleFen]),[[products[1].skus[0].id,null,'unique-name-and-base',6532]]);
   assert.equal(fixture.state.prechecks,2);assert.equal(fixture.state.submits,0);assert.equal(fixture.state.uploads,0);
-  await writeFile(resolve('artifacts/beta50-active-picker-mixed-browser.json'),JSON.stringify({at:new Date().toISOString(),
+  await writeFile(resolve('artifacts/beta51-active-picker-mixed-browser.json'),JSON.stringify({at:new Date().toISOString(),
    sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,pickerVisits:2,independentlyReadSkuProducts:1,
    hintedProducts:2,requestedOrderPreserved:true,submits:0,priceApprovals:0,hintRowsNeverSuppliedPrices:true,
    unshownSkuIdKeptNull:true,uniqueNameAndUnchangedBaseMappedToOriginalHistory:true,plannedSaleFen:6532},null,2)+'\n');

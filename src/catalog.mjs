@@ -84,6 +84,7 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
     ...(c.code==='PRECHECK_MEMBERSHIP'?{}:{capacity:c.restoreCapacity||null}),
     ...(c.limitedLoss?{limitedLoss:c.limitedLoss}:{}),
     ...(c.timedLoss?{timedLoss:c.timedLoss}:{}),
+    ...(c.activeHintRemoval?{activeHintRemoval:c.activeHintRemoval}:{}),
     submission:'本次恢复检查未通过，尚未进入恢复任务入队和提交'};
    const proof=c.productState,recycled=c.code==='PRODUCT_RECYCLED'&&proof?.kind==='recycled'&&proof.source==='live-platform-product-recycle'&&proof.complete===true&&proof.shopId===shopId&&proof.productId===p.productId;
    if(recycled&&!p.pending&&!p.excluded&&!p.ambiguous){

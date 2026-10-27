@@ -37,7 +37,7 @@ test('20 active picker rows are independently verified from two current campaign
   assert.deepEqual(fixture.state.campaigns,original);
   const proofs=journal.events(100).filter(e=>e.kind==='active-membership-proof-batch');
   assert.equal(proofs.length,2);assert.equal(proofs.reduce((n,e)=>n+e.detail.productIds.length,0),20);
-  await writeFile(resolve('artifacts/beta50-active-membership-browser.json'),JSON.stringify({at:new Date().toISOString(),
+  await writeFile(resolve('artifacts/beta51-active-membership-browser.json'),JSON.stringify({at:new Date().toISOString(),
    sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,physicalOtherAccount:false,
    actualPickerDom:true,independentDetailDom:true,requestedProducts:20,independentlyConfirmedProducts:20,sourceCampaigns:2,
    submissions:0,priceApprovals:0,pickerVisits:fixture.state.prechecks,currentValidCampaignsPreserved:true},null,2)+'\n');

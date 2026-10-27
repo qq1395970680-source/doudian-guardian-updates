@@ -50,6 +50,13 @@ test('large recheck queues paginate without losing failure records or changing e
  const before=structuredClone(queue),page=buildRecheckProgress({shopId:'900001',queue,page:50,pageSize:10});
  assert.equal(page.pending,501);assert.equal(page.total,501);assert.equal(page.records.length,1);assert.equal(page.records[0].code,'PRECHECK_MEMBERSHIP');assert.deepEqual(queue,before);
 });
+
+test('explicitly recycled or off-shelf conclusions stay visible without falsely requiring price action',()=>{
+ const now=Date.now();for(const code of ['PRODUCT_RECYCLED','OFF_SHELF']){
+  const queue={items:[{id:'skipped',productId:'300001',state:'deferred',requestedAt:now-100,updatedAt:now,code,reason:'平台已明确下架或回收'}]};
+  const view=buildRecheckProgress({shopId:'900001',queue});assert.equal(view.pending,0);assert.equal(view.records[0].state,'skipped');assert.equal(view.records[0].code,code);
+ }
+});
 test('a failed recheck stays visible with its exact failure rather than disappearing with no replacement proposal',()=>{
  const j=new Journal(':memory:');try{
   const f=recalculated(j),message='批量预查商品集合不一致：目标20件，实际19件';

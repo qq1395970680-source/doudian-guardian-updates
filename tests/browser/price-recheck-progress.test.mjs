@@ -28,6 +28,7 @@ for(const width of [1440,960])test('recalculate stays visible through failure, i
   await card.getByRole('button',{name:'重新核对',exact:true}).click();
   const row=page.locator(`[data-price-recheck="${f.baseline.productId}"]`);await row.waitFor();await row.getByText('核对受阻',{exact:true}).waitFor();
   assert.match(await row.innerText(),/PRECHECK_MEMBERSHIP/);assert.match(await row.innerText(),/目标20件，实际19件/);
+  assert.equal(await page.locator('#recovery-issues-panel').isVisible(),false,'A tracked request must not be duplicated in the other-issues list');
   assert.equal(journal.priceReview(review.id).status,'superseded');assert.equal(journal.priceTarget(f.policy.shopId,f.baseline.productId),null);
   assert.equal(await page.locator('.price-review').count(),0);assert.equal(journal.list(f.policy.shopId).length,0);
   await page.waitForFunction(()=>document.querySelector('#price-count').textContent==='1');

@@ -97,6 +97,13 @@ export class GuardianService {
       throw error;
     }
   }
+  recordExistingActivity(productId,loss){
+    const request=recoveryRequests(this.journal,this.policy.shopId).items.find(r=>r.productId===productId);if(!request)return;
+    requireThat(loss?.complete&&loss.active&&!loss.ambiguous&&loss.observedAt>0&&this.now()-loss.observedAt<=120000&&loss.observedAt<=this.now()+5000&&
+      typeof loss.campaignId==='string'&&loss.campaignId.length>0,'ACTIVE_UNKNOWN','已有活动提示尚未取得新鲜的独立活动证明');
+    updateRecoveryRequest(this.journal,this.policy.shopId,request,{state:'complete',reason:'本次独立核对时商品已有有效活动，无需重复创建；此结论不计作新的恢复。',
+      currentActivity:{campaignId:loss.campaignId,observedAt:loss.observedAt}},this.now());
+  }
   decidePriceReview(args) {
     const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
     requireThat(review?.shopId===this.policy.shopId&&baseline&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','店铺、历史或排除设置已变化');
@@ -324,7 +331,7 @@ export class GuardianService {
       try{
         const loss=await this.platform.loss(baseline,{fresh:true});
         requireThat(loss?.complete&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','自动提价前尚未确认当前活动');
-        if(loss.active){this.journal.clearProductCheck(this.policy.shopId,productId);continue;}
+        if(loss.active){this.journal.clearProductCheck(this.policy.shopId,productId);if(!loss.ambiguous)this.recordExistingActivity(productId,loss);continue;}
         const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
         this.checkPriceRules(plan,loss);
         const proof=lossEvidenceFor([loss]);
@@ -340,13 +347,33 @@ export class GuardianService {
     return submitted;
   }
   async recoverBatch(members,blocked,{capacityRetry=0,priceIsolationDepth=0}={}){
+    let submitted=false,differentActivity=false;
     const observed=await readBatchProducts(this.platform,members),ready=[];
+    // A disabled picker row is only a hint. Resolve it with a separate live
+    // activity read before completing a request; never duplicate the activity.
+    const activeHints=observed.filter(entry=>entry.error?.code==='ALREADY_ACTIVE'),confirmedActive=new Set();
+    if(activeHints.length){
+      try{
+        const proofs=await this.platform.lossBatch(activeHints.map(entry=>entry.member.baseline));
+        requireThat(proofs.length===activeHints.length&&new Set(proofs.map(p=>p.productId)).size===activeHints.length&&
+          proofs.every(p=>activeHints.some(entry=>entry.member.baseline.productId===p.productId)),'ACTIVE_UNKNOWN','已有活动的独立核对商品集合不一致');
+        for(const entry of activeHints){
+          const productId=entry.member.baseline.productId,proof=proofs.find(p=>p.productId===productId),loss=proof.loss;
+          if(proof.error||!loss?.complete||!loss.active||loss.ambiguous||!loss.campaignId||!(loss.observedAt>0&&this.now()-loss.observedAt<=120000&&loss.observedAt<=this.now()+5000)){
+            entry.error=Object.assign(new Error('选品提示已有活动，但独立活动核对尚未确认'+(proof.error?.message?'：'+proof.error.message:'；保留请求，未重复创建')),{code:'ACTIVE_HINT_UNVERIFIED'});continue;
+          }
+          this.journal.clearProductCheck(this.policy.shopId,productId);this.journal.supersedePriceReviews(this.policy.shopId,productId,'本次独立核对已有有效活动',this.now());
+          if(this.priorityWatch){this.priorityWatch.recordOne(productId,loss.campaignId,loss.observedAt);this.priorityWatch.save();}
+          this.recordExistingActivity(productId,loss);confirmedActive.add(productId);differentActivity=true;
+        }
+      }catch(error){if(['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH'].includes(error.code))throw error;}
+    }
     for(const entry of observed){
+      if(confirmedActive.has(entry.member.baseline.productId))continue;
       if(entry.error){blocked(entry.member,entry.error);continue;}
       try{ready.push({...entry.member,current:entry.current,plan:this.restorePlan(entry.member.baseline,entry.current)});}
       catch(error){blocked(entry.member,error);}
     }
-    let submitted=false,differentActivity=false;
     // A price target or permitted missing SKU subset can change the final
     // discount group. Each final group gets new absence evidence at execution.
     for(const group of recoveryBatches(ready,{key:m=>restorationGroupKey(m.plan)})){
@@ -389,6 +416,7 @@ export class GuardianService {
             requireThat(!loss.ambiguous,'ACTIVITY_AMBIGUOUS','商品的退出状态仍待核实');
             this.journal.clearProductCheck(this.policy.shopId,member.baseline.productId);
             this.journal.supersedePriceReviews(this.policy.shopId,member.baseline.productId,'当前商品已有有效活动',this.now());
+            this.recordExistingActivity(member.baseline.productId,loss);
             if(this.priorityWatch){this.priorityWatch.recordOne(member.baseline.productId,loss.campaignId,loss.observedAt);this.priorityWatch.save();}
             differentActivity=true;continue;
           }
@@ -528,6 +556,7 @@ export class GuardianService {
         if(loss.active){
           requireThat(!loss.ambiguous,'ACTIVITY_AMBIGUOUS','商品在当前活动中的退出状态仍待核实');
           this.journal.supersedePriceReviews(this.policy.shopId,baseline.productId,'当前商品已有有效活动',this.now());
+          this.recordExistingActivity(baseline.productId,loss);
           differentActivity=differentActivity||!this.priorityListing.campaigns.some(c=>c.id===loss.campaignId);
           this.priorityWatch.recordOne(baseline.productId,loss.campaignId,loss.observedAt);this.priorityWatch.save();this.journal.clearProductCheck(this.policy.shopId,baseline.productId);continue;
         }
@@ -648,7 +677,7 @@ export class GuardianService {
             if(!currentMember&&cooling.limitedLoss?.referenceCampaignId===reference.campaignId)continue;
           }
           const loss=await this.platform.loss(baseline);if(!loss?.complete)continue;
-          if(loss.active){this.journal.clearProductCheck(this.policy.shopId,baseline.productId);if(!loss.ambiguous)this.journal.supersedePriceReviews(this.policy.shopId,baseline.productId,'当前商品已有有效活动',this.now());continue;}
+          if(loss.active){this.journal.clearProductCheck(this.policy.shopId,baseline.productId);if(!loss.ambiguous){this.journal.supersedePriceReviews(this.policy.shopId,baseline.productId,'当前商品已有有效活动',this.now());this.recordExistingActivity(baseline.productId,loss);}continue;}
           const prior=checks.get(baseline.productId),same=prior?.lossKey===loss.lossKey&&prior?.contextKey===fingerprint(baseline);
           if(knownBlockerCoolingDown(prior,baseline,this.now()))continue;
           if(same&&prior.retryAt>this.now())continue;

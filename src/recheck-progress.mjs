@@ -30,14 +30,15 @@ export function buildRecheckProgress({shopId,queue={},reviews=[],checks=[],tasks
   else if(request.state==='deferred'||recentCheck){state='blocked';code=recentCheck?.code||code;message=recentCheck?.message||request.reason||'核对受阻，请查看原因后重新核验。';}
   else if(queue.paused){state='paused';message='核对请求已保存，等待恢复守护或完成登录。';}
   else{state='queued';message=request.reason!==request.requestReason&&request.requestReason?request.reason:'已加入优先核验队列，当前读取收尾后继续。';}
+  if(state==='blocked'&&request.state==='deferred'&&['PRODUCT_RECYCLED','OFF_SHELF'].includes(code))state='skipped';
   rows.set(request.productId,{id:request.id,productId:request.productId,name:source?.name||names.get(request.productId)||'商品 '+request.productId,
    sourceReviewId:source?.id||null,requestedAt:request.requestedAt,updatedAt:request.updatedAt||request.requestedAt,
-   state,code,message,pending:request.state!=='complete',retryAt:request.retryAt||null,
+   state,code,message,pending:request.state!=='complete'&&state!=='skipped',retryAt:request.retryAt||null,
    taskId:active?.id||freshReceipt?.taskId||null,campaignId:state==='verified'?freshReceipt.campaignId:null,
    verifiedAt:state==='verified'?freshReceipt.verifiedAt:null,skuCount:state==='verified'?freshReceipt.skuCount:null});
  }
  const records=[...rows.values()].sort((a,b)=>Number(b.pending)-Number(a.pending)||b.updatedAt-a.updatedAt||a.id.localeCompare(b.id));
  const bounded=(value,fallback)=>Number.isSafeInteger(Number(value))?Number(value):fallback;
  const size=Math.max(1,Math.min(20,bounded(pageSize,10))),pages=Math.max(1,Math.ceil(records.length/size)),current=Math.max(0,Math.min(pages-1,bounded(page,0)));
- return{pending:records.filter(r=>r.pending).length,total:records.length,page:current,pageSize:size,pages,records:records.slice(current*size,(current+1)*size)};
+ return{pending:records.filter(r=>r.pending).length,trackedPendingProductIds:records.filter(r=>r.pending).map(r=>r.productId),total:records.length,page:current,pageSize:size,pages,records:records.slice(current*size,(current+1)*size)};
 }

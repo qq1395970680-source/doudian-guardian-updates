@@ -84,13 +84,16 @@ test('failure capture keeps recent occurrences and never pairs an error with a s
 
 test('failure JSON is durable before an unresponsive DOM or screenshot completes',async()=>{
  const runtime=await mkdtemp(join(tmpdir(),'guardian-failure-first-')),browser=new DedicatedBrowser(runtime,{test:true});
+ let captureStarted;const started=new Promise(resolve=>{captureStarted=resolve;});let pending;
  try{
-  const pending=browser.failure({screenshot:()=>new Promise(()=>{})},'400001','detail',{code:'READ_OPERATION_TIMEOUT',message:'原始读取卡住'},
-   {shopId:'900001',campaignId:'400001'},()=>new Promise(()=>{}));
-  await new Promise(r=>setTimeout(r,100));
+  pending=browser.failure({screenshot:()=>new Promise(()=>{})},'400001','detail',{code:'READ_OPERATION_TIMEOUT',message:'原始读取卡住'},
+   {shopId:'900001',campaignId:'400001'},()=>{captureStarted();return new Promise(()=>{});});
+  // Observe the capture boundary instead of assuming asynchronous disk writes
+  // finish within 100 ms while the native regression suite is also running.
+  await started;
   const record=JSON.parse(await readFile(join(runtime,'evidence','400001','detail.json'),'utf8'));assert.equal(record.code,'READ_OPERATION_TIMEOUT');
   await pending;assert.equal(record.observation.shopId,'900001');
- }finally{await rm(runtime,{recursive:true,force:true});}
+ }finally{await pending;await rm(runtime,{recursive:true,force:true});}
 });
 
 test('a generic locator timeout on an expired login page cannot capture login DOM or screenshots',async()=>{

@@ -14,7 +14,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
   $('price-rechecks-panel').hidden=!rechecks.total;setText($('price-rechecks-count'),`${rechecks.pending} 件待处理`);
   setText($('price-rechecks-page'),`${rechecks.total} 件 · 第 ${rechecks.page+1} / ${rechecks.pages} 页`);
   $('price-rechecks-prev').disabled=loading||rechecks.page===0;$('price-rechecks-next').disabled=loading||rechecks.page>=rechecks.pages-1;
-  const states={queued:'已排队',paused:'等待继续',verifying:'正在核验',blocked:'核对受阻',checked:'核验已结束',verified:'该次恢复已回读'};
+  const states={queued:'已排队',paused:'等待继续',verifying:'正在核验',blocked:'核对受阻',skipped:'已跳过',checked:'核验已结束',verified:'该次恢复已回读'};
   const rows=rechecks.records.map(record=>{
    const row=node('div','setting-row'),body=node('div'),heading=node('div','button-row');row.dataset.priceRecheck=record.productId;
    heading.append(node('strong','',record.name),node('span','badge '+(record.state==='verified'?'green':record.state==='blocked'?'amber':'blue'),states[record.state]||'等待核对'));

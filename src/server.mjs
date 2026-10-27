@@ -101,8 +101,9 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     const q=requestUrl.searchParams;
     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,
      histories:shopId?journal.histories(shopId):[],tasks:shopId?journal.list(shopId):[],checks:shopId?journal.productChecks(shopId):[],excluded:policy.excludedProductIds||[]});
-    json(200,{...journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all',recheckPage:q.get('recheckPage')??0}),
-     recoveryIssues:buildRecoveryIssues(catalog,shopId?journal.priceReviews(shopId):[])});return;
+    const pricePage=journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all',recheckPage:q.get('recheckPage')??0});
+    const tracked=new Set(pricePage.rechecks.trackedPendingProductIds);
+    json(200,{...pricePage,recoveryIssues:buildRecoveryIssues(catalog,shopId?journal.priceReviews(shopId):[]).filter(issue=>!tracked.has(issue.productId))});return;
    }
    if(req.method==='GET'&&path==='/api/products'){
     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,

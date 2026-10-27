@@ -105,15 +105,17 @@ export async function inspectManagedProduct(platform,productId){
   await search.fill(productId);await query.click();await delay(500);let prior=null;
   const assertScope=async()=>requireThat(new URL(page.url()).origin===platform.base&&new URL(page.url()).pathname===MANAGED_PATH&&
    await search.inputValue()===productId&&await all.getAttribute('aria-selected')==='true','PRODUCT_QUERY_CHANGED','商品管理查询条件或分类已变化');
+  // Account verification can trigger another load. Collect stable table
+  // observations after that interaction, within the existing read deadline.
+  const account=await platform.identity(page);platform.check();await assertScope();
   const snapshot=await until(async()=>{
    platform.check();await assertScope();const current=await page.evaluate(managedProductSlice);
    if(current.busy||current.totals.length!==1||current.rows.some(r=>r.key!==productId)){prior=null;return false;}
-   const key=fingerprint(current);if(prior!==key){prior=key;return false;}return current;
+   const key=fingerprint(current);if(prior!==key){prior=key;return false;}
+   const latest=await page.evaluate(managedProductSlice);await assertScope();
+   if(fingerprint(latest)!==key){prior=null;return false;}return latest;
   },'商品管理查询尚未稳定');
-  const account=await platform.identity(page);platform.check();await assertScope();
-  const latest=await page.evaluate(managedProductSlice);
-  requireThat(fingerprint(latest)===fingerprint(snapshot),'PRODUCT_STATE_INCOMPLETE','商品管理结果在核对期间变化');
-  return proveManagedProductSlice(latest,{shopId:account.shopId,productId});
+  return proveManagedProductSlice(snapshot,{shopId:account.shopId,productId});
  }catch(error){await captureStateFailure(platform,page,productId,error,managedProductSlice,'managed');throw error;}
  finally{await page.close();}
 }
@@ -123,7 +125,7 @@ async function captureStateFailure(platform,page,productId,error,slice,kind){
  if(!/LOGIN|ACCOUNT|SHOP_MISMATCH/.test(error.code||'')){
   const snapshot=await page.evaluate(slice).catch(()=>null),queryValue=await page.getByPlaceholder(SEARCH,{exact:true}).inputValue().catch(()=>null);
   error.detail={...(error.detail||{}),productStateQuery:{source:'live-platform-product-state-diagnostic',kind,
-   productId,expectedShopId:platform.policy?.shopId||null,queryValue,snapshot,observedAt:Date.now(),diagnosticOnly:true}};
+   productId,expectedShopId:platform.policy?.shopId||null,queryValue,snapshot:snapshot?{...snapshot,headers:undefined,tableHeaders:snapshot.headers}:null,observedAt:Date.now(),diagnosticOnly:true}};
  }
  if(typeof platform.fault==='function')await platform.fault(page,productId,'product-state',error).catch(()=>{});
 }

@@ -62,6 +62,7 @@ test('unrecognized recycle empty results retain live query evidence before closi
  const capture=captures[0];assert.equal(capture.pageOpen,true);assert.equal(capture.productId,target);assert.equal(capture.stage,'product-state');
  assert.equal(capture.detail.productStateQuery.productId,target);assert.equal(capture.detail.productStateQuery.queryValue,target);
  assert.equal(capture.detail.productStateQuery.snapshot.path,'/ffa/g/recycle');
+ assert.ok(capture.detail.productStateQuery.snapshot.tableHeaders.includes('商品信息'));
  assert.deepEqual(capture.detail.productStateQuery.snapshot.totals,[0]);assert.deepEqual(capture.detail.productStateQuery.snapshot.rows,[]);
  assert.equal(capture.detail.productStateQuery.snapshot.empty,false);
 },{rows:[],emptyText:'未知空列表占位'}));
@@ -81,6 +82,19 @@ test('off-shelf labels outside the exact status cell cannot classify a selling p
  await assert.rejects(platform.precheck({...fixtureProducts[0],productId:target}),error=>error.code==='NOT_FOUND');
  assert.equal(stats().managedVisits,1);
 },{rows:[],managedRows:[{id:target,status:'售卖中'}]}));
+
+test('a managed-product reload during account verification settles within the same bounded read',async()=>harness(async({platform})=>{
+ const identify=platform.identity.bind(platform);let managedIdentities=0;
+ platform.identity=async page=>{
+  const account=await identify(page);
+  if(new URL(page.url()).pathname==='/ffa/g/list'&&++managedIdentities===2)await page.evaluate(()=>{
+   const spinner=document.createElement('div');spinner.className='ecom-mcenter-spin-spinning';spinner.textContent='加载中';document.body.append(spinner);
+   setTimeout(()=>spinner.remove(),650);
+  });
+  return account;
+ };
+ await assert.rejects(platform.precheck({...fixtureProducts[0],productId:target}),error=>error.code==='OFF_SHELF'&&error.detail.productState.status==='已下架');
+},{rows:[],managedRows:[{id:target,status:'已下架'}]}));
 
 for(const code of ['PRODUCT_RECYCLED','NOT_FOUND'])test(`a prior ${code} result is rechecked live before skipping the picker`,async()=>harness(async({platform,fixture,stats})=>{
  platform.journal={productChecks:()=>[{shopId:'900001',productId:target,code}],event(){},list:()=>[]};

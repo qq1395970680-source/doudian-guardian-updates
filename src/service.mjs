@@ -35,6 +35,7 @@ export class GuardianService {
     this.recovered=false;this.lastHistoryRead=this.now();
     this.priceIncreaseFollowups=new Set();
     this.priorityWatch=null;this.priorityListing=null;this.lastPriorityPoll=0;this.priorityPoll=null;this.priorityResume=false;this.lastPriorityCheck=null;
+    this.discoveryCycleStartedAt=null;
     this.immediateEnabled=immediate;this.immediateTimer=null;this.immediatePromise=null;
     this.platform.assertWrite=()=>{requireThat(!this.stopRequested&&this.policy.liveEnabled&&this.policy.cutoverConfirmed,'STOPPED','后台写入已停止');
       const health=this.platform.readHealth?.();requireThat(!health?.quarantined&&!health?.active?.length,'READS_PENDING','只读页面尚未完成清理，暂停提交');
@@ -652,9 +653,15 @@ export class GuardianService {
       if(this.immediateEnabled)await this.recoverRequested();
       if(this.stopRequested)return;
       const historyReadLimit=this.policy.captureExistingOnly?0:!this.journal.histories(this.policy.shopId).length?20:this.now()-this.lastHistoryRead>=15*60000?2:0;
-      const discovery=await this.platform.discover({historyReadLimit,...(this.platform.listActive?{onReadBatchStart:()=>this.beginPriorityPoll(),onReadBoundary:context=>this.checkPriority(context)}:{})});if(historyReadLimit)this.lastHistoryRead=this.now();
+      const continuing=this.discoveryCycleStartedAt!=null&&this.now()>=this.discoveryCycleStartedAt&&this.now()-this.discoveryCycleStartedAt<=900000;
+      if(!continuing)this.discoveryCycleStartedAt=this.now();
+      // Resume unchanged completed reads from this bounded scan cycle only.
+      // Their real timestamps remain intact; they are never new loss proofs.
+      const reuse=continuing?{readOnlyReuseMaxAgeMs:Math.min(900000,Math.max(1,this.now()-this.discoveryCycleStartedAt))}:{};
+      const discovery=await this.platform.discover({historyReadLimit,...reuse,...(this.platform.listActive?{onReadBatchStart:()=>this.beginPriorityPoll(),onReadBoundary:context=>this.checkPriority(context)}:{})});if(historyReadLimit)this.lastHistoryRead=this.now();
       for(const baseline of discovery.baselines||[])this.journal.remember(baseline,this.now());
       if(discovery.priorityRefreshRequired){this.priorityResume=true;return{priorityRefreshRequired:true};}
+      this.discoveryCycleStartedAt=null;
       requireThat(discovery.activeComplete===true,'ACTIVE_UNKNOWN','全店有效活动尚未完整核对，暂停本轮新建');
       const latest=this.latestHistories();
       const groups=new Map(),candidates=[],checks=new Map(this.journal.productChecks(this.policy.shopId).map(c=>[c.productId,c]));
@@ -783,6 +790,6 @@ export class GuardianService {
     };
     this.timer=setTimeout(run,0);
   }
-  stop({pauseRequests=false}={}) {this.running=false;this.stopRequested=true;this.requestedResume=false;this.nextAt=null;clearTimeout(this.timer);clearTimeout(this.immediateTimer);this.immediateTimer=null;
+  stop({pauseRequests=false}={}) {this.running=false;this.stopRequested=true;this.requestedResume=false;this.discoveryCycleStartedAt=null;this.nextAt=null;clearTimeout(this.timer);clearTimeout(this.immediateTimer);this.immediateTimer=null;
     if(pauseRequests&&this.immediateEnabled)pauseRecoveryRequests(this.journal,this.policy.shopId,true);this.platform.cancelReads?.();}
 }

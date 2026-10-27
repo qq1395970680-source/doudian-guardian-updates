@@ -113,8 +113,9 @@ export class DoudianPlatform {
     const rows=await until(async()=>{const r=await page.evaluate(listSlice);return r.length?r:/暂无数据|暂无(?:相关)?活动|没有找到/.test(await page.locator('body').innerText())?[]:false;},'活动列表未加载');
     const pager=await page.evaluate(pagerSlice);
     requireThat(pager.activeCount<=1&&(!pager.page||pager.page===n)&&pager.nextCount<=1,'LIST_PAGING','活动列表分页不明确');
-    for(const r of rows){
-     requireThat(r.ids.length===1&&r.cells===9&&r.times?.length===2&&r.status&&!seen.has(r.ids[0]),'LIST_INCOMPLETE','活动行不完整或重复');
+    for(const [rowIndex,r] of rows.entries()){
+     requireThat(r.ids.length===1&&r.cells===9&&r.times?.length===2&&r.status&&!seen.has(r.ids[0]),'LIST_INCOMPLETE',
+      `活动行不完整或重复（第${n}页第${rowIndex+1}行，编号${r.ids.join(',')||'缺失'}，列数${r.cells}，时间项${r.times?.length||0}，状态${r.status||'缺失'}，编号重复${seen.has(r.ids[0])?'是':'否'}）`);
      requireThat(!status||r.status===status,'QUERY_CHANGED','活动状态筛选结果不符');
      seen.add(r.ids[0]);campaigns.push({...r,id:r.ids[0],startAt:parseDate(r.times[0]),endAt:parseDate(r.times[1])});
     }
@@ -301,13 +302,13 @@ export class DoudianPlatform {
    const readActive=active(c)&&!(readOnlyReuseMaxAgeMs>0&&detail?.complete===true&&detailAge>=0&&detailAge<=readOnlyReuseMaxAgeMs);
    if(readActive||!detail&&historyReads<historyReadLimit&&!(attempt?.key===key&&attempt.retryAt>Date.now())){
     if(!active(c))historyReads++;
-    (active(c)?activeJobs:historyJobs).push({c,key});
+    (active(c)?activeJobs:historyJobs).push({c,key,previousObservedAt:detail?.observedAt||0});
    }else if(detail){details.set(c.id,detail);if(active(c))activeRead++;}
   }
   // Reorder reads, not baselines. A still-active older campaign may acquire a
   // platform removal warning while unrelated newer activities remain healthy.
   const priorityIds=new Set(this.journal?new PriorityWatch(this.journal,this.policy.shopId).priorityCampaignIds(listing):[]);
-  activeJobs.sort((a,b)=>Number(priorityIds.has(b.c.id))-Number(priorityIds.has(a.c.id)));
+  activeJobs.sort((a,b)=>Number(priorityIds.has(b.c.id))-Number(priorityIds.has(a.c.id))||(readOnlyReuseMaxAgeMs>0?a.previousObservedAt-b.previousObservedAt:0));
   let priorityRefreshRequired=false,priorityListing=null,readTimedOut=false;
   const publish=()=>{
    this.inventory={listing,details,activeComplete:campaigns.filter(active).every(c=>details.has(c.id)),readOnlyReuseMaxAgeMs};
@@ -388,6 +389,24 @@ export class DoudianPlatform {
   return {baselines,complete:!priorityRefreshRequired&&details.size===campaigns.length,activeComplete,priorityRefreshRequired,errors};
  }
  async loss(baseline,{fresh=false,reads=null}={}){
+  if(!fresh&&this.inventory?.readOnlyReuseMaxAgeMs>0){
+   const {listing,details,activeComplete}=this.inventory,now=Date.now();
+   requireThat(activeComplete&&listing.complete===true,'ACTIVE_UNKNOWN','续读活动尚未完整核对');
+   const positives=listing.campaigns.filter(active).flatMap(c=>{
+    const d=details.get(c.id);requireThat(d?.complete===true,'ACTIVE_UNKNOWN','续读活动详情不完整');
+    return d.products.filter(p=>p.productId===baseline.productId&&!p.removalConfirmed).map(p=>({campaign:c,product:p,observedAt:Math.min(listing.observedAt,d.observedAt)}));
+   }).sort((a,b)=>b.observedAt-a.observedAt);
+   if(positives.length){
+    const match=positives[0],age=now-match.observedAt;
+    if(!Number.isFinite(age)||age< -5000||age>120000)return{complete:false,activeHint:true,campaignId:match.campaign.id,hintObservedAt:match.observedAt};
+    return{complete:true,active:true,ambiguous:match.product.removalAmbiguous===true,campaignId:match.campaign.id,observedAt:match.observedAt};
+   }
+   const times=[listing.observedAt,...listing.campaigns.filter(active).map(c=>details.get(c.id)?.observedAt)];
+   if(!times.every(at=>Number.isFinite(at)&&at>0&&now-at>=-5000&&now-at<=120000)){
+    const reference=this.limitedReference(baseline);
+    throw new GuardError('LOSS_EVIDENCE_EXPIRED','续读缓存只能安排核验，缺失商品须重新取得独立失效证明',{productId:baseline.productId,campaignId:reference.campaignId||baseline.campaignId});
+   }
+  }
   if(fresh){
    const list=reads?.list||this.list.bind(this),detail=reads?.detail||this.detail.bind(this);
    const listing=await list({productId:baseline.productId}),details=new Map();

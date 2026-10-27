@@ -22,3 +22,13 @@ test('routine inventory uses both current-status filters and title readback uses
   assert.equal(fixture.state.submits,0);assert.equal(fixture.state.uploads,0);assert.ok(browser.context.pages().every(p=>p.url()==='about:blank'));
  }finally{await browser.close();journal.close();await fixture.close();await rm(root,{recursive:true,force:true});}
 });
+
+test('an incomplete list row retains page and field diagnostics without accepting a partial inventory',{timeout:90000},async()=>{
+ const root=await mkdtemp(join(tmpdir(),'guardian-list-row-proof-')),fixture=await fixtureServer(),browser=new DedicatedBrowser(root,{test:true}),journal=new Journal(':memory:');
+ fixture.state.campaigns[0].status='未知状态';
+ const platform=new DoudianPlatform({browser,journal,policy:{shopId:'900001'},base:fixture.base});
+ try{
+  await assert.rejects(platform.list(),error=>error.code==='LIST_INCOMPLETE'&&/第1页第1行/.test(error.message)&&/列数9/.test(error.message)&&/状态缺失/.test(error.message));
+  assert.equal(platform.inventory,null);assert.equal(fixture.state.submits,0);assert.equal(fixture.state.uploads,0);
+ }finally{await browser.close();journal.close();await fixture.close();await rm(root,{recursive:true,force:true});}
+});

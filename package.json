@@ -1,6 +1,6 @@
 {
   "name": "doudian-guardian-service",
-  "version": "2.0.0-beta.44",
+  "version": "2.0.0-beta.45",
   "description": "抖店折扣守护桌面程序与独立后台",
   "author": "Guardian Local",
   "main": "desktop/main.mjs",

@@ -316,7 +316,7 @@ export class GuardianService {
     }
     const blocked=(member,error)=>{
       if(error.code==='STOPPED')throw error;
-      const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss};
+      const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss};
       this.journal.putProductCheck(this.policy.shopId,productId,{...detail,lossKey:member.loss?.lossKey,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
       this.journal.event(null,'price-increase-recovery-pending',detail,this.now());
     };

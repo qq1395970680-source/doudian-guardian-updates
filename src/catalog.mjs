@@ -90,12 +90,18 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
     const recent=fresh(proof.observedAt,now);p.state=recent?'recycled':'unconfirmed';p.observedAt=proof.observedAt;p.stale=!recent;
     p.reason=recent?c.message:'上次核验商品位于平台回收站，当前状态待更新；历史折扣已保留';
    }
+   const offShelf=c.code==='OFF_SHELF'&&proof?.kind==='off-shelf'&&proof.source==='live-platform-product-management'&&proof.status==='已下架'&&
+    proof.complete===true&&proof.shopId===shopId&&proof.productId===p.productId;
+   if(offShelf&&!p.pending&&!p.excluded&&!p.ambiguous){
+    const recent=fresh(proof.observedAt,now);p.state=recent?'off-shelf':'unconfirmed';p.observedAt=proof.observedAt;p.stale=!recent;
+    p.reason=recent?c.message:'上次核验商品已下架，当前状态待更新；历史折扣已保留';
+   }
   }
  }
  const rows=[...products.values()].sort((a,b)=>a.productId.localeCompare(b.productId));
  const counts={products:rows.length,observedCurrentProducts:rows.filter(p=>p.current.length&&listingFresh&&!p.stale&&!p.ambiguous).length,
   missingProducts:rows.filter(p=>p.state==='missing').length,pendingProducts:rows.filter(p=>p.pending).length,
-  unconfirmedProducts:rows.filter(p=>p.state==='unconfirmed').length,excludedProducts:rows.filter(p=>p.excluded).length,recycledProducts:rows.filter(p=>p.state==='recycled').length,
+  unconfirmedProducts:rows.filter(p=>p.state==='unconfirmed').length,excludedProducts:rows.filter(p=>p.excluded).length,recycledProducts:rows.filter(p=>p.state==='recycled').length,offShelfProducts:rows.filter(p=>p.state==='off-shelf').length,
   recoveryFailedProducts:rows.filter(p=>p.recoveryFailure).length,historicalProducts:rows.filter(p=>p.history).length};
  const result={shopId,observedAt,listingObservedAt:listingObservedAt||null,complete,stale,restoredObservation,counts,products:rows};
  return{...result,revision:fingerprint(result)};

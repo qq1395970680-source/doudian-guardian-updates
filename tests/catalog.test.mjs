@@ -82,6 +82,27 @@ test('a stale activity listing cannot claim a fresh current status from detail r
 });
 
 const recycledCheck=()=>({shopId,productId:'300001',code:'PRODUCT_RECYCLED',at:now,message:'商品已在平台回收站',productState:{source:'live-platform-product-recycle',kind:'recycled',shopId,productId:'300001',observedAt:now,complete:true}});
+const offShelfCheck=()=>({shopId,productId:'300001',code:'OFF_SHELF',at:now,message:'商品管理明确显示已下架，跳过恢复',productState:{source:'live-platform-product-management',kind:'off-shelf',status:'已下架',shopId,productId:'300001',observedAt:now,complete:true}});
+
+test('a fresh independently read off-shelf product is separate from missing discounts',()=>{
+ const result=buildCatalog({...base(),inventory:null,checks:[offShelfCheck()]});
+ assert.equal(result.products[0].state,'off-shelf');assert.equal(result.counts.missingProducts,0);assert.equal(result.counts.offShelfProducts,1);assert.equal(result.products[0].history.skus.length,1);
+});
+
+test('stale, cross-shop and mismatched off-shelf proofs cannot claim a current off-shelf state',()=>{
+ const stale=buildCatalog({...base(),inventory:null,checks:[offShelfCheck()],now:now+6*60000});
+ assert.equal(stale.products[0].state,'unconfirmed');assert.equal(stale.counts.offShelfProducts,0);
+ for(const patch of [{shopId:'900002'},{productId:'300002'},{source:'diagnostic-only'},{status:'售卖中'}]){
+  const check=offShelfCheck();Object.assign(check.productState,patch);assert.notEqual(buildCatalog({...base(),inventory:null,checks:[check]}).products[0].state,'off-shelf');
+ }
+});
+
+test('off-shelf display cannot override a current activity, unknown submission or exclusion',()=>{
+ assert.equal(buildCatalog({...base(),checks:[offShelfCheck()]}).products[0].state,'active');
+ for(const [extra,expected] of [[{tasks:[{shopId,phase:'unknown',plans:[{productId:'300001'}]}]},'pending'],[{excluded:['300001']},'excluded']]){
+  assert.equal(buildCatalog({...base(),inventory:null,checks:[offShelfCheck()],...extra}).products[0].state,expected);
+ }
+});
 test('a live recycle observation is displayed separately from a missing discount',()=>{
  const r=buildCatalog({...base(),inventory:null,checks:[recycledCheck()]});
  assert.equal(r.products[0].state,'recycled');assert.equal(r.counts.missingProducts,0);assert.equal(r.counts.recycledProducts,1);assert.equal(r.products[0].history.skus.length,1);

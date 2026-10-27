@@ -4,7 +4,7 @@ import {until,delay,parseDate,collectForm,bindFormProducts,assertPrecheckMembers
 import {makeWorkbook} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
-import {inspectRecycledProduct} from './product-state.mjs';
+import {inspectRecycledProduct,inspectManagedProduct} from './product-state.mjs';
 import {readRemovalWorkbook} from './removal-export.mjs';
 import {createHash} from 'node:crypto';
 import {draftPriceWarnings} from './draft-price-warnings.mjs';
@@ -670,13 +670,18 @@ export class DoudianPlatform {
  }
  async precheck(baseline){
   this.progress={stage:'读取当前完整规格',productId:baseline.productId,at:Date.now()};
-  const prior=this.journal?.productChecks?.(this.policy.shopId).find(c=>c.shopId===this.policy.shopId&&c.productId===baseline.productId&&['PRODUCT_RECYCLED','NOT_FOUND'].includes(c.code));
-  let recycleChecked=false;
+  const prior=this.journal?.productChecks?.(this.policy.shopId).find(c=>c.shopId===this.policy.shopId&&c.productId===baseline.productId&&['PRODUCT_RECYCLED','NOT_FOUND','OFF_SHELF'].includes(c.code));
+  let recycleChecked=false,managedChecked=false;
   const checkRecycle=async()=>{
    recycleChecked=true;const proof=await inspectRecycledProduct(this,baseline.productId);
    if(proof)throw new GuardError('PRODUCT_RECYCLED','商品已在平台回收站，跳过折扣恢复并保留完整历史',{productState:proof});
   };
-  if(prior)await checkRecycle();
+  const checkManaged=async()=>{
+   managedChecked=true;const proof=await inspectManagedProduct(this,baseline.productId);
+   if(proof?.kind==='off-shelf')throw new GuardError('OFF_SHELF','商品管理明确显示已下架，跳过折扣恢复并保留完整历史',{productState:proof});
+  };
+  const checkUnavailable=async()=>{if(!recycleChecked)await checkRecycle();if(!managedChecked)await checkManaged();};
+  if(prior?.code==='OFF_SHELF')await checkManaged();else if(prior)await checkUnavailable();
   const page=await this.open(LIST+'/create');
   try{
    await page.locator('#title').waitFor();const initial=await page.evaluate(formSlice);
@@ -686,7 +691,7 @@ export class DoudianPlatform {
    assertPrecheckMembership([baseline.productId],collected);
    await this.identity(page);return {shopId:this.policy.shopId,productId:baseline.productId,complete:true,observedAt:Date.now(),offShelf:products[0].offShelf,skus:products[0].skus};
   }catch(e){
-   if(e.code==='NOT_FOUND'&&!recycleChecked){await page.close();await checkRecycle();}
+   if(e.code==='NOT_FOUND'){await page.close();await checkUnavailable();}
    await this.fault(page,baseline.productId,'precheck',e);throw e;
   }finally{if(!page.isClosed())await page.close();}
  }

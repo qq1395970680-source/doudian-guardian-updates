@@ -1,7 +1,7 @@
-const readonlyStage=/^(读取全店活动列表|核对当前活动|优先核对风险活动|补读完整历史|全店当前活动核对完成|当前活动仍有读取失败，暂停恢复|尚未连接)$/;
+import {isReadonlyStage} from './readonly-stage.mjs';
 const same=(a,b)=>a.instance===b.instance&&a.sourceBuild===b.sourceBuild&&a.shopId===b.shopId&&a.startedAt===b.startedAt;
 const pending=s=>s.unknown!==0||Array.isArray(s.tasks)&&s.tasks.some(t=>!['verified','blocked'].includes(t.phase));
-const readonly=s=>!pending(s)&&!s.loginOpen&&Array.isArray(s.tasks)&&readonlyStage.test(s.progress?.stage||'')&&
+const readonly=s=>!pending(s)&&!s.loginOpen&&Array.isArray(s.tasks)&&isReadonlyStage(s.progress?.stage)&&
  (!s.action||['连接店铺','同步当前折扣','连接店铺并同步折扣'].includes(s.action));
 
 // Counts must move, not just a heartbeat, a retry operation ID, or a repeated

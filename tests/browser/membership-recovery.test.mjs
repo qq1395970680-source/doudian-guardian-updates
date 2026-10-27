@@ -21,7 +21,7 @@ for(const mismatch of [true,false])test(`20 product precheck through recovery: $
  Object.assign(original,{type:'限量抢购',status:'进行中',risk:true,autoRenew:true,startAt:Math.floor(started/1000)*1000-100000,
   endAt:Math.floor(started/1000)*1000+7*86400000-100000,products:[],removals:products.map(p=>({...p,reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。'}))});
  let captured;
- const failure=browser.failure.bind(browser);browser.failure=async(...args)=>{captured=structuredClone(args[4]);const capture=args[5];if(capture)args[5]=async()=>{const extra=await capture();captured={...captured,...structuredClone(extra)};return extra;};return failure(...args);};
+ const failure=browser.failure.bind(browser);browser.failure=async(...args)=>{if(args[2]==='precheck'){captured=structuredClone(args[4]);const capture=args[5];if(capture)args[5]=async()=>{const extra=await capture();captured={...captured,...structuredClone(extra)};return extra;};}return failure(...args);};
  if(mismatch){const expand=platform.expand.bind(platform);platform.expand=async page=>{await expand(page);await page.locator('#count').evaluate(e=>e.textContent='已选数量 19 个');};}
  try{
   const baselines=products.map(p=>({...p,shopId:policy.shopId,source:'verified-platform-history',complete:true,type:'限量抢购',campaignId:original.id,
@@ -64,6 +64,10 @@ test('dashboard displays a pre-enqueue failure and retry time with zero tasks',{
   assert.match(await product.innerText(),/尚未进入恢复任务入队和提交/);assert.match(await product.innerText(),/重试最早时间/);
   await product.getByText('查看商品集合与分页诊断',{exact:true}).click();assert.match(await product.innerText(),/缺失商品ID/);assert.equal(journal.list(b.shopId).length,0);
   await page.screenshot({path:resolve('artifacts/membership-failure-ui.png'),fullPage:true});
+  await page.locator('[data-view="prices"]').click();await page.locator(`[data-recovery-issue="${b.productId}"]`).waitFor();
+  assert.match(await page.locator('#recovery-issues').innerText(),/PRECHECK_MEMBERSHIP/);
+  assert.match(await page.locator('#recovery-issues').innerText(),/目标20件，实际10件/);
+  assert.equal(journal.priceReviews(b.shopId).length,0);assert.equal(journal.list(b.shopId).length,0);
   await page.getByRole('button',{name:'程序工具',exact:true}).click();await page.locator('[data-tool="diagnostics"]').click();
   await page.getByRole('button',{name:'导出诊断包',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#diagnostics-status')?.textContent.startsWith('已保存：'));
   assert.match(await page.locator('#diagnostics-status').innerText(),/\.zip/);assert.equal(journal.list(b.shopId).length,0);

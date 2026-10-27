@@ -17,6 +17,8 @@ import {projectBuild} from './build.mjs';
 import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from './migration.mjs';
 import {exportDiagnostics} from './diagnostics.mjs';
 import {authenticationView,markAuthenticationRequired,markAuthenticated} from './authentication.mjs';
+import {activeOriginalRebuildGrant,setOriginalRebuildPolicy} from './original-rebuild-policy.mjs';
+import {buildRecoveryIssues} from './recovery-issues.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export async function createApp({config=null,rootDir=root,port=19417,runtime=join(rootDir,'runtime'),dependencies={},resumeOnUpgrade=false}={}){
@@ -52,6 +54,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
   automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId),
+  automaticOriginalRebuildEnabled:!!activeOriginalRebuildGrant(journal,shopId),
   campaignRule:shopId?journal.settings('campaign-policy:'+shopId)?.target||null:null,
   campaignConversion:shopId?(()=>{const s=journal.settings('campaign-conversion:'+shopId);return s?{status:s.status,total:s.products.length,verified:s.products.filter(p=>p.phase==='verified').length,updatedAt:s.updatedAt}:null;})():null,
   updates:{repository:UPDATE_REPOSITORY,currentVersion:version},
@@ -95,7 +98,10 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }
    if(req.method==='GET'&&path==='/api/price-reviews'){
     const q=requestUrl.searchParams;
-    json(200,journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all'}));return;
+    const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,
+     histories:shopId?journal.histories(shopId):[],tasks:shopId?journal.list(shopId):[],checks:shopId?journal.productChecks(shopId):[],excluded:policy.excludedProductIds||[]});
+    json(200,{...journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all'}),
+     recoveryIssues:buildRecoveryIssues(catalog,shopId?journal.priceReviews(shopId):[])});return;
    }
    if(req.method==='GET'&&path==='/api/products'){
     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,
@@ -135,6 +141,15 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
      json(200,{ok:true,...result});return;
     }
     throw Object.assign(new Error('没有此迁移操作'),{code:'NOT_FOUND'});
+   }else if(path==='/api/original-rebuild-policy'){
+    requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'SHOP_MISMATCH','请先连接并核对当前店铺');
+    const setting=setOriginalRebuildPolicy(journal,shopId,args);
+    if(setting.enabled){
+     const ids=journal.productChecks(shopId).filter(c=>['LIMITED_LOSS_UNPROVEN','REBUILD_REVIEW_REQUIRED','TIMED_LOSS_UNPROVEN'].includes(c.code)&&!policy.excludedProductIds?.includes(c.productId)).map(c=>c.productId);
+     for(const productId of ids)journal.clearProductCheck(shopId,productId);
+     if(ids.length&&policy.liveEnabled&&policy.cutoverConfirmed)service.requestRecovery(ids,{reason:'shop-original-rebuild-enabled'});
+    }
+    json(200,{ok:true,enabled:setting.enabled});return;
    }else if(path==='/api/price-increase-policy'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先连接并核对当前店铺');
     requireThat(!action,'BUSY','请等待当前店铺操作完成');

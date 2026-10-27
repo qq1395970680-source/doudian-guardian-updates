@@ -15,6 +15,7 @@ import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 import {currentLimitedReference,resolveLimitedLoss} from './limited-continuity.mjs';
 import {confirmedRebuildContinuity} from './rebuild-review.mjs';
 import {timedRemovalEvidence} from './timed-removal.mjs';
+import {authorizedOriginalContinuity} from './original-rebuild-policy.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -35,7 +36,7 @@ export class DoudianPlatform {
    if(kind==='read-operation-failed')return this.browser.failure(null,detail.campaignId||'inventory',detail.kind,
     Object.assign(new Error(detail.message),{code:detail.code}),{shopId:this.policy.shopId,readOperation:detail}).catch(()=>{});
   }});
-  for(const [name,kind,budgetMs] of [['list','list',180000],['detail','detail',300000],['readRenewal','renewal',90000],['probe','identity',60000],['closeMonitorPages','close-monitors',30000]]){
+  for(const [name,kind,budgetMs] of [['list','list',180000],['detail','detail',300000],['readRenewal','renewal',90000],['probe','identity',60000],['closeMonitorPages','close-monitors',30000],['precheck','precheck',300000],['precheckBatch','batch-precheck',600000]]){
    const original=this[name].bind(this);
    this[name]=(...args)=>this.readOperations.run({kind,campaignId:args[0]?.id||null,budgetMs},()=>original(...args));
   }
@@ -418,7 +419,8 @@ export class DoudianPlatform {
   if(!reference.limited&&reference.campaignId){
    const currentMember=this.inventory.listing.campaigns.filter(active).some(c=>
     this.inventory.details.get(c.id)?.products.some(p=>p.productId===baseline.productId&&!p.removalConfirmed));
-   if(!currentMember&&!this.inventory.details.has(reference.campaignId))
+   const cached=this.inventory.details.get(reference.campaignId),age=Date.now()-(cached?.observedAt||0);
+   if(!currentMember&&(!cached||age>120000||age< -5000))
     throw new GuardError('LOSS_EVIDENCE_EXPIRED','原限时活动未在当前详情中，需要批量重新核对退出原因',
      {productId:baseline.productId,campaignId:reference.campaignId});
   }
@@ -599,7 +601,8 @@ export class DoudianPlatform {
      detail.currentAbsence={source:'live-platform-current-absence',complete:true,shopId:this.policy.shopId,productId:baseline.productId,
       observedAt:at,listingFingerprint:fingerprint(listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt]).sort())};
      detail.referenceLookup=listing.referenceLookup||null;
-     continuity=confirmedRebuildContinuity(this.journal?.priceTarget?.(this.policy.shopId,baseline.productId),baseline,detail,now);
+     continuity=confirmedRebuildContinuity(this.journal?.priceTarget?.(this.policy.shopId,baseline.productId),baseline,detail,now)||
+      (this.policy.originalRiskAllowed===true?authorizedOriginalContinuity(this.journal,baseline,detail,now):null);
     }
     if(!continuity)throw error;
    }

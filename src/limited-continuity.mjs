@@ -33,7 +33,7 @@ export function resolveLimitedLoss({baseline,reference,listing,details,shopId,no
   Number.isSafeInteger(reference.durationMs)&&reference.durationMs>0&&c.endAt-c.startAt===reference.durationMs;
  const proof={productId:baseline.productId,historicalCampaignId:baseline.campaignId,referenceCampaignId:reference.campaignId,
   referenceSource:reference.referenceSource||'last-verified-or-historical-source',status:c?.status??null,startAt:c?.startAt??null,endAt:c?.endAt??null,
-  autoRenew:reference.rules?.autoRenew??null,detailComplete:d?.complete===true,detailObservedAt:d?.observedAt??null,
+  autoRenew:reference.rules?.autoRenew??null,risk:c?.risk===true,detailComplete:d?.complete===true,detailObservedAt:d?.observedAt??null,
   memberPresent:!!p,soldOut:p?.soldOut??null,removalConfirmed:p?.removalConfirmed??null,removalRiskConfirmed:p?.removalRiskConfirmed??null,
   export:{present:!!source,source:source?.source??null,complete:source?.complete===true,observedAt:source?.observedAt??null,
    shopMatched:source?.shopId===shopId,campaignMatched:source?.campaignId===reference.campaignId,productMatched:matched,fresh:!!sourceFresh},

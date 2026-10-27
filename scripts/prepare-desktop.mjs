@@ -19,7 +19,7 @@ await mkdir(join(service,'native'));await cp(join(root,'desktop/assets/GuardianP
 await mkdir(join(service,'config'));await cp(join(root,'config/default.json'),join(service,'config/default.json'));
 await mkdir(join(service,'scripts'));await cp(join(root,'scripts/start-local.mjs'),join(service,'scripts/start-local.mjs'));
 await mkdir(join(service,'desktop'));
-for(const file of ['service-controller.mjs','backend-upgrade.mjs','upgrade-journal-worker.mjs','upgrade-journal-snapshot.mjs'])
+for(const file of ['service-controller.mjs','backend-upgrade.mjs','readonly-stage.mjs','upgrade-journal-worker.mjs','upgrade-journal-snapshot.mjs'])
  await cp(join(root,'desktop',file),join(service,'desktop',file));
 for(const file of ['package.json','package-lock.json','README.md','USER-GUIDE.md','DEVELOPMENT.md','Start.ps1'])await cp(join(root,file),join(service,file));
 await mkdir(join(service,'node_modules'));

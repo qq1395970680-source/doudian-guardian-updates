@@ -11,6 +11,7 @@ import {makePriceReconfirmation,assertPriceReconfirmation,needsPriceReconfirmati
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 import {makeRebuildReview,rebuildMaterial} from './rebuild-review.mjs';
 import {requestRecovery} from './recovery-requests.mjs';
+import {assertOriginalRebuildConsent} from './original-rebuild-policy.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -88,6 +89,7 @@ export class Journal {
   }
   beginSubmit(taskId, proof, now = Date.now()) {
     const task = this.get(taskId);
+    if(task)assertOriginalRebuildConsent(this,task,now);
     if(task){this.assertPricePlans(task.shopId,task.plans);assertRecoveryCapacity(task.plans);}
     requireThat(task?.phase === 'prepared' && knownUnsubmitted(task) && proof?.taskId === taskId && proof.at > 0 && now - proof.at <= 30000,
       'SUBMIT_PROOF', '提交证明缺失、过期或已尝试提交');
@@ -98,6 +100,7 @@ export class Journal {
   beginRiskConfirmation(taskId, proof, now = Date.now()) {
     return this.transaction(() => {
       const task = this.get(taskId);
+      if(task)assertOriginalRebuildConsent(this,task,now);
       if(task)assertRecoveryCapacity(task.plans);
       requireThat(task && ['submitting', 'unknown', 'verifying'].includes(task.phase) && task.riskAttempts === 0 &&
         task.plans.every(p => p.originalRiskAllowed||p.approvedRiskAllowed&&p.priceApprovalId) && proof?.taskId === taskId && proof.kind==='original-discount-risk' &&

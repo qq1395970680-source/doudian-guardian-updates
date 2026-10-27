@@ -2,8 +2,8 @@ import {readFile} from 'node:fs/promises';
 import {resolve,join,relative,isAbsolute} from 'node:path';
 import {validateBundle} from './backend.mjs';
 import {probeService,postControl} from './service-controller.mjs';
+import {isReadonlyStage} from './readonly-stage.mjs';
 
-const readonlyStage=/^(读取全店活动列表|核对当前活动|优先核对风险活动|补读完整历史|全店当前活动核对完成|当前活动仍有读取失败，暂停恢复|尚未连接)$/;
 export function assertReadonlyRepair(status,{journalProof}={}){
  if(journalProof?.pendingTasks>0)throw Object.assign(Error('完整数据库仍有 '+journalProof.pendingTasks+' 个未完成或未知任务，保留旧后台及待核实提交'),{code:'UPGRADE_PENDING_SUBMISSIONS'});
  const complete=journalProof?.source==='complete-readonly-upgrade-journal'&&journalProof.complete===true&&journalProof.pendingTasks===0&&
@@ -11,7 +11,7 @@ export function assertReadonlyRepair(status,{journalProof}={}){
  if(status.unknown!==0||status.loginOpen||!Array.isArray(status.tasks)||journalProof&&!complete||status.tasks.length>=100&&!complete||
    status.tasks.some(t=>!['verified','blocked'].includes(t.phase))||
    status.action&&!['连接店铺','同步当前折扣','连接店铺并同步折扣'].includes(status.action)||
-   !readonlyStage.test(status.progress?.stage||''))throw Error('当前状态不能证明仅有只读工作；保留后台及待核实提交。');
+   !isReadonlyStage(status.progress?.stage))throw Error('当前状态不能证明仅有只读工作；保留后台及待核实提交。');
 }
 const same=(a,b)=>a.instance===b.instance&&a.sourceBuild===b.sourceBuild&&a.shopId===b.shopId&&a.startedAt===b.startedAt;
 // Used by the explicit repair action or the bounded desktop upgrade. A fresh

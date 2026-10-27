@@ -10,6 +10,7 @@ const phases={queued:'待准备',prepared:'草稿已核对',submitting:'提交�
 let state=null,catalog=null,view='overview',filter='all',query='',pageIndex=0,pending=false,polling=false,online=false,timer,catalogAt=0,catalogSignature='',activitySignature='',accountSignature='',toastTimer,updateBusy=false,lastUpdate={state:'idle'};
 const pageSize=16,expanded=new Set();
 let pricePolicySignature='';
+let originalRebuildSignature='';
 const text=(id,value)=>{const el=$(id),t=String(value??'—');if(el.textContent!==t)el.textContent=t;};
 const time=value=>value?new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'尚无记录';
 const money=n=>Number.isSafeInteger(n)?'¥'+(n/100).toFixed(2):'—';
@@ -105,6 +106,12 @@ function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s
  text('price-increase-policy',automatic?'停止自动提价':'开启自动提价');
  const ready=online&&!pending&&!s.action&&s.shopId&&s.connection?.shopId===s.shopId;
  $('price-increase-consent').disabled=!ready;$('price-increase-policy').disabled=!ready||!automatic&&!$('price-increase-consent').checked;
+ const rebuild=s.automaticOriginalRebuildEnabled===true,rebuildSignature=JSON.stringify([s.shopId,rebuild]);
+ if(rebuildSignature!==originalRebuildSignature){originalRebuildSignature=rebuildSignature;$('original-rebuild-consent').checked=false;}
+ $('original-rebuild-consent-wrap').hidden=rebuild;text('original-rebuild-status',rebuild?'已开启，按原设置自动恢复':'未开启');
+ text('original-rebuild-policy',rebuild?'停止自动重建':'开启原折扣自动重建');
+ $('original-rebuild-consent').disabled=!ready||!s.originalRestoreAuthorized;
+ $('original-rebuild-policy').disabled=!ready||!s.originalRestoreAuthorized||!rebuild&&!$('original-rebuild-consent').checked;
 }
 function render(s){
  if(s.instance&&s.instance!==instance){location.reload();return;}state=s;
@@ -155,6 +162,9 @@ $('reauthenticate').onclick=()=>act(state?.loginOpen?'finish-login':'login',{rea
 $('price-increase-consent').onchange=()=>{if(state)renderAccounts(state);};
 $('price-increase-policy').onclick=()=>{if(!state)return;const enabled=!state.automaticPriceIncreaseEnabled;if(enabled&&!$('price-increase-consent').checked)return;
  void act('price-increase-policy',{shopId:state.shopId,enabled,acceptHigherPricesAndRisk:enabled&&$('price-increase-consent').checked});};
+$('original-rebuild-consent').onchange=()=>{if(state)renderAccounts(state);};
+$('original-rebuild-policy').onclick=()=>{if(!state)return;const enabled=!state.automaticOriginalRebuildEnabled;if(enabled&&!$('original-rebuild-consent').checked)return;
+ void act('original-rebuild-policy',{shopId:state.shopId,enabled,acceptOriginalRebuild:enabled&&$('original-rebuild-consent').checked});};
 async function poll(){if(polling||document.hidden)return;polling=true;clearTimeout(timer);try{
  const response=await fetch('/api/status',{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('offline');const s=await response.json();online=true;$('offline').hidden=true;render(s);
  if(view==='prices')await priceReviews.refresh();

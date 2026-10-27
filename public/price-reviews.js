@@ -3,10 +3,27 @@
 export function createPriceReviews({getState,post,toast,node,money,discount,time}) {
  const $=id=>document.getElementById(id),cards=new Map(),pageSize=10,skuPageSize=25;
  let shop=null,reviews=[],pageIndex=0,total=0,pages=1,loading=false,readAt=0,action=null,visibleIds='',loadVersion=0,direction='increase';
+ let issues=[],issuePage=0,issueSignature='';
  const labels={pending:'等待确认',approved:'已确认',declined:'暂不调整',superseded:'已失效'};
  const current=()=>getState();
  const setText=(el,value)=>{if(el.textContent!==value)el.textContent=value;};
- function reset(next){shop=next;reviews=[];pageIndex=0;total=0;pages=1;readAt=0;loadVersion++;cards.clear();visibleIds='';for(const mode of ['increase','decrease'])setText($('price-'+mode+'-count'),'—');$('price-reviews').replaceChildren(node('div','empty','正在读取价格建议'));pagination();}
+ function reset(next){shop=next;reviews=[];issues=[];issuePage=0;issueSignature='';$('recovery-issues-panel').hidden=true;pageIndex=0;total=0;pages=1;readAt=0;loadVersion++;cards.clear();visibleIds='';for(const mode of ['increase','decrease'])setText($('price-'+mode+'-count'),'—');$('price-reviews').replaceChildren(node('div','empty','正在读取价格建议'));pagination();}
+ function renderIssues(){
+  const signature=JSON.stringify([shop,issuePage,issues,current().online,current().state?.connection?.shopId,action]);if(signature===issueSignature)return;issueSignature=signature;
+  const count=issues.length,issuePages=Math.max(1,Math.ceil(count/10));issuePage=Math.min(issuePage,issuePages-1);$('recovery-issues-panel').hidden=!count;
+  setText($('recovery-issues-count'),String(count));setText($('recovery-issues-page'),`${count} 件 · 第 ${issuePage+1} / ${issuePages} 页`);
+  $('recovery-issues-prev').disabled=issuePage===0;$('recovery-issues-next').disabled=issuePage>=issuePages-1;
+  const rows=issues.slice(issuePage*10,(issuePage+1)*10).map(issue=>{
+   const row=node('div','setting-row'),body=node('div');row.dataset.recoveryIssue=issue.productId;
+   body.append(node('strong','',issue.name||'商品 '+issue.productId),node('p','helper',issue.productId+' · '+issue.code),node('p','reason',issue.message),
+    node('p','helper',`最近核对 ${time(issue.at)}${issue.stale?' · 证据待更新':''}`));
+   const button=node('button','button small secondary','重新核验恢复');button.disabled=!!action||!current().online||current().state?.connection?.shopId!==shop;
+   button.onclick=async()=>{button.disabled=true;try{await post('recovery/request',{shopId:shop,productId:issue.productId});toast('已加入优先核验队列；原价恢复不需要新增价格确认，调价仍需确认。');}catch(error){toast(error.message);}finally{readAt=0;issueSignature='';void refresh();}};
+   row.append(body,button);return row;
+  });$('recovery-issues').replaceChildren(...rows);
+ }
+ $('recovery-issues-prev').onclick=()=>{issuePage=Math.max(0,issuePage-1);renderIssues();};
+ $('recovery-issues-next').onclick=()=>{issuePage++;renderIssues();};
  function pagination(){$('price-page-label').textContent=total?`${total} 份记录 · 第 ${pageIndex+1} / ${pages} 页`:'0 份记录';$('price-prev').disabled=loading||!!action||pageIndex===0;$('price-next').disabled=loading||!!action||pageIndex===pages-1;}
  function directionHeading(){
   for(const b of document.querySelectorAll('[data-price-direction]')){const selected=b.dataset.priceDirection===direction;b.classList.toggle('selected',selected);b.setAttribute('aria-pressed',String(selected));b.disabled=!!action;}
@@ -164,9 +181,9 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
    try{const response=await fetch(`/api/price-reviews?page=${pageIndex}&size=${pageSize}&direction=${direction}`,{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('价格建议暂时无法读取');const result=await response.json();
     if(shop!==expectedShop||result.shopId!==shop||loadVersion!==expectedVersion||action)return;
     if(!Array.isArray(result.reviews)||result.reviews.length>pageSize||!Number.isSafeInteger(result.total)||!Number.isSafeInteger(result.pages)||!Number.isSafeInteger(result.page))throw Error('价格建议分页待重新读取');
-    reviews=result.reviews;total=result.total;pages=result.pages;pageIndex=result.page;readAt=Date.now();
+    reviews=result.reviews;issues=Array.isArray(result.recoveryIssues)?result.recoveryIssues:[];total=result.total;pages=result.pages;pageIndex=result.page;readAt=Date.now();
     for(const mode of ['increase','decrease'])setText($('price-'+mode+'-count'),String(result.directionCounts?.[mode]??0));
-    render();
+    render();renderIssues();
    }catch{readAt=0;if(!reviews.length)$('price-reviews').replaceChildren(node('div','empty','价格建议暂时无法读取，正在重新连接。'));for(const c of cards.values())updateControls(c);}
    finally{loading=false;pagination();if(loadVersion!==expectedVersion&&!action)void refresh();}
   }

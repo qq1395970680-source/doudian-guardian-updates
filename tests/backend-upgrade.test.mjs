@@ -22,6 +22,10 @@ test('stalled old backend is paused, bounded, safely taken over once, and only t
  assert.ok(f.states.some(s=>s.phase==='stalled'));assert.ok(f.states.some(s=>s.phase==='taking-over'));
  assert.equal(f.states.at(-1).phase,'ready');assert.ok(f.clock()<=300);
 });
+for(const stage of ['读取当前完整规格','批量读取当前完整规格'])test('a stalled unsubmitted precheck can be safely upgraded: '+stage,async()=>{
+ const f=fixture({progress:{stage,products:3,at:1}}),result=await upgradeService(f.options);
+ assert.equal(result.state,'upgraded');assert.equal(f.calls.filter(v=>v==='takeover').length,1);
+});
 
 test('an explicit cancellation after safe takeover never launches or resumes another backend',async()=>{
  const f=fixture();let active=true;f.options.shouldContinue=()=>active;

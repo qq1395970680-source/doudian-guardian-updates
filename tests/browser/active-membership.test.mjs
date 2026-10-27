@@ -33,14 +33,14 @@ test('20 active picker rows are independently verified from two current campaign
   assert.deepEqual(blocked,[]);
   assert.equal(journal.priceRecheckProgress(policy.shopId).pending,0);assert.equal(journal.priceRecheckProgress(policy.shopId).total,20);
   assert.equal(journal.list(policy.shopId).length,0);assert.equal(journal.priceReviews(policy.shopId).length,0);
-  assert.equal(fixture.state.submits,0);assert.equal(fixture.state.risks,0);assert.ok(fixture.state.prechecks>0);
+  assert.equal(fixture.state.submits,0);assert.equal(fixture.state.risks,0);assert.equal(fixture.state.prechecks,1);
   assert.deepEqual(fixture.state.campaigns,original);
   const proofs=journal.events(100).filter(e=>e.kind==='active-membership-proof-batch');
   assert.equal(proofs.length,2);assert.equal(proofs.reduce((n,e)=>n+e.detail.productIds.length,0),20);
-  await writeFile(resolve('artifacts/beta48-active-membership-browser.json'),JSON.stringify({at:new Date().toISOString(),
+  await writeFile(resolve('artifacts/beta49-active-membership-browser.json'),JSON.stringify({at:new Date().toISOString(),
    sourceBuild:await projectBuild(resolve(import.meta.dirname,'../..')),localFixtureOnly:true,physicalOtherAccount:false,
    actualPickerDom:true,independentDetailDom:true,requestedProducts:20,independentlyConfirmedProducts:20,sourceCampaigns:2,
-   submissions:0,priceApprovals:0,currentValidCampaignsPreserved:true},null,2)+'\n');
+   submissions:0,priceApprovals:0,pickerVisits:fixture.state.prechecks,currentValidCampaignsPreserved:true},null,2)+'\n');
  }finally{
   service.stop();await browser.close();journal.close();await fixture.close();
   assert.ok(resolve(directory).startsWith(resolve(tmpdir())+sep)&&basename(directory).startsWith('guardian-active-membership-'));

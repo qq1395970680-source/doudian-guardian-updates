@@ -637,24 +637,42 @@ export class DoudianPlatform {
    ...(productScoped?{status:previous?.status||'absent',campaigns:listing.campaigns.map(c=>[c.id,c.status,c.startAt,c.endAt,c.risk]).sort((a,b)=>a[0].localeCompare(b[0]))}: {})})};
  }
  async selectProduct(page,productId){return this.selectProducts(page,[productId]);}
- async selectProducts(page,productIds){
-  const targets=new Set(productIds),selected=new Set();
+ async selectProducts(page,productIds,{collectActiveHints=false}={}){
+  const targets=new Set(productIds),selected=new Set(),observations=[];
   requireThat(targets.size===productIds.length&&targets.size>0&&targets.size<=50,'PICKER_SCOPE','批量选品需要1至50个唯一商品编号');
+  for(const productId of productIds)id(productId);
   await button(page,'添加商品').click();const picker=page.locator('.ecom-mcenter-drawer-open[class*="index-goodsDrawer--"]:visible');await picker.waitFor();
   const seen=new Set();
   for(let n=1;n<=100;n++){
    this.check();await this.ready(page);
    const rows=picker.locator('tr').filter({hasText:/商品ID[：:]\s*\d+/});
    await rows.first().waitFor();
-   const texts=await rows.allInnerTexts();
+   const texts=await rows.allInnerTexts(),observedAt=Date.now();
    for(let i=0;i<texts.length;i++){
     const found=texts[i].match(/商品ID[：:]\s*(\d+)/)?.[1];requireThat(found&&!seen.has(found),'PICKER_PAGING','选品分页重复');seen.add(found);
     if(!targets.has(found))continue;
     requireThat(!/(?:商品状态[：:]\s*)?已下架/.test(texts[i]),'OFF_SHELF','商品已明确下架');
-    requireThat(!/当前已参与单品直降/.test(texts[i]),'ALREADY_ACTIVE','商品已有有效活动');
-    const box=rows.nth(i).getByRole('checkbox');requireThat(await box.count()===1&&await box.isEnabled(),'PICKER_DISABLED','商品当前不能唯一选择');
-    await box.check();selected.add(found);
-    if(selected.size===targets.size){await button(picker,'确定').click();await picker.waitFor({state:'hidden'});return;}
+    const activeHint=/当前已参与单品直降/.test(texts[i]);
+    requireThat(!activeHint||collectActiveHints,'ALREADY_ACTIVE','商品已有有效活动');
+    const box=rows.nth(i).getByRole('checkbox');requireThat(await box.count()===1,'PICKER_DISABLED','商品当前不能唯一选择');
+    if(activeHint){
+     requireThat(!await box.isEnabled(),'PICKER_DISABLED','已有活动提示与选品控件状态不一致');
+     observations.push({productId:found,status:'active_hint',observedAt,page:n});
+    }else{
+     requireThat(await box.isEnabled(),'PICKER_DISABLED','商品当前不能唯一选择');
+     await box.check();selected.add(found);observations.push({productId:found,status:'selectable',observedAt,page:n});
+    }
+    if(observations.length===targets.size){
+     if(observations.some(row=>row.status==='active_hint')){
+      await this.identity(page);this.check();
+      // Complete target coverage is a read scheduling hint only. Do not
+      // confirm this partial selection or treat it as an effective campaign.
+      throw new GuardError('PRECHECK_ACTIVE_HINTS','批量选品包含已有活动提示，转入独立活动核对',{
+       activePicker:{source:'live-platform-activity-picker',shopId:this.policy.shopId,complete:true,
+        targetProductIds:[...productIds],rows:observations,observedAt:Date.now()}});
+     }
+     await button(picker,'确定').click();await picker.waitFor({state:'hidden'});return;
+    }
    }
    const next=picker.locator('li[title="下一页"] button:visible');requireThat(await next.count()===1,'PICKER_PAGING','选品分页不明确');
    if(await next.isDisabled())throw new GuardError('NOT_FOUND','完整选品列表未找到商品，不能据此认定下架');
@@ -705,7 +723,7 @@ export class DoudianPlatform {
   try{
    await page.locator('#title').waitFor();const initial=await page.evaluate(formSlice);
    requireThat(!initial.counts.some(n=>n>0)&&!initial.cells.some(c=>c.rows.length),'DRAFT_NOT_EMPTY','新的批量预查页已有商品');
-   await this.selectProducts(page,baselines.map(b=>b.productId));await this.expand(page);
+   await this.selectProducts(page,baselines.map(b=>b.productId),{collectActiveHints:true});await this.expand(page);
    const collected=await collectForm(page,{precheck:true,check:()=>this.check()}),{products}=collected;
    const membership=assertPrecheckMembership(baselines.map(b=>b.productId),collected);
    this.journal?.event?.(null,'batch-precheck-verified',{shopId:this.policy.shopId,precheckMembership:membership},Date.now());

@@ -149,7 +149,7 @@ function render(s){
  $('audit').disabled=pending||!online||working||s.running||!s.shopId;$('start').disabled=pending||!online||working||s.running||!s.connection||loginRequired;
  text('login',s.shopId?'重新登录本店':'登录店铺');$('add-account').disabled=pending||!online||working||s.running||!!s.unknown;
  $('stop').disabled=pending||!online||!(s.running||s.busy);
- text('price-count',s.priceReviewsPending||0);$('price-count').hidden=!s.priceReviewsPending;priceReviews.sync();
+ const priceAttention=(s.priceReviewsPending||0)+(s.priceRechecksPending||0);text('price-count',priceAttention);$('price-count').hidden=!priceAttention;priceReviews.sync();
  renderAccounts(s);migration.sync();recoveries.sync();if(view==='activity')renderActivity(s);
 }
 async function post(path,args={}){const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token},body:JSON.stringify(args),signal:AbortSignal.timeout(25000)});const result=await response.json();if(!response.ok)throw Error(result.message||'操作未完成');return result;}

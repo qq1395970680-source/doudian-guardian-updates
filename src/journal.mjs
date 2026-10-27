@@ -10,7 +10,8 @@ import {priceOptions} from './price-options.mjs';
 import {makePriceReconfirmation,assertPriceReconfirmation,needsPriceReconfirmation} from './price-reconfirmation.mjs';
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 import {makeRebuildReview,rebuildMaterial} from './rebuild-review.mjs';
-import {requestRecovery} from './recovery-requests.mjs';
+import {requestRecovery,recoveryRequests} from './recovery-requests.mjs';
+import {buildRecheckProgress} from './recheck-progress.mjs';
 import {assertOriginalRebuildConsent} from './original-rebuild-policy.mjs';
 
 const transitions = {
@@ -148,7 +149,10 @@ export class Journal {
     const row=this.db.prepare("SELECT COUNT(*) AS total,COALESCE(SUM(state='pending'),0) AS pending FROM price_reviews WHERE shop=?").get(shopId);
     return {total:row.total,pending:row.pending};
   }
-  priceReviewPage(shopId,{page=0,pageSize=10,direction='all'}={}) {
+  priceRecheckProgress(shopId,options={}) {
+    return buildRecheckProgress({shopId,...(shopId?{queue:recoveryRequests(this,shopId),reviews:this.priceReviews(shopId),checks:this.productChecks(shopId),tasks:this.list(shopId)}:{}),...options});
+  }
+  priceReviewPage(shopId,{page=0,pageSize=10,direction='all',recheckPage=0}={}) {
     const bounded=(value,fallback)=>Number.isSafeInteger(Number(value))?Number(value):fallback;
     const size=Math.min(20,Math.max(1,bounded(pageSize,10))),counts=this.priceReviewCounts(shopId);
     const mode=['increase','decrease'].includes(direction)?direction:'all';
@@ -171,7 +175,7 @@ export class Journal {
         });
         return{...review,options:priceOptions(review),activityChecks};
       });
-    return {shopId,...counts,total,direction:mode,directionCounts,page:current,pageSize:size,pages,reviews};
+    return {shopId,...counts,total,direction:mode,directionCounts,page:current,pageSize:size,pages,reviews,rechecks:this.priceRecheckProgress(shopId,{page:recheckPage,pageSize:size})};
   }
   priceTarget(shopId,productId) {const r=this.db.prepare('SELECT review FROM price_targets WHERE shop=? AND product=?').get(shopId,productId);return r?this.priceReview(r.review):null;}
   supersedePriceReviews(shopId,productId,reason,now=Date.now()) {

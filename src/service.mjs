@@ -163,7 +163,7 @@ export class GuardianService {
         const pending=this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===member.baseline.productId));
         const retry=error&&['LOAD_TIMEOUT','READ_OPERATION_TIMEOUT','BATCH_PROOF_EXPIRED','ACTIVE_CHANGED','ACTIVE_UNKNOWN'].includes(error.code);
         updateRecoveryRequest(this.journal,this.policy.shopId,request,pending?{state:'pending',retryAt:this.now()+10000,reason:'提交结果待回读'}:
-          error?{state:retry?'pending':'deferred',retryAt:this.now()+15000,reason:error.message}:{state:'complete',reason:'当前有效活动或恢复结果已核实'},this.now());
+          error?{state:retry?'pending':'deferred',retryAt:this.now()+15000,code:error.code||'ERROR',reason:error.message}:{state:'complete',reason:'当前有效活动或恢复结果已核实'},this.now());
       }
     }
     return{submitted,refreshRequired,processed:due.length};

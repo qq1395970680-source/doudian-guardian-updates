@@ -59,6 +59,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   campaignConversion:shopId?(()=>{const s=journal.settings('campaign-conversion:'+shopId);return s?{status:s.status,total:s.products.length,verified:s.products.filter(p=>p.phase==='verified').length,updatedAt:s.updatedAt}:null;})():null,
   updates:{repository:UPDATE_REPOSITORY,currentVersion:version},
   priceReviewsPending:shopId?journal.priceReviewCounts(shopId).pending:0,
+  priceRechecksPending:shopId?journal.priceRecheckProgress(shopId).pending:0,
   events:shopId?journal.events(150).filter(e=>e.detail?.shopId===shopId||e.task&&journal.get(e.task)?.shopId===shopId).slice(0,30):[]});
  async function background(kind,fn){
   requireThat(!action&&!service.busy,'BUSY','当前任务完成前不能执行另一操作');action=kind;
@@ -100,7 +101,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     const q=requestUrl.searchParams;
     const catalog=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,
      histories:shopId?journal.histories(shopId):[],tasks:shopId?journal.list(shopId):[],checks:shopId?journal.productChecks(shopId):[],excluded:policy.excludedProductIds||[]});
-    json(200,{...journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all'}),
+    json(200,{...journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all',recheckPage:q.get('recheckPage')??0}),
      recoveryIssues:buildRecoveryIssues(catalog,shopId?journal.priceReviews(shopId):[])});return;
    }
    if(req.method==='GET'&&path==='/api/products'){

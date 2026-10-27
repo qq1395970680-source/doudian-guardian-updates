@@ -1,5 +1,10 @@
 import {fingerprint,saleFen} from './policy.mjs';
 
+export const verifiedRecoveryReceipt=(task,shopId)=>task.shopId===shopId&&task.phase==='verified'&&task.submitAttempts>0&&
+ typeof task.receipt?.campaignId==='string'&&task.receipt.campaignId.length>0&&Number.isFinite(task.receipt.verifiedAt)&&task.receipt.verifiedAt>0&&
+ /^[a-f0-9]{64}$/.test(task.receipt.evidenceFingerprint||'')&&task.receipt.productCount===task.plans.length&&
+ task.receipt.skuCount===task.plans.reduce((n,p)=>n+(p.skus?.length||0),0)&&task.plans.every(p=>p.shopId===shopId&&p.skus?.length);
+
 // A read-only projection of the execution journal. Never treat these display
 // records as current activity observations, approval, or retry input.
 export function buildRecoveryHistory({shopId,tasks=[],reviews=[],filter='verified',query='',page=0,pageSize=12}={}){
@@ -9,10 +14,7 @@ export function buildRecoveryHistory({shopId,tasks=[],reviews=[],filter='verifie
  const records=[];
  for(const task of tasks){
   if(!shopId||task.shopId!==shopId||!Array.isArray(task.plans))continue;
-  const receipt=task.receipt,receiptValid=task.phase==='verified'&&task.submitAttempts>0&&
-   typeof receipt?.campaignId==='string'&&receipt.campaignId.length>0&&Number.isFinite(receipt.verifiedAt)&&receipt.verifiedAt>0&&
-   /^[a-f0-9]{64}$/.test(receipt.evidenceFingerprint||'')&&receipt.productCount===task.plans.length&&
-   receipt.skuCount===task.plans.reduce((n,p)=>n+(p.skus?.length||0),0)&&task.plans.every(p=>p.shopId===shopId&&p.skus?.length);
+  const receipt=task.receipt,receiptValid=verifiedRecoveryReceipt(task,shopId);
   const state=receiptValid?'verified':task.phase==='blocked'?'blocked':'pending';
   for(const plan of task.plans){
    if(plan.shopId!==shopId)continue;

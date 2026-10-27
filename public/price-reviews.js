@@ -4,10 +4,32 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
  const $=id=>document.getElementById(id),cards=new Map(),pageSize=10,skuPageSize=25;
  let shop=null,reviews=[],pageIndex=0,total=0,pages=1,loading=false,readAt=0,action=null,visibleIds='',loadVersion=0,direction='increase';
  let issues=[],issuePage=0,issueSignature='';
+ let rechecks={records:[],total:0,pending:0,page:0,pages:1},recheckPage=0,recheckSignature='';
  const labels={pending:'等待确认',approved:'已确认',declined:'暂不调整',superseded:'已失效'};
  const current=()=>getState();
  const setText=(el,value)=>{if(el.textContent!==value)el.textContent=value;};
- function reset(next){shop=next;reviews=[];issues=[];issuePage=0;issueSignature='';$('recovery-issues-panel').hidden=true;pageIndex=0;total=0;pages=1;readAt=0;loadVersion++;cards.clear();visibleIds='';for(const mode of ['increase','decrease'])setText($('price-'+mode+'-count'),'—');$('price-reviews').replaceChildren(node('div','empty','正在读取价格建议'));pagination();}
+ function reset(next){shop=next;reviews=[];issues=[];issuePage=0;issueSignature='';rechecks={records:[],total:0,pending:0,page:0,pages:1};recheckPage=0;recheckSignature='';$('price-rechecks-panel').hidden=true;$('recovery-issues-panel').hidden=true;pageIndex=0;total=0;pages=1;readAt=0;loadVersion++;cards.clear();visibleIds='';for(const mode of ['increase','decrease'])setText($('price-'+mode+'-count'),'—');$('price-reviews').replaceChildren(node('div','empty','正在读取价格建议'));pagination();}
+ function renderRechecks(){
+  const signature=JSON.stringify([shop,rechecks,current().online,current().state?.connection?.shopId,action]);if(signature===recheckSignature)return;recheckSignature=signature;
+  $('price-rechecks-panel').hidden=!rechecks.total;setText($('price-rechecks-count'),`${rechecks.pending} 件待处理`);
+  setText($('price-rechecks-page'),`${rechecks.total} 件 · 第 ${rechecks.page+1} / ${rechecks.pages} 页`);
+  $('price-rechecks-prev').disabled=loading||rechecks.page===0;$('price-rechecks-next').disabled=loading||rechecks.page>=rechecks.pages-1;
+  const states={queued:'已排队',paused:'等待继续',verifying:'正在核验',blocked:'核对受阻',checked:'核验已结束',verified:'该次恢复已回读'};
+  const rows=rechecks.records.map(record=>{
+   const row=node('div','setting-row'),body=node('div'),heading=node('div','button-row');row.dataset.priceRecheck=record.productId;
+   heading.append(node('strong','',record.name),node('span','badge '+(record.state==='verified'?'green':record.state==='blocked'?'amber':'blue'),states[record.state]||'等待核对'));
+   body.append(heading,node('p','helper',record.productId+(record.code?' · '+record.code:'')),node('p','reason',record.message),node('p','helper',`请求 ${time(record.requestedAt)} · 更新 ${time(record.updatedAt)}`));
+   if(record.campaignId)body.append(node('p','helper',`活动 ${record.campaignId} · ${record.skuCount} 个规格 · 回读 ${time(record.verifiedAt)}`));
+   row.append(body);
+   if(['blocked','paused'].includes(record.state)){
+    const retry=node('button','button small secondary','重新核验恢复');retry.disabled=!!action||!current().online||current().state?.connection?.shopId!==shop;
+    retry.onclick=async()=>{retry.disabled=true;try{await post('recovery/request',{shopId:shop,productId:record.productId});toast('已加入优先核验队列，请在这里查看进度；新价格仍需单独确认。');}catch(error){toast(error.message);}finally{readAt=0;recheckSignature='';void refresh();}};
+    row.append(retry);
+   }return row;
+  });$('price-rechecks').replaceChildren(...rows);
+ }
+ $('price-rechecks-prev').onclick=()=>{recheckPage=Math.max(0,recheckPage-1);void refresh();};
+ $('price-rechecks-next').onclick=()=>{recheckPage++;void refresh();};
  function renderIssues(){
   const signature=JSON.stringify([shop,issuePage,issues,current().online,current().state?.connection?.shopId,action]);if(signature===issueSignature)return;issueSignature=signature;
   const count=issues.length,issuePages=Math.max(1,Math.ceil(count/10));issuePage=Math.min(issuePage,issuePages-1);$('recovery-issues-panel').hidden=!count;
@@ -178,14 +200,14 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
  };
  directionHeading();
  async function refresh(){if(loading||action)return;loading=true;pagination();const expectedShop=shop,expectedVersion=loadVersion;
-   try{const response=await fetch(`/api/price-reviews?page=${pageIndex}&size=${pageSize}&direction=${direction}`,{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('价格建议暂时无法读取');const result=await response.json();
+   try{const response=await fetch(`/api/price-reviews?page=${pageIndex}&size=${pageSize}&direction=${direction}&recheckPage=${recheckPage}`,{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('价格建议暂时无法读取');const result=await response.json();
     if(shop!==expectedShop||result.shopId!==shop||loadVersion!==expectedVersion||action)return;
     if(!Array.isArray(result.reviews)||result.reviews.length>pageSize||!Number.isSafeInteger(result.total)||!Number.isSafeInteger(result.pages)||!Number.isSafeInteger(result.page))throw Error('价格建议分页待重新读取');
-    reviews=result.reviews;issues=Array.isArray(result.recoveryIssues)?result.recoveryIssues:[];total=result.total;pages=result.pages;pageIndex=result.page;readAt=Date.now();
+    reviews=result.reviews;issues=Array.isArray(result.recoveryIssues)?result.recoveryIssues:[];rechecks=result.rechecks&&Array.isArray(result.rechecks.records)?result.rechecks:{records:[],total:0,pending:0,page:0,pages:1};recheckPage=rechecks.page;total=result.total;pages=result.pages;pageIndex=result.page;readAt=Date.now();
     for(const mode of ['increase','decrease'])setText($('price-'+mode+'-count'),String(result.directionCounts?.[mode]??0));
-    render();renderIssues();
+    render();renderIssues();renderRechecks();
    }catch{readAt=0;if(!reviews.length)$('price-reviews').replaceChildren(node('div','empty','价格建议暂时无法读取，正在重新连接。'));for(const c of cards.values())updateControls(c);}
-   finally{loading=false;pagination();if(loadVersion!==expectedVersion&&!action)void refresh();}
+   finally{loading=false;pagination();$('price-rechecks-prev').disabled=rechecks.page===0;$('price-rechecks-next').disabled=rechecks.page>=rechecks.pages-1;if(loadVersion!==expectedVersion&&!action)void refresh();}
   }
  return {
   sync(){if(shop!==current().state?.shopId)reset(current().state?.shopId||null);for(const c of cards.values())updateControls(c);},

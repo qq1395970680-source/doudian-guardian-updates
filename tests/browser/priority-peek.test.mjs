@@ -11,7 +11,8 @@ import {fixtureServer} from './platform-fixture.mjs';
 async function setup(){
  const root=await mkdtemp(join(tmpdir(),'guardian-priority-peek-')),fixture=await fixtureServer(),browser=new DedicatedBrowser(root,{test:true}),journal=new Journal(':memory:');
  const old=fixture.state.campaigns[0];fixture.state.campaigns.push({...structuredClone(old),id:'4000000000000000002',name:'当前活动',status:'进行中'});
- const platform=new DoudianPlatform({browser,journal,policy:{shopId:'900001'},base:fixture.base});
+ const platform=new DoudianPlatform({browser,journal,policy:{shopId:'900001'},base:fixture.base,
+  resourceBudget:()=>({detailReaders:4,listReaders:2,overlapListReads:true,keepMonitorPages:true,interBatchDelayMs:0,idleMs:10000})});
  return{fixture,browser,platform,close:async()=>{await browser.close();journal.close();await fixture.close();await rm(root,{recursive:true,force:true});}};
 }
 

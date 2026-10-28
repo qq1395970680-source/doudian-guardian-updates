@@ -17,6 +17,7 @@ import {confirmedRebuildContinuity} from './rebuild-review.mjs';
 import {timedRemovalEvidence} from './timed-removal.mjs';
 import {authorizedOriginalContinuity} from './original-rebuild-policy.mjs';
 import {activeMembershipProofBatches} from './active-membership.mjs';
+import {computerReadBudget,normalizeReadBudget} from './scan-load.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -24,9 +25,10 @@ const active=c=>['进行中','未开始'].includes(c.status);
 const button=(root,name)=>root.getByRole('button',{name:new RegExp('^'+[...name].join('\\s*')+'$')});
 
 export class DoudianPlatform {
- constructor({browser,policy,journal,base=PLATFORM}){
+ constructor({browser,policy,journal,base=PLATFORM,resourceBudget=computerReadBudget}){
   requireThat(base===PLATFORM||browser.test&&/^http:\/\/127\.0\.0\.1:\d+$/.test(base),'HOST_SCOPE','平台地址不受支持');
   this.browser=browser;this.policy=policy;this.journal=journal;this.base=base;this.inventory=null;this.progress={stage:'尚未连接'};
+  this.resourceBudget=resourceBudget;
   this.cache=new Map();this.drafts=new Map();this.monitorPages=new Map();this.peekPending=null;this.stopping=false;
   this.readOperations=new ReadOperations({isolate:async()=>{
    if(this.drafts.size||this.journal?.list(this.policy.shopId).some(t=>['submitting','verifying','unknown'].includes(t.phase)))return false;
@@ -45,6 +47,7 @@ export class DoudianPlatform {
  check(){requireThat(!this.stopping,'STOPPED','后台已停止');currentReadOperation()?.check();requireThat(!this.readOperations.quarantined,'READ_CLEANUP_BLOCKED','专用浏览器清理尚未确认，暂停恢复');}
  cancelReads(){this.readOperations.cancel();}
  readHealth(){return this.readOperations.snapshot();}
+ readBudget(){return normalizeReadBudget(this.resourceBudget());}
  async ensure(){this.check();if(!this.browser.context)await this.browser.open(this.policy.shopId,{profileKey:this.policy.profileKey});requireThat(!this.browser.loginMode,'LOGIN_OPEN','专用登录窗口尚未结束');}
  async identify(page){
   await until(async()=>{this.check();const a=await page.evaluate(accountSlice);if(a.login)throw new GuardError('LOGIN_REQUIRED','专用浏览器需要登录');return a.names.length===1;},'店铺名称尚未加载');
@@ -146,7 +149,11 @@ export class DoudianPlatform {
   // Both status queries use independent read pages and must finish. A partial
   // result or a status transition producing duplicates cannot prove absence.
   await this.ensure();
-  const results=await Promise.allSettled(['进行中','未开始'].map(status=>this.list({status,monitor})));
+  const budget=this.readBudget();monitor=monitor&&budget.keepMonitorPages;
+  if(!budget.keepMonitorPages&&this.monitorPages.size)await this.closeMonitorPages();
+  const results=[],statuses=['进行中','未开始'];
+  for(let i=0;i<statuses.length;i+=budget.listReaders)
+   results.push(...await Promise.allSettled(statuses.slice(i,i+budget.listReaders).map(status=>this.list({status,monitor}))));
   const failure=results.find(r=>r.status==='rejected');if(failure){if(monitor)await this.closeMonitorPages();throw failure.reason;}
   const lists=results.map(r=>r.value),campaigns=lists.flatMap(r=>r.campaigns);
   try{
@@ -354,14 +361,16 @@ export class DoudianPlatform {
       this.journal?.putSettings('campaign-attempt:'+c.id,{key,retryAt:Date.now()+15*60000,error});
      }finally{inFlight.delete(c.id);if(active(c))activeRead++;progress();}
    };
-   // All six read slots must drain before a priority boundary can write.
-   // This is a local load budget, not a claim about platform rate limits.
-   const concurrency=6;
-   for(let cursor=0;cursor<jobs.length&&!priorityRefreshRequired&&!readTimedOut;cursor+=concurrency){
+   // Recompute the local memory budget between batches. All readers close
+   // before a priority boundary; this never changes proof freshness rules.
+   for(let cursor=0;cursor<jobs.length&&!priorityRefreshRequired&&!readTimedOut;){
+    const budget=this.readBudget(),concurrency=budget.detailReaders;
     this.check();if(onReadBatchStart)await onReadBatchStart();
     const results=await Promise.allSettled(jobs.slice(cursor,cursor+concurrency).map(worker));
     const rejected=results.find(r=>r.status==='rejected');if(rejected)throw rejected.reason;
     this.check();await boundary(results.map(r=>r.value).filter(Boolean),cursor+concurrency<jobs.length||remainingJobs>0);
+    cursor+=concurrency;
+    if(cursor<jobs.length&&!priorityRefreshRequired&&!readTimedOut&&budget.interBatchDelayMs)await delay(budget.interBatchDelayMs);
    }
   };
   const riskJobs=activeJobs.filter(job=>priorityIds.has(job.c.id)),regularJobs=activeJobs.filter(job=>!priorityIds.has(job.c.id));
@@ -485,9 +494,11 @@ export class DoudianPlatform {
    !this.inventory.details.has(this.limitedReference(b).campaignId)))return this.scopedLossBatch(baselines);
   if(baselines.length<=5){
    const results=[];
-   for(let i=0;i<baselines.length;i+=2){
-    const settled=await Promise.allSettled(baselines.slice(i,i+2).map(b=>this.loss(b,{fresh:true})));
+   for(let i=0;i<baselines.length;){
+    const readers=Math.min(2,this.readBudget().detailReaders);
+    const settled=await Promise.allSettled(baselines.slice(i,i+readers).map(b=>this.loss(b,{fresh:true})));
     settled.forEach((r,j)=>results.push({productId:baselines[i+j].productId,...(r.status==='fulfilled'?{loss:r.value}:{error:r.reason})}));
+    i+=readers;
    }
    return results;
   }
@@ -499,8 +510,9 @@ export class DoudianPlatform {
   catch(error){if(error.code==='BATCH_PROOF_EXPIRED')return this.scopedLossBatch(baselines);throw error;}
   const {listing,details,observedAt}=inventory;
   const results=[];
-  for(let i=0;i<baselines.length;i+=2){
-   const settled=await Promise.allSettled(baselines.slice(i,i+2).map(async b=>{
+  for(let i=0;i<baselines.length;){
+   const readers=Math.min(2,this.readBudget().detailReaders);
+   const settled=await Promise.allSettled(baselines.slice(i,i+readers).map(async b=>{
     const reference=this.limitedReference(b);
     // An ended limited activity needs its own removal proof; omission from
     // the active list cannot authorize replenishment after expiry or sellout.
@@ -508,6 +520,7 @@ export class DoudianPlatform {
     return{...this.lossFrom(b,listing,details,true),observedAt};
    }));
    settled.forEach((r,j)=>results.push({productId:baselines[i+j].productId,...(r.status==='fulfilled'?{loss:r.value}:{error:r.reason})}));
+   i+=readers;
   }
   return results;
  }
@@ -565,19 +578,21 @@ export class DoudianPlatform {
     }
    }
   };
-  // Only readers run concurrently. All six finish/close before any write.
-  await Promise.all(Array.from({length:Math.min(6,baselines.length)},worker));
+  // Only readers run concurrently and all finish/close before any write.
+  const workerLimit=Math.min(this.readBudget().detailReaders,baselines.length);
+  await Promise.all(Array.from({length:workerLimit},worker));
   if(stopError)throw stopError;
   this.journal?.event?.(null,'scoped-loss-batch-read',{shopId:this.policy.shopId,
-   productIds:baselines.map(b=>b.productId),productCount:baselines.length,workerLimit:Math.min(6,baselines.length),
+   productIds:baselines.map(b=>b.productId),productCount:baselines.length,workerLimit,
    listReads,detailReads,cacheHits,errors:results.filter(r=>r.error).length,elapsedMs:Date.now()-startedAt},Date.now());
   return results;
  }
  async readFreshCurrentInventory(){
   const listing=await this.listActive(),details=new Map();
   requireThat(listing.complete===true,'ACTIVE_UNKNOWN','批量核对的当前活动列表不完整');
-  for(let i=0;i<listing.campaigns.length;i+=2){
-   const settled=await Promise.allSettled(listing.campaigns.slice(i,i+2).map(async c=>{
+  for(let i=0;i<listing.campaigns.length;){
+   const readers=Math.min(2,this.readBudget().detailReaders);
+   const settled=await Promise.allSettled(listing.campaigns.slice(i,i+readers).map(async c=>{
     this.check();
     const previous=this.inventory?.listing.campaigns.find(p=>p.id===c.id);
     const saved=previous&&fingerprint(previous)===fingerprint(c)?this.inventory.details.get(c.id):null;
@@ -586,6 +601,7 @@ export class DoudianPlatform {
     requireThat(d?.complete===true,'ACTIVE_UNKNOWN','批量核对的活动详情不完整');details.set(c.id,d);
    }));
    const failed=settled.find(r=>r.status==='rejected');if(failed)throw failed.reason;
+   i+=readers;
   }
   const after=await this.listActive();
   requireThat(after.complete===true&&currentListingKey(after)===currentListingKey(listing),'ACTIVE_CHANGED','批量核对期间当前活动发生变化，重新核对后才能创建');

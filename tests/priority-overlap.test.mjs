@@ -10,7 +10,8 @@ function fixture({failDetail=false,failMonitor=false}={}){
  let clock=Date.now(),reads=0,reading=0,maxReading=0,polls=0,monitoring=false,releasePoll;
  const campaigns=Array.from({length:12},(_,n)=>({id:String(400001+n),status:'进行中',startAt:clock-n,name:'活动'+n}));
  const listing=()=>({complete:true,observedAt:clock,campaigns});
- const platform=new DoudianPlatform({browser:{context:{}},policy,journal});
+ const platform=new DoudianPlatform({browser:{context:{}},policy,journal,
+  resourceBudget:()=>({detailReaders:6,listReaders:2,overlapListReads:true,keepMonitorPages:true,interBatchDelayMs:0,idleMs:10000})});
  platform.list=platform.listActive=async()=>listing();
  platform.peekActive=async()=>{
   polls++;monitoring=true;await new Promise(resolve=>{releasePoll=resolve;});monitoring=false;

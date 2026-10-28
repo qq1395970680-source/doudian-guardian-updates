@@ -49,7 +49,7 @@ test('50 limited products / 500 SKUs use one upload and bounded quantity travers
  }
 });
 
-for(const count of [1,3,5,50])test(`${count} removed products in 500 activities use scoped browser reads and one live origin export`,{timeout:180000},async()=>{
+for(const count of [1,3,5,50])test(`${count} removed products in 500 activities use scoped browser reads and fresh live origin exports`,{timeout:180000},async()=>{
  const products=Array.from({length:count},(_,i)=>({productId:String(3100000000000000000n+BigInt(i)),name:'大店失效商品'+i,
   skus:[{id:String(5100000000000000000n+BigInt(i)),name:'标准规格',baseFen:10000,discount:60}]}));
  const fixture=await fixtureServer({catalogProducts:products,limited:true});
@@ -60,7 +60,13 @@ for(const count of [1,3,5,50])test(`${count} removed products in 500 activities 
   name:'无关活动'+i,risk:false,removals:undefined,products:[]});
  const dir=await mkdtemp(join(tmpdir(),'guardian-large-loss-')),browser=new DedicatedBrowser(dir,{test:true});
  const journal=new Journal(join(dir,'observations.sqlite'));
- const policy={shopId:'900001'},platform=new DoudianPlatform({browser,policy,journal,base:fixture.base});
+ const policy={shopId:'900001'},platform=new DoudianPlatform({browser,policy,journal,base:fixture.base,
+  resourceBudget:()=>({detailReaders:2,listReaders:1,overlapListReads:false,keepMonitorPages:false,interBatchDelayMs:0,idleMs:30000})});
+ const originReads=[],readDetail=platform.detail.bind(platform);
+ platform.detail=async campaign=>{
+  const readStartedAt=Date.now(),result=await readDetail(campaign);
+  originReads.push({readStartedAt,observedAt:result.observedAt});return result;
+ };
  try{
   const listing=await platform.listActive();assert.equal(listing.campaigns.length,500);
   platform.inventory={listing,details:new Map()};
@@ -68,13 +74,20 @@ for(const count of [1,3,5,50])test(`${count} removed products in 500 activities 
   const results=await platform.lossBatch(baselines);
   assert.equal(results.length,count);assert.ok(results.every(r=>r.loss?.complete&&r.loss.active===false),
    JSON.stringify(results.filter(r=>r.error).map(r=>({productId:r.productId,code:r.error.code,message:r.error.message}))));
-  assert.equal(fixture.state.removalDownloads,1);
+  assert.deepEqual(results.map(r=>r.productId),baselines.map(b=>b.productId));
+  assert.ok(results.every(r=>Date.now()-r.loss.observedAt<=120000),'a long low-load batch still requires fresh proofs');
+  assert.equal(fixture.state.removalDownloads,originReads.length);
+  assert.ok(originReads.length>=1);
+  for(let i=1;i<originReads.length;i++)assert.ok(originReads[i].readStartedAt-originReads[i-1].observedAt>60000,
+   'repeat origin exports are permitted only after the previously observed proof needs refresh');
+  if(count<50)assert.equal(fixture.state.removalDownloads,1);
   const metric=journal.events(10).find(e=>e.kind==='scoped-loss-batch-read')?.detail;
-  assert.ok(metric);assert.equal(metric.productCount,count);assert.equal(metric.detailReads,1);
-  assert.equal(metric.errors,0);assert.equal(metric.workerLimit,Math.min(6,count));
+  assert.ok(metric);assert.equal(metric.productCount,count);assert.equal(metric.detailReads,originReads.length);
+  assert.equal(metric.errors,0);assert.equal(metric.workerLimit,Math.min(2,count));
   assert.equal(fixture.state.submits,0);assert.equal(fixture.state.creates,0);
   await writeFile(resolve(`artifacts/large-store-loss-evidence-${count}.json`),JSON.stringify({at:new Date().toISOString(),localFixtureOnly:true,
-   storeActivities:500,batchProducts:count,successfulLossProofs:count,liveOriginDownloads:1,writes:0,metric,elapsedMs:Date.now()-started},null,2)+'\n');
+   storeActivities:500,batchProducts:count,successfulLossProofs:count,liveOriginDownloads:fixture.state.removalDownloads,
+   originReads,allProofsFresh:true,writes:0,metric,elapsedMs:Date.now()-started},null,2)+'\n');
  }finally{
   await browser.close();await fixture.close();journal.close();
   assert.equal(dirname(resolve(dir)).toLowerCase(),resolve(tmpdir()).toLowerCase());assert.ok(basename(dir).startsWith('guardian-large-loss-'));

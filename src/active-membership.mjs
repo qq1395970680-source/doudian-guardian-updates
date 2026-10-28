@@ -48,13 +48,20 @@ export async function* activeMembershipProofBatches(platform,baselines){
   return detail.products.filter(p=>pending.has(p.productId)&&!p.removalConfirmed).map(p=>({productId:p.productId,
    loss:{complete:true,active:true,ambiguous:p.removalAmbiguous===true,campaignId:current.id,observedAt}}));
  };
- // These waves limit concurrent read pages, not products restored per round.
- // All requested products continue here; native restoration batches remain 50.
+ // Proof waves keep the existing status/freshness boundary. Their detail
+ // readers follow the same local budget as discovery, without limiting the
+ // requested products; native restoration batches remain 50.
  for(let start=0;start<candidates.length;start+=6){
   platform.check();
   const group=candidates.slice(start,start+6).filter(c=>[...pending].some(productId=>hints.get(productId).has(c.id)));
   if(!group.length)continue;
-  const reads=await Promise.allSettled(group.map(c=>platform.detail(c)));
+  const reads=[];
+  for(let cursor=0;cursor<group.length;){
+   platform.check();const readers=platform.readBudget?.().detailReaders||6;
+   const batch=await Promise.allSettled(group.slice(cursor,cursor+readers).map(c=>platform.detail(c)));
+   const fatalRead=batch.find(r=>r.status==='rejected'&&fatal(r.reason));if(fatalRead)throw fatalRead.reason;
+   reads.push(...batch);cursor+=readers;
+  }
   const stopped=reads.find(r=>r.status==='rejected'&&fatal(r.reason));if(stopped)throw stopped.reason;
   listing=await platform.listActive();assertListing(listing);
   for(let i=0;i<group.length;i++){

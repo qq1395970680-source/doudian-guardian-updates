@@ -7,6 +7,7 @@ for(const size of [1,3,5])test(`large inventory shares loss evidence even for a 
  const scoped=[],individual=[];
  const p=Object.assign(Object.create(DoudianPlatform.prototype),{
   policy:{shopId:'900001'},ensure:async()=>{},
+  resourceBudget:()=>({detailReaders:2,listReaders:1,overlapListReads:false,keepMonitorPages:false,interBatchDelayMs:0,idleMs:30000}),
   inventory:{listing:{campaigns:Array.from({length:500},(_,i)=>({id:String(400000+i),status:'进行中'}))}},
   scopedLossBatch:async rows=>{scoped.push(rows);return rows.map(b=>({productId:b.productId,loss:{complete:true,active:false}}));},
   loss:async b=>{individual.push(b.productId);return{complete:true,active:false};}
@@ -22,6 +23,7 @@ test('small inventory retains exact product reads without introducing full-store
  const baselines=Array.from({length:5},(_,i)=>({shopId:'900001',productId:String(300000+i)}));
  const p=Object.assign(Object.create(DoudianPlatform.prototype),{
   policy:{shopId:'900001'},ensure:async()=>{},
+  resourceBudget:()=>({detailReaders:2,listReaders:1,overlapListReads:false,keepMonitorPages:false,interBatchDelayMs:0,idleMs:30000}),
   inventory:{listing:{campaigns:Array.from({length:8},(_,i)=>({id:String(400000+i),status:'进行中'}))}},
   scopedLossBatch:async()=>assert.fail('small store should retain exact reads'),
   loss:async()=>{reads++;active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,1));active--;return{complete:true,active:false};}

@@ -610,7 +610,8 @@ export class GuardianService {
     }
     this.lastPriorityCheck={at:this.now(),hints:hints.length,inspected,submitted:changed,refreshRequired:changed||differentActivity};return changed||differentActivity;
   }
-  beginPriorityPoll() {
+  beginPriorityPoll({atBoundary=false}={}) {
+    if(!atBoundary&&this.platform.readBudget?.().overlapListReads===false)return;
     if(this.priorityPoll||!this.priorityListing||this.stopRequested||this.now()-this.lastPriorityPoll<30000)return;
     this.lastPriorityPoll=this.now();
     // This promise performs reads only. Its result is consumed after both
@@ -630,7 +631,7 @@ export class GuardianService {
       this.priorityWatch.observe(campaign,detail);
       for(const p of detail.products)if(!p.removalConfirmed&&!p.removalAmbiguous)this.journal.clearProductCheck(this.policy.shopId,p.productId);
     }
-    if(!deferListPoll)this.beginPriorityPoll();
+    if(!deferListPoll)this.beginPriorityPoll({atBoundary:true});
     const polled=await this.settlePriorityPoll();
     if(polled?.error){
       const error=polled.error;if(error.code==='STOPPED')throw error;
@@ -810,7 +811,8 @@ export class GuardianService {
         // Long scans already space reads out. Retain a ten-second idle window
         // for the desktop's five-second maintenance check, a thirty-second
         // start cadence for small shops, and the existing failure backoff.
-        const delay=this.priorityResume?1000:completed?Math.max(10000,30000-Math.max(0,this.now()-started)):60000;
+        const idle=this.platform.readBudget?.().idleMs||10000;
+        const delay=this.priorityResume?1000:completed?Math.max(10000,idle,30000-Math.max(0,this.now()-started)):60000;
         this.nextAt=this.now()+delay;this.timer=setTimeout(run,delay);
       }
     };

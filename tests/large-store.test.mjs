@@ -138,7 +138,8 @@ test('shared fresh loss evidence reads each campaign once for 50 removed product
 });
 
 test('shared loss evidence rejects a changed current list and drains failed detail readers',async()=>{
- const platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'}});platform.ensure=async()=>{};
+ const platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'},
+  resourceBudget:()=>({detailReaders:2,listReaders:1,overlapListReads:false,keepMonitorPages:false,interBatchDelayMs:0,idleMs:30000})});platform.ensure=async()=>{};
  let reading=0,done=0;
  platform.listActive=async()=>({complete:true,observedAt:Date.now(),campaigns:[{id:'400001',status:'进行中'},{id:'400002',status:'进行中'}]});
  platform.detail=async c=>{reading++;try{await new Promise(r=>setTimeout(r,c.id==='400001'?1:20));if(c.id==='400001')throw Error('read failed');return{complete:true,observedAt:Date.now(),products:[]};}finally{reading--;done++;}};
@@ -239,8 +240,9 @@ test('a platform SKU ratio rejection blocks only its member and never resubmits 
  }finally{journal.close();}
 });
 
-test('50 lost products in a 500-activity store use bounded product queries and share their exact origin',async()=>{
- const bs=Array.from({length:50},(_,i)=>baseline(i)),platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'}});
+test('50 lost products in a 500-activity store use two low-load product readers and share their exact origin',async()=>{
+ const bs=Array.from({length:50},(_,i)=>baseline(i)),platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'},
+  resourceBudget:()=>({detailReaders:2,listReaders:1,overlapListReads:false,keepMonitorPages:false,interBatchDelayMs:0,idleMs:30000})});
  const origin={id:'400001',name:'原限量活动',status:'进行中',type:'限量抢购',risk:true,endAt:Date.now()+86400000};
  platform.ensure=async()=>{};
  platform.inventory={listing:{campaigns:[origin,...Array.from({length:499},(_,i)=>({id:String(410000+i),status:'进行中'}))]},details:new Map()};
@@ -260,7 +262,7 @@ test('50 lost products in a 500-activity store use bounded product queries and s
  const result=await platform.lossBatch(bs);
  assert.equal(result.length,50);assert.ok(result.every(r=>r.loss?.complete&&!r.loss.active));
  assert.equal(productQueries,50);assert.equal(originQueries,1);assert.equal(detailReads,1);
- assert.ok(maxInFlight>2&&maxInFlight<=6);assert.equal(inFlight,0);
+ assert.equal(maxInFlight,2);assert.equal(inFlight,0);
 });
 
 test('large-store scoped evidence isolates failed queries and retains an active product',async()=>{

@@ -55,6 +55,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
   automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId),
   automaticOriginalRebuildEnabled:!!activeOriginalRebuildGrant(journal,shopId),
+  scanLoad:platform.readBudget?.()||null,
   campaignRule:shopId?journal.settings('campaign-policy:'+shopId)?.target||null:null,
   campaignConversion:shopId?(()=>{const s=journal.settings('campaign-conversion:'+shopId);return s?{status:s.status,total:s.products.length,verified:s.products.filter(p=>p.phase==='verified').length,updatedAt:s.updatedAt}:null;})():null,
   updates:{repository:UPDATE_REPOSITORY,currentVersion:version},

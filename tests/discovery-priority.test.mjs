@@ -5,7 +5,8 @@ import {Journal} from '../src/journal.mjs';
 import {PriorityWatch} from '../src/priority-watch.mjs';
 const campaigns=Array.from({length:8},(_,n)=>({id:String(400001+n),name:'活动'+n,type:'限时抢购',status:'进行中',startAt:Math.floor(Date.now()/1000)*1000-n*1000,endAt:Math.floor(Date.now()/1000)*1000-n*1000+48*3600000}));
 function fixture(){
- const journal=new Journal(':memory:'),platform=new DoudianPlatform({browser:{context:{}},policy:{shopId:'900001'},journal});
+ const journal=new Journal(':memory:'),platform=new DoudianPlatform({browser:{context:{}},policy:{shopId:'900001'},journal,
+  resourceBudget:()=>({detailReaders:6,listReaders:2,overlapListReads:true,keepMonitorPages:true,interBatchDelayMs:0,idleMs:10000})});
  const listing={complete:true,campaigns,observedAt:Date.now()};let opened=0,closed=0;
  platform.listActive=async()=>listing;
  platform.detail=async c=>{opened++;await new Promise(r=>setTimeout(r,5));closed++;return{complete:true,observedAt:Date.now(),rules:{noLimit:true,noPerUserLimit:true,noWarmup:true,orderMinutes:5},products:[{productId:String(+c.id+100000),name:c.name,skus:[{id:String(+c.id+200000),name:'原规格',baseFen:10000,discount:50}]}]};};

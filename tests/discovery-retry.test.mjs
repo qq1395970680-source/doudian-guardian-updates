@@ -4,7 +4,8 @@ import {Journal} from '../src/journal.mjs';
 import {DoudianPlatform} from '../src/platform.mjs';
 const campaign={id:'400001',name:'活动',status:'进行中',type:'普通降价促销',startAt:Math.floor(Date.now()/1000)*1000-1000,endAt:Math.floor(Date.now()/1000)*1000-1000+48*3600000};
 const detail=()=>({complete:true,observedAt:Date.now(),rules:{noLimit:true,noPerUserLimit:true,noWarmup:true,orderMinutes:5},products:[{productId:'300001',name:'商品',skus:[{id:'600001',name:'规格',baseFen:10000,discount:50}]}]});
-function fixture(){const journal=new Journal(':memory:'),platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'},journal});platform.listActive=async()=>({complete:true,observedAt:Date.now(),campaigns:[campaign]});return{journal,platform};}
+function fixture(){const journal=new Journal(':memory:'),platform=new DoudianPlatform({browser:{},policy:{shopId:'900001'},journal,
+ resourceBudget:()=>({detailReaders:6,listReaders:2,overlapListReads:true,keepMonitorPages:true,interBatchDelayMs:0,idleMs:10000})});platform.listActive=async()=>({complete:true,observedAt:Date.now(),campaigns:[campaign]});return{journal,platform};}
 test('a transient identity timeout gets one new detail read and then full inventory can complete',async()=>{
  const f=fixture();let reads=0;
  f.platform.detail=async()=>{if(++reads===1)throw Object.assign(Error('尚未读取到店铺 ID'),{code:'LOAD_TIMEOUT'});return detail();};

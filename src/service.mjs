@@ -10,6 +10,7 @@ import {isolateDraftPriceFailure} from './draft-price-isolation.mjs';
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 import {recoveryRequests,requestRecovery,updateRecoveryRequest,pauseRecoveryRequests} from './recovery-requests.mjs';
 import {priceRemovalAfterActiveHint} from './active-hint-removal.mjs';
+import {activeOriginalPriceRecoveryGrant} from './original-price-recovery-policy.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -18,7 +19,7 @@ const blockerDelay=code=>unavailableProduct(code)?86400000:15*60000;
 // Confirmed unavailable products only need a daily state recheck. A positive
 // current activity clears the check; a changed baseline also bypasses it.
 const knownBlockerCoolingDown=(prior,baseline,now)=>prior?.contextKey===fingerprint(baseline)&&
- ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED','RESTORE_SKU_BUDGET'].includes(prior.code)&&
+ ['PRODUCT_RECYCLED','OFF_SHELF','SKU_RATIO_REVIEW_REQUIRED','ORIGINAL_PRICE_BLOCKED','RESTORE_SKU_BUDGET'].includes(prior.code)&&
  Math.max(prior.retryAt||0,unavailableProduct(prior.code)?(prior.at||0)+blockerDelay(prior.code):0)>now;
 const lossEvidenceFor=losses=>({complete:true,observedAt:Math.min(...losses.map(l=>l.observedAt)),
  lossKey:fingerprint(losses.map(l=>l.lossKey)),
@@ -78,7 +79,18 @@ export class GuardianService {
     if(source!==baseline){const {fingerprint:previous,...body}=plan;plan={...body,durationMs:baseline.durationMs};plan.fingerprint=fingerprint(plan);}
     try{const result=applyCampaignPolicy(applyPriceTarget(plan,review),this.journal);assertRecoveryCapacity([result]);return result;}
     catch(error){
+      if(error.code==='CAMPAIGN_CHOICE_CHANGED'&&review?.status==='approved'&&review.historicalFingerprint!==plan.historicalFingerprint){
+        if(activeOriginalPriceRecoveryGrant(this.journal,plan.shopId,this.now())){
+          try{this.journal.approveOriginalPriceContinuity(plan,this.now());return this.restorePlan(baseline,current);}
+          catch(blocked){if(blocked.code==='PENDING')throw blocked;throw Object.assign(new Error('无法按已确认的原折扣价继续恢复，已转入恢复受阻：'+blocked.message),{code:'ORIGINAL_PRICE_BLOCKED'});}
+        }
+        let proposal;try{proposal=this.journal.recordHistoryReconfirmation(plan,this.now());}
+        catch(unavailable){if(unavailable.code==='PENDING')throw unavailable;throw error;}
+        throw Object.assign(new Error(proposal.status==='declined'?'历史来源已变化；已保留暂不调整选择，可在价格确认页重新核对。':'历史来源已变化，已生成新旧价格及活动类型对照，请在价格确认页重新确认。'),
+          {code:'PRICE_RECONFIRM_REQUIRED',reviewId:proposal.id});
+      }
       if(error.code!=='PRICE_APPROVAL_CHANGED')throw error;
+      if(activeOriginalPriceRecoveryGrant(this.journal,plan.shopId,this.now()))throw Object.assign(new Error('原确认金额与当前价格规则不一致，已转入恢复受阻；不会自动采用新价格'),{code:'ORIGINAL_PRICE_BLOCKED'});
       const proposal=this.journal.recordPriceReconfirmation(applyCampaignPolicy(plan,this.journal),this.now());
       throw Object.assign(new Error(proposal.status==='declined'?'旧确认金额已失效；已保留暂不调整选择，可在价格确认页重新核对。':'旧确认金额与当前取整规则不一致，请在价格确认页核对新金额并重新确认。'),
         {code:'PRICE_RECONFIRM_REQUIRED',reviewId:proposal.id});
@@ -247,7 +259,11 @@ export class GuardianService {
     const current=this.journal.get(task.id);
     const verified=this.journal.transition(task.id,current.phase,'verified',{receipt},this.now());
     if(!this.priorityWatch)this.priorityWatch=new PriorityWatch(this.journal,this.policy.shopId);
-    for(const plan of verified.plans){this.priorityWatch.recordOne(plan.productId,receipt.campaignId,receipt.verifiedAt);this.journal.supersedePriceReviews(this.policy.shopId,plan.productId,'已独立回读有效活动',this.now());}
+    for(const plan of verified.plans){
+      this.priorityWatch.recordOne(plan.productId,receipt.campaignId,receipt.verifiedAt);this.journal.supersedePriceReviews(this.policy.shopId,plan.productId,'已独立回读有效活动',this.now());
+      const request=recoveryRequests(this.journal,this.policy.shopId).items.find(r=>r.productId===plan.productId&&r.requestedAt<=receipt.verifiedAt);
+      if(request)updateRecoveryRequest(this.journal,this.policy.shopId,request,{state:'complete',reason:'该次恢复已逐规格独立回读，当前有效性以后续巡检为准'},this.now());
+    }
     this.priorityWatch.save();
     if(this.platform.refreshAfterReadback)try{await this.platform.refreshAfterReadback(verified,observed);}catch(error){this.journal.event(task.id,'post-restore-catalog-pending',{shopId:task.shopId,code:error.code||'ERROR',message:error.message},this.now());}
     if(this.platform.release)await this.platform.release(verified).catch(()=>{});return true;

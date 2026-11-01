@@ -26,12 +26,13 @@ for(const width of [1440,960])test('recalculate stays visible through failure, i
   await page.locator('[data-view="prices"]').click();const card=page.locator(`[data-review-id="${review.id}"]`);await card.waitFor();
   if(!await card.evaluate(e=>e.open))await card.locator('summary').click();
   await card.getByRole('button',{name:'重新核对',exact:true}).click();
+  await page.locator('[data-view="blockers"]').click();
   const row=page.locator(`[data-price-recheck="${f.baseline.productId}"]`);await row.waitFor();await row.getByText('核对受阻',{exact:true}).waitFor();
   assert.match(await row.innerText(),/PRECHECK_MEMBERSHIP/);assert.match(await row.innerText(),/目标20件，实际19件/);
   assert.equal(await page.locator('#recovery-issues-panel').isVisible(),false,'A tracked request must not be duplicated in the other-issues list');
   assert.equal(journal.priceReview(review.id).status,'superseded');assert.equal(journal.priceTarget(f.policy.shopId,f.baseline.productId),null);
   assert.equal(await page.locator('.price-review').count(),0);assert.equal(journal.list(f.policy.shopId).length,0);
-  await page.waitForFunction(()=>document.querySelector('#price-count').textContent==='1');
+  await page.waitForFunction(()=>document.querySelector('#price-count').textContent==='0');
   await page.evaluate(()=>window.recheckNode=document.querySelector('[data-price-recheck]'));
   await page.waitForResponse(r=>r.url().includes('/api/price-reviews?'));
   assert.equal(await page.evaluate(()=>window.recheckNode===document.querySelector('[data-price-recheck]')),true);
@@ -40,7 +41,7 @@ for(const width of [1440,960])test('recalculate stays visible through failure, i
   await row.getByText('核验已结束',{exact:true}).waitFor();assert.equal(reads,2,'Retry must run immediately, without waiting for a patrol');
   assert.equal(journal.list(f.policy.shopId).length,0,'A positive activity must not cause a duplicate submission');
   assert.doesNotMatch(await row.innerText(),/该次恢复已回读/);
-  await page.reload();await page.locator('[data-view="prices"]').click();await page.locator('[data-price-recheck]').getByText('核验已结束',{exact:true}).waitFor();
+  await page.reload();await page.locator('[data-view="blockers"]').click();await page.locator('[data-price-recheck]').getByText('核验已结束',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);assert.deepEqual(errors,[]);
  }finally{service.stop();await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
 });

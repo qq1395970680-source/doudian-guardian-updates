@@ -13,6 +13,8 @@ import {makeRebuildReview,rebuildMaterial} from './rebuild-review.mjs';
 import {requestRecovery,recoveryRequests} from './recovery-requests.mjs';
 import {buildRecheckProgress} from './recheck-progress.mjs';
 import {assertOriginalRebuildConsent} from './original-rebuild-policy.mjs';
+import {activeOriginalPriceRecoveryGrant,validOriginalPriceApproval} from './original-price-recovery-policy.mjs';
+import {makeHistoryReconfirmation,assertHistoryReconfirmation} from './history-reconfirmation.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -20,6 +22,8 @@ const transitions = {
   verifying: ['verified', 'unknown', 'blocked'], blocked: ['queued'], verified: []
 };
 const restartBlockReason='pre-submit-proof-expired-on-restart';
+const priceViewExpiry=at=>Number.isSafeInteger(at)&&at>0?
+ {sql:" AND (state NOT IN ('pending','declined') OR json_extract(body,'$.expiresAt') IS NULL OR json_extract(body,'$.expiresAt')>?)",params:[at]}:{sql:'',params:[]};
 const knownUnsubmitted=task=>task?.submitAttempts===0&&task.riskAttempts===0&&
   task.submittedAt==null&&task.riskAttemptedAt==null&&task.draftProof==null&&task.riskProof==null&&task.receipt==null;
 export class Journal {
@@ -145,28 +149,31 @@ export class Journal {
   histories(shopId) { return this.db.prepare('SELECT body FROM baselines WHERE shop=? ORDER BY at DESC').all(shopId).map(r => JSON.parse(r.body)); }
   priceReview(reviewId) {const r=this.db.prepare('SELECT body FROM price_reviews WHERE id=?').get(reviewId);return r?JSON.parse(r.body):null;}
   priceReviews(shopId) {return this.db.prepare('SELECT body FROM price_reviews WHERE shop=? ORDER BY updated DESC,rowid DESC').all(shopId).map(r=>JSON.parse(r.body));}
-  priceReviewCounts(shopId) {
-    const row=this.db.prepare("SELECT COUNT(*) AS total,COALESCE(SUM(state='pending'),0) AS pending FROM price_reviews WHERE shop=?").get(shopId);
+  priceReviewCounts(shopId,{hiddenProductIds=[],hideExpiredAt=null,hideUnconfirmed=false}={}) {
+    const expiry=priceViewExpiry(hideExpiredAt);if(hideUnconfirmed)expiry.sql+=" AND state NOT IN ('pending','declined')";
+    const row=this.db.prepare(`SELECT COUNT(*) AS total,COALESCE(SUM(state='pending'),0) AS pending FROM price_reviews WHERE shop=? AND product NOT IN (SELECT value FROM json_each(?))${expiry.sql}`).get(shopId,JSON.stringify(hiddenProductIds),...expiry.params);
     return {total:row.total,pending:row.pending};
   }
   priceRecheckProgress(shopId,options={}) {
     return buildRecheckProgress({shopId,...(shopId?{queue:recoveryRequests(this,shopId),reviews:this.priceReviews(shopId),checks:this.productChecks(shopId),tasks:this.list(shopId)}:{}),...options});
   }
-  priceReviewPage(shopId,{page=0,pageSize=10,direction='all',recheckPage=0}={}) {
+  priceReviewPage(shopId,{page=0,pageSize=10,direction='all',recheckPage=0,hiddenProductIds=[],products=[],hideExpiredAt=null,hideUnconfirmed=false}={}) {
     const bounded=(value,fallback)=>Number.isSafeInteger(Number(value))?Number(value):fallback;
-    const size=Math.min(20,Math.max(1,bounded(pageSize,10))),counts=this.priceReviewCounts(shopId);
+    const size=Math.min(20,Math.max(1,bounded(pageSize,10))),counts=this.priceReviewCounts(shopId,{hiddenProductIds,hideExpiredAt,hideUnconfirmed}),expiry=priceViewExpiry(hideExpiredAt);
+    if(hideUnconfirmed)expiry.sql+=" AND state NOT IN ('pending','declined')";
+    const visibility=' AND product NOT IN (SELECT value FROM json_each(?))',hidden=JSON.stringify(hiddenProductIds);
     const mode=['increase','decrease'].includes(direction)?direction:'all';
     // Any lower-priced SKU puts the entire proposal in the reduction queue.
     // Filter before LIMIT; a large shop must not lose products behind pagination.
     const lower="EXISTS (SELECT 1 FROM json_each(price_reviews.body,'$.rows') AS sku WHERE json_extract(sku.value,'$.saleFen') < json_extract(sku.value,'$.previousFen'))";
-    const decrease=this.db.prepare(`SELECT COUNT(*) AS n FROM price_reviews WHERE shop=? AND state='pending' AND ${lower}`).get(shopId).n;
+    const decrease=this.db.prepare(`SELECT COUNT(*) AS n FROM price_reviews WHERE shop=?${visibility}${expiry.sql} AND state='pending' AND ${lower}`).get(shopId,hidden,...expiry.params).n;
     const directionCounts={increase:counts.pending-decrease,decrease};
     const total=mode==='all'?counts.total:directionCounts[mode];
     const condition=mode==='all'?'':` AND state='pending' AND ${mode==='increase'?'NOT ':''}${lower}`;
     const pages=Math.max(1,Math.ceil(total/size)),current=Math.min(pages-1,Math.max(0,bounded(page,0)));
     const reviewTasks=this.list(shopId);
-    const reviews=this.db.prepare(`SELECT body FROM price_reviews WHERE shop=?${condition} ORDER BY (state='pending') DESC,updated DESC,rowid DESC LIMIT ? OFFSET ?`)
-      .all(shopId,size,current*size).map(r=>{
+    const reviews=this.db.prepare(`SELECT body FROM price_reviews WHERE shop=?${visibility}${expiry.sql}${condition} ORDER BY (state='pending') DESC,updated DESC,rowid DESC LIMIT ? OFFSET ?`)
+      .all(shopId,hidden,...expiry.params,size,current*size).map(r=>{
         const review=JSON.parse(r.body);if(review.status!=='pending')return {...review,requiresReconfirmation:needsPriceReconfirmation(review)};
         const attempts=reviewTasks.filter(task=>task.plans.some(p=>p.productId===review.productId));
         const activityChecks=['限量抢购','限时抢购'].flatMap(type=>{
@@ -175,8 +182,9 @@ export class Journal {
         });
         return{...review,options:priceOptions(review),activityChecks};
       });
-    return {shopId,...counts,total,direction:mode,directionCounts,page:current,pageSize:size,pages,reviews,rechecks:this.priceRecheckProgress(shopId,{page:recheckPage,pageSize:size})};
+    return {shopId,...counts,total,direction:mode,directionCounts,page:current,pageSize:size,pages,reviews,rechecks:this.priceRecheckProgress(shopId,{page:recheckPage,pageSize:size,hiddenProductIds,products,hideExpiredAt,hideUnconfirmed})};
   }
+  priceTargets(shopId){return this.db.prepare('SELECT r.body FROM price_targets t JOIN price_reviews r ON r.id=t.review WHERE t.shop=?').all(shopId).map(r=>JSON.parse(r.body));}
   priceTarget(shopId,productId) {const r=this.db.prepare('SELECT review FROM price_targets WHERE shop=? AND product=?').get(shopId,productId);return r?this.priceReview(r.review):null;}
   supersedePriceReviews(shopId,productId,reason,now=Date.now()) {
     return this.transaction(()=>{
@@ -214,6 +222,14 @@ export class Journal {
       'PRICE_APPROVAL_CHANGED','重新确认价格需要匹配的原始规格历史');
     return this.savePriceReview(makePriceReconfirmation(plan,this.priceTarget(plan.shopId,plan.productId),now),now);
   }
+  recordHistoryReconfirmation(plan,now=Date.now()){
+    requireThat(!this.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),
+      'PENDING','此商品仍有未完成或未知提交，先回读核实');
+    const history=this.histories(plan.shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
+    requireThat(history&&history.productId===plan.productId&&plan.skus.every(s=>history.skus.some(h=>h.id===s.id&&h.baseFen===s.baseFen&&normalizeName(h.name)===s.name&&h.discount===s.discount)),
+      'PRICE_SOURCE_CHANGED','新确认必须来自完整保存的原始规格历史');
+    return this.savePriceReview(makeHistoryReconfirmation(plan,this.priceTarget(plan.shopId,plan.productId),now),now);
+  }
   recordRebuildPriceReview(plan,detail,now=Date.now()){
     const baseline=this.histories(plan.shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
     requireThat(baseline&&baseline.productId===plan.productId,'REBUILD_REVIEW_EVIDENCE','重新创建的历史来源已变化');
@@ -250,7 +266,7 @@ export class Journal {
           fingerprint([...confirmedSkuIds].sort())===fingerprint(r.rows.map(row=>row.id).sort()),'PRICE_CONSENT_REQUIRED','须核对全部规格并明确确认表内价格');
         requireThat(r.status==='pending'&&r.expiresAt>now&&r.createdAt<=now,'PRICE_REVIEW_EXPIRED','建议已处理或过期，请重新核对');
         requireThat(r.historicalFingerprint===historicalFingerprint,'PRICE_REVIEW_CHANGED','历史来源已变化，请重新核对');
-        const target=this.priceTarget(shopId,r.productId),previous=target?.historicalFingerprint===r.historicalFingerprint?target.id:null;
+        const target=this.priceTarget(shopId,r.productId),previous=r.kind==='history-reconfirmation'?target?.id||null:target?.historicalFingerprint===r.historicalFingerprint?target.id:null;
         requireThat((r.previousApprovalId||null)===previous,'PRICE_REVIEW_CHANGED','此前已确认的价格已变化');
         if(optionId!==null||optionKey!==null){
           const option=priceOptions(r).find(o=>o.id===optionId);
@@ -266,7 +282,8 @@ export class Journal {
           if(option.rebuildTarget)r.rebuildTarget=structuredClone(option.rebuildTarget);
           r.selectedOption={id:option.id,key:option.key,label:option.label};
         }
-        if(r.kind==='rounding-reconfirmation')assertPriceReconfirmation(r,target);
+        if(r.kind==='history-reconfirmation')assertHistoryReconfirmation(r,target,this.histories(shopId).find(b=>fingerprint(b)===r.historicalFingerprint));
+        else if(r.kind==='rounding-reconfirmation')assertPriceReconfirmation(r,target);
         else requireThat(r.rows.every(row=>row.saleFen===saleFen(row.baseFen,row.discount)&&
           row.previousFen===saleFen(row.baseFen,row.previousDiscount)),
           'PRICE_REVIEW_CHANGED','价格取整规则已更新，请重新计算并核对全部规格价格');
@@ -291,9 +308,27 @@ export class Journal {
       return r;
     });
   }
+  approveOriginalPriceContinuity(plan,now=Date.now()) {
+    requireThat(activeOriginalPriceRecoveryGrant(this,plan.shopId,now),'ORIGINAL_PRICE_CONSENT_REQUIRED','本店未开启原价自动恢复');
+    const proposal=this.recordHistoryReconfirmation(plan,now);
+    return this.transaction(()=>{
+      const grant=activeOriginalPriceRecoveryGrant(this,plan.shopId,now),r=this.priceReview(proposal.id),previous=this.priceTarget(plan.shopId,plan.productId);
+      requireThat(grant&&r?.status==='pending'&&r.expiresAt>now&&now-r.createdAt<=30000,'ORIGINAL_PRICE_BLOCKED','旧价格或本店原价规则已变化，已转入恢复受阻');
+      requireThat(!this.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),'PENDING','已有未知提交，只回读不重复创建');
+      assertHistoryReconfirmation(r,previous,this.histories(plan.shopId).find(b=>fingerprint(b)===plan.historicalFingerprint));
+      requireThat(previous.rows.length===r.rows.length,'ORIGINAL_PRICE_BLOCKED','规格集合发生变化，不能自动沿用旧价格');
+      r.status='approved';r.approvedAt=now;r.approvalKind='original-price-continuity';
+      r.continuityConsent={grantId:grant.id,targetsFingerprint:fingerprint(r.rows),continueGuardingExactPrices:true};
+      requireThat(validOriginalPriceApproval(this,r),'ORIGINAL_PRICE_BLOCKED','原价格、活动规则或旧批准无法完整核实');
+      this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(r.status,JSON.stringify(r),now,r.id);
+      this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(plan.shopId,plan.productId,r.id);
+      this.event(null,'original-price-continuity-approved',{shopId:plan.shopId,productId:plan.productId,reviewId:r.id,previousApprovalId:previous.id,grantId:grant.id},now);return r;
+    });
+  }
   approvePriceIncrease(shopId,reviewId,key,historicalFingerprint,now=Date.now()) {
     return this.transaction(()=>{
       const grant=activePriceIncreaseGrant(this,shopId,now),r=this.priceReview(reviewId);
+      requireThat(!activeOriginalPriceRecoveryGrant(this,shopId,now),'ORIGINAL_PRICE_BLOCKED','本店只允许原价恢复，不能自动提价');
       requireThat(grant,'PRICE_INCREASE_CONSENT_REQUIRED','本店尚未授权自动提价');
       requireThat(r?.shopId===shopId&&r.key===key&&r.historicalFingerprint===historicalFingerprint,'PRICE_REVIEW_CHANGED','店铺、价格建议或历史来源已变化');
       requireThat(r.status==='pending'&&r.source==='live-platform-draft'&&r.createdAt>0&&r.createdAt<=now&&now-r.createdAt<=30000&&r.expiresAt>now,
@@ -321,7 +356,7 @@ export class Journal {
       const review=this.priceReview(plan.priceApprovalId),baseline=this.histories(shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
       if(review?.kind==='limited-rebuild')requireThat(review.consent?.rebuildConfirmed===true&&fingerprint(rebuildMaterial(plan))===fingerprint(review.rebuildTarget),
         'REBUILD_CONSENT_REQUIRED','重新创建的活动类型、时长或限量与明确确认不一致');
-      requireThat(review?.status==='approved'&&(review.consent?.exactPrices&&review.consent?.matchedRiskConfirmation||validAutomaticPriceApproval(this,review))&&baseline&&this.priceTarget(shopId,plan.productId)?.id===review.id&&
+      requireThat(review?.status==='approved'&&(review.consent?.exactPrices&&review.consent?.matchedRiskConfirmation||validAutomaticPriceApproval(this,review)||validOriginalPriceApproval(this,review))&&baseline&&this.priceTarget(shopId,plan.productId)?.id===review.id&&
         review.shopId===shopId&&plan.shopId===shopId&&review.productId===plan.productId&&review.key===plan.priceApprovalKey&&review.historicalFingerprint===plan.historicalFingerprint,
         'PRICE_APPROVAL_CHANGED','调价确认与当前执行计划不一致');
       for(const sku of plan.skus){const original=baseline.skus.find(s=>s.id===sku.id),approved=review.rows.find(r=>r.id===sku.id);

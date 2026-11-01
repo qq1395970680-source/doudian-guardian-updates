@@ -11,6 +11,11 @@ const descriptions=[
  ['balanced','综合建议方案','所有规格均不降价，同时满足已读限制，尽量减少总涨价金额。']
 ];
 export function priceOptions(review){
+ if(review.kind==='history-reconfirmation')return [{id:'reconfirm-history',label:'核对新历史 · 保留旧确认目标',
+  description:'左侧为本次历史价格，右侧为原来确认的确切目标。重新确认全部规格和所示活动类型后，先重新核验平台限制。',
+  available:true,rows:structuredClone(review.rows),activityType:review.type,validationStatus:'unverified',
+  reason:'仅生成新的待确认记录，旧批准完整保留；当前尚未恢复。',
+  key:fingerprint({algorithm:'reconfirm-history-v1',sourceKey:review.key,rows:review.rows})}];
  if(review.kind==='limited-rebuild'){
   const rows=structuredClone(review.rows),target=structuredClone(review.rebuildTarget);
   const options=[{id:'rebuild-confirmed',label:'保留已有价格 · 重新创建',available:true,activityType:target.type,rows,rebuildTarget:target,

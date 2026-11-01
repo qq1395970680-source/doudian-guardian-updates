@@ -10,7 +10,8 @@ export function approvedCampaignChoice(review,plan){
  if(!review?.campaignTarget)return null;
  requireThat(review.status==='approved'&&review.shopId===plan.shopId&&review.productId===plan.productId&&
   review.historicalFingerprint===plan.historicalFingerprint&&(review.consent?.exactPrices===true||
-   review.approvalKind==='automatic-price-increase'&&review.automaticConsent?.targetsFingerprint===fingerprint(review.rows)),
+   review.approvalKind==='automatic-price-increase'&&review.automaticConsent?.targetsFingerprint===fingerprint(review.rows)||
+   review.approvalKind==='original-price-continuity'&&review.continuityConsent?.targetsFingerprint===fingerprint(review.rows)),
   'CAMPAIGN_CHOICE_CHANGED','商品活动方案未明确确认或历史来源已变化');
  const canonical=campaignChoice(review.campaignTarget.type);
  requireThat(fingerprint(canonical)===fingerprint(review.campaignTarget),'CAMPAIGN_CHOICE_CHANGED','商品活动规则与已核对的方案不符');

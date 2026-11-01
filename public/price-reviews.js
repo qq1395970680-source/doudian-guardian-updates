@@ -7,6 +7,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
  let rechecks={records:[],total:0,pending:0,page:0,pages:1},recheckPage=0,recheckSignature='';
  const labels={pending:'等待确认',approved:'已确认',declined:'暂不调整',superseded:'已失效'};
  const current=()=>getState();
+ const visibleSuggestion=r=>!['pending','declined'].includes(r.status)||!Number.isFinite(r.expiresAt)||r.expiresAt>Date.now();
  const setText=(el,value)=>{if(el.textContent!==value)el.textContent=value;};
  function reset(next){shop=next;reviews=[];issues=[];issuePage=0;issueSignature='';rechecks={records:[],total:0,pending:0,page:0,pages:1};recheckPage=0;recheckSignature='';$('price-rechecks-panel').hidden=true;$('recovery-issues-panel').hidden=true;pageIndex=0;total=0;pages=1;readAt=0;loadVersion++;cards.clear();visibleIds='';for(const mode of ['increase','decrease'])setText($('price-'+mode+'-count'),'—');$('price-reviews').replaceChildren(node('div','empty','正在读取价格建议'));pagination();}
  function renderRechecks(){
@@ -55,7 +56,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
  function eligible(r){const s=current();return s.online&&s.state?.shopId===r.shopId&&s.state?.connection?.shopId===r.shopId&&Date.now()-readAt<15000&&!action;}
  function updateControls(card){
   const {r}=card,expired=r.expiresAt<=Date.now(),ready=eligible(r),selected=!card.source.options||card.option?.available;
-  setText(card.badge,r.requiresReconfirmation?'原确认需重新核对':r.status==='pending'&&expired?'建议已过期':r.status==='approved'&&r.approvalKind==='automatic-price-increase'?'按本店授权自动提价':labels[r.status]||'等待更新');
+  setText(card.badge,r.requiresReconfirmation?'原确认需重新核对':r.status==='pending'&&expired?'建议已过期':r.status==='approved'&&r.approvalKind==='original-price-continuity'?'按原价规则沿用确认':r.status==='approved'&&r.approvalKind==='automatic-price-increase'?'按本店授权自动提价':labels[r.status]||'等待更新');
   if(card.checkbox){card.checkbox.disabled=!ready||expired||!selected;card.approve.disabled=!ready||expired||!selected||!card.checkbox.checked;}
   for(const button of card.optionButtons||[])button.disabled=!ready||!button.optionAvailable;
   if(card.decline)card.decline.disabled=!ready;
@@ -95,6 +96,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
     body.append(node('p','price-lower-warning',`重新创建：${target.type} · ${Math.floor(seconds/86400)}天 ${Math.floor(seconds%86400/3600)}时 ${Math.floor(seconds%3600/60)}分 ${seconds%60}秒 · ${target.activityLimit!=null?'重新提供总限量 '+target.activityLimit+' 件':'不限量'} · 不限购、不预热 · ${target.rules.orderMinutes}分钟取消订单。`));
     body.append(node('p','detail-note',`原活动：${source.rebuildSource.referenceCampaignId} · ${source.rebuildSource.status||'未找到'}；${source.sourceDetail?.nextAction||'退出原因尚未完整证明'}。`));
    }
+   if(source.kind==='history-reconfirmation'){caption.textContent='历史来源已变化。左侧为本次保存的历史价格，右侧为旧确认目标；须重新确认整件商品的确切价格和活动类型。旧批准与原历史完整保留。';body.append(node('p','detail-note',`活动方案：${source.campaignTarget.type}；确认后仍需重新核验平台当前限制。`));}
    if(source.kind==='rounding-reconfirmation'){
     caption.textContent='旧确认金额因取整规则更新而失效。左列来自原确认单，右列按相同折扣向上取分；旧确认金额与完整历史均保留。必须重新确认后才能执行。';
     const duration=source.durationMs,seconds=Number.isSafeInteger(duration)?duration/1000:null;
@@ -179,13 +181,13 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
    }
    if(['pending','declined'].includes(r.status)||r.requiresReconfirmation){
     const row=node('div','price-review-foot'),note=node('p','helper'),recalculate=node('button','text-button','重新核对');row.append(note,recalculate);body.append(row);Object.assign(card,{note,recalculate});recalculate.onclick=()=>void decide(card,'recalculate');
-   }else body.append(node('p','helper',r.status==='approved'?(r.approvalKind==='automatic-price-increase'?'本表由你开启的本店自动提价规则生成，已记录确切价格；未采用任何进一步降价。':'已记录你确认的本表确切价格。')+'是否恢复成功，请以商品折扣及独立回读结果为准。':(r.supersededReason||'已请求重新核对')+'；这份建议不会用于执行。'));
+   }else body.append(node('p','helper',r.status==='approved'?(r.approvalKind==='original-price-continuity'?'本表按已开启的本店原价恢复规则沿用旧确认的确切价格，未采用新价格。':r.approvalKind==='automatic-price-increase'?'本表由你开启的本店自动提价规则生成，已记录确切价格；未采用任何进一步降价。':'已记录你确认的本表确切价格。')+'是否恢复成功，请以商品折扣及独立回读结果为准。':(r.supersededReason||'已请求重新核对')+'；这份建议不会用于执行。'));
    el.append(body);updateControls(card);
   }
   el.addEventListener('toggle',()=>{if(el.open)populate();});if(el.open)populate();updateControls(card);return card;
  }
  function render(){
-  const rows=reviews;let replaced=false;
+  reviews=reviews.filter(visibleSuggestion);const rows=reviews;let replaced=false;
   for(const [i,r] of rows.entries()){const previous=cards.get(r.id);if(previous?.signature!==JSON.stringify(r)){const c=buildCard(r,previous,i===0);cards.set(r.id,c);if(previous?.el.isConnected)previous.el.replaceWith(c.el);else replaced=true;}}
   const ids=JSON.stringify(rows.map(r=>r.id));if(ids!==visibleIds||replaced){$('price-reviews').replaceChildren(...rows.map(r=>cards.get(r.id).el));visibleIds=ids;}
   if(!rows.length)$('price-reviews').replaceChildren(node('div','empty',shop?(direction==='all'?'当前没有价格确认记录。':direction==='increase'?'当前没有待确认的提价方案。':'当前没有待确认的降价方案。'):'连接店铺后，这里会显示需要你确认的价格建议。'));
@@ -210,7 +212,7 @@ export function createPriceReviews({getState,post,toast,node,money,discount,time
    finally{loading=false;pagination();$('price-rechecks-prev').disabled=rechecks.page===0;$('price-rechecks-next').disabled=rechecks.page>=rechecks.pages-1;if(loadVersion!==expectedVersion&&!action)void refresh();}
   }
  return {
-  sync(){if(shop!==current().state?.shopId)reset(current().state?.shopId||null);for(const c of cards.values())updateControls(c);},
+  sync(){if(shop!==current().state?.shopId)reset(current().state?.shopId||null);if(reviews.some(r=>!visibleSuggestion(r))){render();if(!loading&&!action)void refresh();}for(const c of cards.values())updateControls(c);},
   refresh
  };
 }

@@ -12,6 +12,9 @@
 | `src/accounts.mjs` | 本机店铺注册、独立资料与授权 |
 | `src/updates.mjs` | GitHub 版本选择、严格来源与 SHA256 校验 |
 | `src/catalog.mjs` | 只读商品视图，不供执行路径读取 |
+| `src/catalog-visibility.mjs` | 仅展示过滤已核实下架/回收商品，统一商品、价格确认、计数和重核列表；不改写历史或执行规则 |
+| `src/recovery-blockers.mjs` / `public/recovery-blockers.js` | 同一逐规格目标下的限时/限量受阻展示、分页和核验入口；不把未验证方案算作失败 |
+| `src/history-reconfirmation.mjs` | 历史来源变化后的新旧确切目标对照，只生成待确认记录，不迁移旧批准 |
 | `src/priority-watch.mjs` | 持久活动成员线索；只安排核对优先级，不证明缺失或批准价格 |
 | `src/price-review.mjs` | 从本次草稿的明确规格限制生成建议；独立的确切价格目标 |
 | `public/price-reviews.js` | 分页展示逐规格建议、默认不勾选的明确确认、过期与店铺状态检查 |

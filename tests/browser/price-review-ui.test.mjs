@@ -44,7 +44,7 @@ for(const width of [1440,960])test('price review shows all exact prices, needs c
   await page.waitForFunction(()=>document.querySelector('.price-consent input')?.disabled);assert.equal(await next.getByRole('button',{name:'确认表内价格并继续守护',exact:true}).isDisabled(),true);
   connectedShop='900001';available=[{...available[0],expiresAt:Date.now()-1}];
   await page.waitForResponse(r=>r.url().includes('/api/price-reviews?'),{timeout:7000});
-  await page.getByText('建议已过期',{exact:true}).waitFor();assert.equal(await next.getByRole('checkbox').isChecked(),false);assert.equal(await next.getByRole('checkbox').isDisabled(),true);assert.equal(posts.length,1);
+  await next.waitFor({state:'hidden'});assert.equal(await page.getByText('建议已过期',{exact:true}).count(),0);assert.equal(posts.length,1);
   await page.evaluate(()=>scrollTo(0,0));await page.screenshot({path:resolve('artifacts',`price-review-${width}.png`),fullPage:false});
   assert.deepEqual(errors,[]);
  }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}

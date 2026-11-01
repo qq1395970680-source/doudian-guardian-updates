@@ -1,6 +1,6 @@
 // Presentation only. These rows never grant permission or supply task prices.
-export function buildRecoveryIssues(catalog,reviews=[]){
- const pending=new Set(reviews.filter(r=>r.status==='pending').map(r=>r.productId));
+export function buildRecoveryIssues(catalog,reviews=[],now=Date.now()){
+ const pending=new Set(reviews.filter(r=>r.status==='pending'&&!(Number.isFinite(r.expiresAt)&&r.expiresAt<=now)).map(r=>r.productId));
  const ignored=new Set(['PRODUCT_RECYCLED','OFF_SHELF']);
  return(catalog?.products||[]).filter(p=>p.history&&!p.excluded&&!p.pending&&!p.current.length&&!p.scheduled.length&&
   !ignored.has(p.check?.code)&&!pending.has(p.productId)).map(p=>({productId:p.productId,name:p.name,code:p.check?.code||'CURRENT_RECHECK_PENDING',

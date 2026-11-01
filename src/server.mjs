@@ -177,7 +177,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     const setting=setOriginalPriceRecoveryPolicy(journal,shopId,args);
     if(setting.enabled){
      setPriceIncreasePolicy(journal,shopId,{enabled:false});
-     setOriginalRebuildPolicy(journal,shopId,{enabled:true,acceptOriginalRebuild:true});
+     if(!activeOriginalRebuildGrant(journal,shopId))setOriginalRebuildPolicy(journal,shopId,{enabled:true,acceptOriginalRebuild:true});
      const pending=new Set(journal.list(shopId).filter(t=>!['verified','blocked'].includes(t.phase)).flatMap(t=>t.plans.map(p=>p.productId)));
      const ids=journal.productChecks(shopId).filter(c=>!pending.has(c.productId)&&!policy.excludedProductIds?.includes(c.productId)&&service.latestHistories().has(c.productId)).map(c=>c.productId);
      if(ids.length&&policy.liveEnabled&&policy.cutoverConfirmed)service.requestRecovery(ids,{reason:'original-price-recovery-enabled'});

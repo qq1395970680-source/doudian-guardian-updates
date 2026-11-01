@@ -9,6 +9,7 @@ import {AccountRegistry} from '../../src/accounts.mjs';
 import {DedicatedBrowser} from '../../src/browser.mjs';
 import {activeOriginalPriceRecoveryGrant} from '../../src/original-price-recovery-policy.mjs';
 import {activePriceIncreaseGrant,setPriceIncreasePolicy} from '../../src/price-increase-policy.mjs';
+import {activeOriginalRebuildGrant,setOriginalRebuildPolicy} from '../../src/original-rebuild-policy.mjs';
 import {seedPriceQueue} from '../helpers/large-price-queue-fixture.mjs';
 
 test('original-only recovery routes pricing blockers away from confirmation and is explicitly shop scoped',{timeout:60000},async()=>{
@@ -18,6 +19,7 @@ test('original-only recovery routes pricing blockers away from confirmation and 
  const app=await createApp({config:{shopId:'900001',name:'甲店',originalRiskAllowed:true},runtime:join(dir,'server'),port:0,dependencies:{journal,service,browser:{close:async()=>{}},
   platformFactory:policy=>({probe:async()=>({shopId:policy.shopId}),discover:async()=>({baselines:[],activeComplete:true})})}});
  new AccountRegistry(journal).authorizeOriginal('900001');
+ const originalGrant=setOriginalRebuildPolicy(journal,'900001',{enabled:true,acceptOriginalRebuild:true},Date.now()-1000);
  seedPriceQueue(journal,{pending:2,approved:1});setPriceIncreasePolicy(journal,'900001',{enabled:true,acceptHigherPricesAndRisk:true});
  try{
   const html=await(await fetch(app.url)).text(),token=html.match(/script nonce="([a-f0-9]+)"/)[1];
@@ -29,6 +31,7 @@ test('original-only recovery routes pricing blockers away from confirmation and 
   assert.equal(await button.isDisabled(),true);await consent.check();assert.equal(activeOriginalPriceRecoveryGrant(journal,'900001'),null);
   await button.click();await page.waitForFunction(()=>document.querySelector('#original-price-policy')?.textContent==='停止原价自动恢复');
   assert.ok(activeOriginalPriceRecoveryGrant(journal,'900001'));assert.equal(activePriceIncreaseGrant(journal,'900001'),null);
+  assert.equal(activeOriginalRebuildGrant(journal,'900001').key,originalGrant.key,'mode activation must preserve the original grant used by existing unknown submissions');
   assert.equal(activeOriginalPriceRecoveryGrant(journal,'900002'),null);assert.equal(await page.locator('#price-increase-policy').isDisabled(),true);
   const prices=await(await fetch(app.url+'/api/price-reviews?direction=increase')).json();assert.equal(prices.pending,0);assert.equal(prices.total,0);
   const all=await(await fetch(app.url+'/api/price-reviews')).json();assert.equal(all.total,1);assert.equal(all.reviews[0].status,'approved');

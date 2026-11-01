@@ -32,12 +32,12 @@
   {
     "path": "desktop\\assets\\GuardianOwnedProcesses.exe",
     "bytes": 13312,
-    "sha256": "0D9A8C9F0478B6912B09B552B05A2F6C96772546E445A7A238F4B7315F407EFB"
+    "sha256": "F7F43A8D3F364F053CFDB68F779363950A09CDFA7E6C90499EC331F41E9284C8"
   },
   {
     "path": "desktop\\assets\\GuardianProfileVault.exe",
     "bytes": 4608,
-    "sha256": "CDFC74946B09F5E126E76A49BA9C995571127F16DAE8318826B817D08747E5E0"
+    "sha256": "10DCE9745DADC1C3C0E5F4DCF21119D9029B8D88516EBF7A279C5B9462D817A8"
   },
   {
     "path": "desktop\\backend-upgrade.mjs",
@@ -556,8 +556,8 @@
   },
   {
     "path": "src\\server.mjs",
-    "bytes": 24631,
-    "sha256": "A8767F953F487A956626475416DADAFBD1F7C2818F5FFDFFF1E4F88DA2472454"
+    "bytes": 24678,
+    "sha256": "7471E7E66DF1C64DBE24C5AEF982DA44C5E1A8D389F28013A4950407CB646F12"
   },
   {
     "path": "src\\service.mjs",
@@ -851,8 +851,8 @@
   },
   {
     "path": "tests\\browser\\original-price-recovery-ui.test.mjs",
-    "bytes": 4055,
-    "sha256": "15C512244FA6D4E5BA3F09BB4ADC8FEBEC1D19243EAC3C92CCAD3D4A05A31031"
+    "bytes": 4457,
+    "sha256": "A23D1ACA9879EFBDFFA5C89D04CC5E83E506C4F80199A39ABE1E23493C36B418"
   },
   {
     "path": "tests\\browser\\original-rebuild-restart.test.mjs",

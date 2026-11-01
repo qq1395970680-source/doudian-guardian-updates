@@ -32,12 +32,12 @@
   {
     "path": "desktop\\assets\\GuardianOwnedProcesses.exe",
     "bytes": 13312,
-    "sha256": "F7F43A8D3F364F053CFDB68F779363950A09CDFA7E6C90499EC331F41E9284C8"
+    "sha256": "4406E06250188E879EAAA7CBEF8D19BE43F2A3EFEBA0FE3523061940B8EAAC82"
   },
   {
     "path": "desktop\\assets\\GuardianProfileVault.exe",
     "bytes": 4608,
-    "sha256": "10DCE9745DADC1C3C0E5F4DCF21119D9029B8D88516EBF7A279C5B9462D817A8"
+    "sha256": "F1A5D16976CC9B3CDB331047544EBB709BD98847010FEE51E24D5B3370727189"
   },
   {
     "path": "desktop\\backend-upgrade.mjs",
@@ -147,22 +147,32 @@
   {
     "path": "package-lock.json",
     "bytes": 128605,
-    "sha256": "9AC6013B4F0733E05954052F5557EE6FB9DCAF396CEAF36F894EA8ECB8658B58"
+    "sha256": "2B27916C093165081C5C385D590E7950E7052E203E178DDC2555165105A02EC5"
   },
   {
     "path": "package.json",
     "bytes": 898,
-    "sha256": "4E45F4447DA353169D521CF66DCF6383045B5AE108A1735D54342040320FA541"
+    "sha256": "A9352F3926934F8AE6EF3E06F6F39CBA3EF14164D18D38549CD2D06414A8AD70"
+  },
+  {
+    "path": "public\\activity-prices.js",
+    "bytes": 4229,
+    "sha256": "3623457054ABD3855E63EB971E8CD86D804B663F1C8FD8B6C8306B2CC2735A44"
   },
   {
     "path": "public\\app.css",
-    "bytes": 29212,
-    "sha256": "E9E3623561CF14923857D57EDA9E28DE6BCDD70CE8FDA2BCBF348227986D42B1"
+    "bytes": 31177,
+    "sha256": "D74155199F4EADD993808A594F599796FD6B3672A074F411AA901A338D435573"
   },
   {
     "path": "public\\app.js",
-    "bytes": 34114,
-    "sha256": "5D105C530B776BA0EC0E9D6B6B5208530F624C47E096D7AB53B08B761373ECB7"
+    "bytes": 34129,
+    "sha256": "640E2CF6509F7B0AB9FF5D658D8CEF53519142334D64029E2CC56E22B1ED1BDD"
+  },
+  {
+    "path": "public\\blocker-prices.js",
+    "bytes": 4715,
+    "sha256": "05527C789BB2F3B2BF585A52118252D0FDE10AB07C51CE3829F99535CB8D51E5"
   },
   {
     "path": "public\\guardian.png",
@@ -180,9 +190,14 @@
     "sha256": "DBEB2D58D37787731D6F60C9BAB1625A79BCEAAB99B7BAC4A9D83ECE09FD68E8"
   },
   {
+    "path": "public\\price-review-card.js",
+    "bytes": 20448,
+    "sha256": "0A5E788584705C46B1A75C0581E5928DEA863E310B4451D49B071EEECA41B31E"
+  },
+  {
     "path": "public\\price-reviews.js",
-    "bytes": 26013,
-    "sha256": "2EB5994636B51A0AA43D7CE3C48685BC25FF3EDAF33D038F7FD23A67A3BA11F1"
+    "bytes": 10634,
+    "sha256": "4ED6EE0DA51DF1ED1BB9E9A1D8B1920C16FFF8460B8C1E8759D1CC6541870882"
   },
   {
     "path": "public\\recoveries.js",
@@ -191,13 +206,13 @@
   },
   {
     "path": "public\\recovery-blockers.js",
-    "bytes": 4671,
-    "sha256": "0E3C2F8946FB6959887850CD62373D618EE7642D116C485028B78967B9FA8185"
+    "bytes": 4838,
+    "sha256": "BCA88AE7D409BEBB883D4B5A411954B8B2A79C630270E89917064836B7A2FC22"
   },
   {
     "path": "README.md",
-    "bytes": 15401,
-    "sha256": "C6FA66491F8BBE689EAA3E71BA33D8AD2290F34F40884EEBC2CA3531D2D126AE"
+    "bytes": 16331,
+    "sha256": "AC966BD6C49976E3DE91BE093CE18D667AA046085F504B8F368F52A645DAF4A0"
   },
   {
     "path": "scripts\\after-desktop-pack.mjs",
@@ -330,6 +345,16 @@
     "sha256": "D6C8D19F452D60A3B6649573EC2F6BFCF9427EAA3ADB81EE784EE7C0443C0FA5"
   },
   {
+    "path": "src\\activity-price-comparison.mjs",
+    "bytes": 7879,
+    "sha256": "BBCEA44FFF885D8C75A986D46D20CD7A7A4DDC4E34880C5973ECA34F6BE54B44"
+  },
+  {
+    "path": "src\\activity-price-evidence.mjs",
+    "bytes": 2528,
+    "sha256": "A06F7A39BC40AADDCDF1AF8DD4DD21512E8514B27FEC2F428CAD1141090AC104"
+  },
+  {
     "path": "src\\authentication.mjs",
     "bytes": 2010,
     "sha256": "8C7F125EDEC20488605158C7C70B6CEB957870B5BD7A631E76760930407FD181"
@@ -411,8 +436,8 @@
   },
   {
     "path": "src\\journal.mjs",
-    "bytes": 35032,
-    "sha256": "B191CDF3ED492234FBD76F912B0859B6D91EFAC0CC01E6F2ED0194E19C381798"
+    "bytes": 35786,
+    "sha256": "0F403CB9A48BE56ABA45169B605EA34C34762EDF7B57C42E391FB16B5C08AB4D"
   },
   {
     "path": "src\\limited-continuity.mjs",
@@ -423,6 +448,11 @@
     "path": "src\\maintenance.mjs",
     "bytes": 2969,
     "sha256": "77B68094437E4EAE9C1ADB544216B5B920031924ECB07C167BC5754E842C158F"
+  },
+  {
+    "path": "src\\manual-price-option.mjs",
+    "bytes": 3063,
+    "sha256": "51D9DE8D92688C90369857C7E407D04C2A318C9ECC1D2DAC1D4534D826BA18B2"
   },
   {
     "path": "src\\migration.mjs",
@@ -521,8 +551,8 @@
   },
   {
     "path": "src\\recovery-blockers.mjs",
-    "bytes": 6646,
-    "sha256": "73A127FDB024DB3305F60D7EA8BC7FCA050A09BE12F5A43BC0D43EAA5A68FD2E"
+    "bytes": 4693,
+    "sha256": "5B6BA6BB438E50954154A678254DC5743263E5E8A3352816FF47708CE49E3918"
   },
   {
     "path": "src\\recovery-capacity.mjs",
@@ -556,13 +586,13 @@
   },
   {
     "path": "src\\server.mjs",
-    "bytes": 24678,
-    "sha256": "7471E7E66DF1C64DBE24C5AEF982DA44C5E1A8D389F28013A4950407CB646F12"
+    "bytes": 28145,
+    "sha256": "974480E45EB7063BCA31610E5C5E2AED822CF83AB3ACE838C9B20F73EE516051"
   },
   {
     "path": "src\\service.mjs",
-    "bytes": 67439,
-    "sha256": "6D477E4AC8F1A2D85391F27903DEC17F5242EDE22D2832367B27465B12D9A50F"
+    "bytes": 68320,
+    "sha256": "621E2EE5953EF7EB10FAC8881AA3B85D8F19982BB1B0633BA1F70426E019B7EE"
   },
   {
     "path": "src\\timed-removal.mjs",
@@ -610,6 +640,11 @@
     "sha256": "1596E139576FCB3C3EB00402471FDE4716E3CE185D7A5EB43E88E891243C0BE3"
   },
   {
+    "path": "tests\\activity-price-comparison.test.mjs",
+    "bytes": 5386,
+    "sha256": "8F350E29C6562E350FEBEA7A88D2C6E4F96386314B3DEA5F271A55EE5C4A1B2A"
+  },
+  {
     "path": "tests\\auth-persistence.test.mjs",
     "bytes": 2520,
     "sha256": "CC8C3921C7C55274D8943F5193E671B9E1263671AF4D586137CD51D56B0EBC4D"
@@ -645,6 +680,11 @@
     "sha256": "37A23E1041863B707FB31EAA1187BE76CB3A7820C74FB0F20D500116DF744803"
   },
   {
+    "path": "tests\\blocker-prices-api.test.mjs",
+    "bytes": 5427,
+    "sha256": "848C81B9B9E2B2E07AF796FBAFB55594075B480AF8790154BC1166AC7572DB64"
+  },
+  {
     "path": "tests\\browser-close.test.mjs",
     "bytes": 916,
     "sha256": "C6013A452A3A7626E449572EC52D86F5E94D9FA773D3DB3C904EB7F6440A104F"
@@ -668,6 +708,11 @@
     "path": "tests\\browser\\activity-filters.test.mjs",
     "bytes": 2857,
     "sha256": "7B460B29D4F6D81DCC8D1C4130C887767FA867AB83EBBD8909E4646457CAF5A4"
+  },
+  {
+    "path": "tests\\browser\\activity-prices-ui.test.mjs",
+    "bytes": 2958,
+    "sha256": "1FC6AD8E18568F0ECD31728D78440B5878AB1C64375FA7671A6857B1543DFE4F"
   },
   {
     "path": "tests\\browser\\arco-date-fixture.mjs",
@@ -698,6 +743,11 @@
     "path": "tests\\browser\\batch-precheck.test.mjs",
     "bytes": 2514,
     "sha256": "BA16BBC6917C9E14369770155312AA521A5AAD81D97AA462A7AD6B9C14614890"
+  },
+  {
+    "path": "tests\\browser\\blocker-prices-ui.test.mjs",
+    "bytes": 5141,
+    "sha256": "5BF4A9E9E5F88EBDE0DDF8559FB1FDD9B786E57B2CF092D2B4CDB289B3FF328A"
   },
   {
     "path": "tests\\browser\\cached-limited-loss.test.mjs",
@@ -1170,9 +1220,19 @@
     "sha256": "023D75B5DCB04AA7A8BA56F40E45554CD69CEC61730AA2B15833E230E7190CDA"
   },
   {
+    "path": "tests\\helpers\\activity-price-fixture.mjs",
+    "bytes": 1489,
+    "sha256": "1DFFE2D2A088B808283377BC557BF9C82EA15D6302C89B745F5CEB35B0454402"
+  },
+  {
     "path": "tests\\helpers\\automatic-followup-fixture.mjs",
     "bytes": 3613,
     "sha256": "F3671720593C3BCC845ABA834FB7258A81CD9569ED3B3EA67D1F032168B8DC8E"
+  },
+  {
+    "path": "tests\\helpers\\blocker-prices-fixture.mjs",
+    "bytes": 2025,
+    "sha256": "189D8B78CDAB47C1C23009DE926780001B5A98233B1D7664ED3D0CE5F4521D1A"
   },
   {
     "path": "tests\\helpers\\capacity-fixture.mjs",
@@ -1561,7 +1621,7 @@
   },
   {
     "path": "USER-GUIDE.md",
-    "bytes": 22377,
-    "sha256": "414E081F2F15A5D313E5C7E06740D533FBE4C30D7680AB34864E613FBAF8A726"
+    "bytes": 23837,
+    "sha256": "2146713A76CEEEFB867061015F650279D3905A07E03D45F4FB5F30C3BBC1882F"
   }
 ]

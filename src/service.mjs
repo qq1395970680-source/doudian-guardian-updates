@@ -118,10 +118,16 @@ export class GuardianService {
     updateRecoveryRequest(this.journal,this.policy.shopId,request,{state:'complete',reason:'本次独立核对时商品已有有效活动，无需重复创建；此结论不计作新的恢复。',
       currentActivity:{campaignId:loss.campaignId,observedAt:loss.observedAt}},this.now());
   }
+  assertBlockedPriceReview(review){
+    const baseline=review&&this.latestHistories().get(review.productId);
+    requireThat(review?.shopId===this.policy.shopId&&baseline&&fingerprint(baseline)===review.historicalFingerprint&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','店铺、历史或排除设置已变化');
+    requireThat(review.status==='pending'&&review.createdAt<=this.now()&&review.expiresAt>this.now(),'PRICE_REVIEW_EXPIRED','建议已处理或过期，请重新核对');
+    requireThat(!this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===review.productId)),'PENDING','此商品仍有未完成或结果未知的提交，先独立核实');
+  }
   decidePriceReview(args) {
     const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
     requireThat(review?.shopId===this.policy.shopId&&baseline&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','店铺、历史或排除设置已变化');
-    const result=this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline),optionId:args.optionId??null,optionKey:args.optionKey??null,confirmRebuild:args.confirmRebuild===true,queueRecovery:this.immediateEnabled},this.now());
+    const result=this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline),optionId:args.optionId??null,optionKey:args.optionKey??null,confirmRebuild:args.confirmRebuild===true,queueRecovery:this.immediateEnabled,approvalContext:args.approvalContext,manualDiscounts:args.manualDiscounts,manualActivityType:args.manualActivityType},this.now());
     if(this.immediateEnabled&&['approve','recalculate'].includes(args.decision)){
       if(this.policy.liveEnabled&&this.policy.cutoverConfirmed&&this.policy.originalRiskAllowed){
         if(this.busy&&this.stopRequested)this.requestedResume=true;else{this.stopRequested=false;this.platform.stopping=false;}

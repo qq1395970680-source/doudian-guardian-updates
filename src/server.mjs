@@ -10,6 +10,8 @@ import {GuardianService} from './service.mjs';
 import {requireThat,id} from './policy.mjs';
 import {buildCatalog} from './catalog.mjs';
 import {hiddenInactiveProductIds,visibleCatalog} from './catalog-visibility.mjs';
+import {blockerPriceOptions,buildActivityPriceComparison,activityPriceBasis} from './activity-price-comparison.mjs';
+import {manualPriceOption,manualPriceEditable} from './manual-price-option.mjs';
 import {buildRecoveryBlockers} from './recovery-blockers.mjs';
 import {AccountRegistry} from './accounts.mjs';
 import {activePriceIncreaseGrant,setPriceIncreasePolicy} from './price-increase-policy.mjs';
@@ -106,6 +108,9 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    const requestUrl=new URL(req.url,origin),path=requestUrl.pathname;
    if(req.method==='GET'&&path==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(html);return;}
    const assets={'/app.js':['app.js','text/javascript; charset=utf-8'],'/price-reviews.js':['price-reviews.js','text/javascript; charset=utf-8'],'/migration.js':['migration.js','text/javascript; charset=utf-8'],'/app.css':['app.css','text/css; charset=utf-8'],'/guardian.png':['guardian.png','image/png']};
+   assets['/price-review-card.js']=['price-review-card.js','text/javascript; charset=utf-8'];
+   assets['/activity-prices.js']=['activity-prices.js','text/javascript; charset=utf-8'];
+   assets['/blocker-prices.js']=['blocker-prices.js','text/javascript; charset=utf-8'];
    assets['/recovery-blockers.js']=['recovery-blockers.js','text/javascript; charset=utf-8'];
    if(req.method==='GET'&&assets[path]){const[file,type]=assets[path];res.writeHead(200,{'Content-Type':type});res.end(await readFile(join(rootDir,'public',file)));return;}
    if(req.method==='GET'&&path==='/api/status'){json(200,snapshot());return;}
@@ -122,6 +127,18 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     const tracked=new Set(pricePage.rechecks.trackedPendingProductIds);
     json(200,{...pricePage,recoveryIssues:buildRecoveryIssues(catalog,shopId?journal.priceReviews(shopId).filter(r=>!originalPricesOnly()||r.status!=='pending'):[]).filter(issue=>!tracked.has(issue.productId))});return;
    }
+   if(req.method==='GET'&&path==='/api/recovery-blockers/prices'){
+    const productId=id(requestUrl.searchParams.get('productId'),'商品ID');
+    const record=blockerView({filter:'all',query:productId,pageSize:20}).records.find(r=>r.productId===productId);
+    requireThat(record,'PRICE_REVIEW_CHANGED','商品不在当前恢复受阻列表，请刷新');
+    const latest=journal.priceReviews(shopId).find(r=>r.productId===productId&&['pending','declined'].includes(r.status)&&r.createdAt<=Date.now());
+    const review=latest?.expiresAt>Date.now()?latest:null;
+    const pending=journal.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId));
+    const context={reviews:journal.priceReviews(shopId),tasks:journal.list(shopId),now:Date.now()},options=review?.status==='pending'?blockerPriceOptions(review,context):[];
+    const comparison=buildActivityPriceComparison({review,reviews:context.reviews,tasks:context.tasks,shopId,productId,options,schemes:record.schemes,now:context.now});
+    const manualBasisKeys={};const manualTypes=review&&manualPriceEditable(review)?['限时抢购','限量抢购'].filter(type=>{try{const basis=activityPriceBasis(review,type,context);manualBasisKeys[type]=basis.activityBasisKey||null;return true;}catch{return false;}}):[];
+    json(200,{shopId,productId,blocked:pending,comparison,recheckReview:latest?{id:latest.id,key:latest.key}:null,review:review?{...review,...(review.status==='pending'?{options}:{}),activityComparison:comparison,manualTypes,manualBasisKeys,manualEditable:review.status==='pending'&&manualPriceEditable(review)}:null});return;
+   }
    if(req.method==='GET'&&path==='/api/recovery-blockers'){
     const q=requestUrl.searchParams,filter=['both','other','all'].includes(q.get('filter'))?q.get('filter'):'both';
     json(200,blockerView({filter,page:q.get('page')??0,pageSize:q.get('size')??10,query:q.get('q')||''}));return;
@@ -132,7 +149,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }
    requireThat(req.method==='POST'&&req.headers.origin===origin&&req.headers['x-guardian-token']===token,'REQUEST_REJECTED','请求必须来自本机工作台');
    requireThat(req.headers['content-type']==='application/json','REQUEST_REJECTED','请求格式无效');
-   const bodyLimit=path==='/api/migration/preview'?TRANSFER_MAX_BYTES+1024:path==='/api/price-reviews/decide'?65536:4096;
+   const bodyLimit=path==='/api/migration/preview'?TRANSFER_MAX_BYTES+1024:['/api/price-reviews/decide','/api/recovery-blockers/prices/decide','/api/recovery-blockers/prices/preview'].includes(path)?2097152:4096;
    const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;requireThat(bytes<bodyLimit,'REQUEST_REJECTED','请求过大');chunks.push(chunk);}
    const body=Buffer.concat(chunks).toString('utf8');
    const args=JSON.parse(body||'{}');requireThat(args&&typeof args==='object'&&!Array.isArray(args),'REQUEST_REJECTED','请求内容无效');
@@ -189,10 +206,18 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     requireThat(!args.enabled||!originalPricesOnly(),'ORIGINAL_PRICE_BLOCKED','请先关闭仅按原价恢复，再开启自动提价');
     const setting=setPriceIncreasePolicy(journal,shopId,{enabled:args.enabled,acceptHigherPricesAndRisk:args.acceptHigherPricesAndRisk});
     json(200,{ok:true,enabled:setting.enabled});return;
+   }else if(['/api/recovery-blockers/prices/decide','/api/recovery-blockers/prices/preview'].includes(path)){
+    requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'SHOP_MISMATCH','请先连接并核对当前店铺');
+    requireThat(!action,'BUSY','请等待当前店铺操作完成');
+    const review=journal.priceReview(args.reviewId);
+    requireThat(review?.shopId===shopId&&review.key===args.key&&blockerView({filter:'all',query:review.productId,pageSize:20}).records.some(r=>r.productId===review.productId),'PRICE_REVIEW_CHANGED','商品或建议已变化，请刷新受阻列表');
+    if(path.endsWith('/preview')){service.assertBlockedPriceReview(review);const basis=activityPriceBasis(review,args.activityType||review.type,{reviews:journal.priceReviews(shopId),tasks:journal.list(shopId)});json(200,{ok:true,option:manualPriceOption(basis,args.discounts)});return;}
+    requireThat(args.decision!=='approve'||args.acceptBlockedPriceChange===true,'PRICE_CONSENT_REQUIRED','须明确确认只调整本商品的确切价格');
+    const result=service.decidePriceReview({...args,approvalContext:'recovery-blockers'});json(200,{ok:true,review:result});return;
    }else if(path==='/api/price-reviews/decide'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先连接并核对当前店铺');
     requireThat(args.decision!=='approve'||!originalPricesOnly(),'ORIGINAL_PRICE_BLOCKED','本店只按原价恢复，新价格要求在恢复受阻查看；如需调价请先关闭该模式');
-    const review=service.decidePriceReview(args);json(200,{ok:true,review});return;
+    const review=service.decidePriceReview({...args,approvalContext:null,manualDiscounts:null});json(200,{ok:true,review});return;
    }else if(path==='/api/recovery/request'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'LOGIN_REQUIRED','请先登录并核对当前店铺');
     const productId=id(args.productId,'商品ID');const result=service.requestRecovery([productId],{reason:'user-recheck'});json(202,{ok:true,...result});return;

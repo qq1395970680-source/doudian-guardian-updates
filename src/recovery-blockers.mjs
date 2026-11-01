@@ -1,7 +1,6 @@
-import {fingerprint} from './policy.mjs';
+import {priceContext as context,recordedPriceRejections} from './activity-price-evidence.mjs';
 import {verifiedRecoveryReceipt} from './recovery-history.mjs';
 const types=['限时抢购','限量抢购'];
-const context=(history,rows)=>fingerprint({history,rows:rows.map(s=>[s.id,s.name,s.baseFen,s.discount,s.saleFen]).sort((a,b)=>a[0].localeCompare(b[0]))});
 // Display only. A failed source activity or an untested option never proves
 // that the other type is rejected, and none of these rows authorize execution.
 export function buildRecoveryBlockers({shopId,catalog,tasks=[],reviews=[],checks=[],targets=[],now=Date.now(),originalPricesOnly=false,filter='both',page=0,pageSize=10,query=''}={}){
@@ -11,26 +10,7 @@ export function buildRecoveryBlockers({shopId,catalog,tasks=[],reviews=[],checks
   if(p.excluded||p.current.length||p.scheduled.length)continue;
   const check=checks.find(c=>c.shopId===shopId&&c.productId===p.productId),related=scoped.filter(t=>t.plans.some(q=>q.productId===p.productId));
   const active=related.some(t=>!['verified','blocked'].includes(t.phase));
-  const failures=[];
-  for(const review of reviews.filter(r=>r.shopId===shopId&&r.productId===p.productId&&r.source==='live-platform-removal-export')){
-   const proof=review.sourceProof;
-   if(!types.includes(review.type)||proof?.source!=='live-platform-removal-export'||proof.complete!==true||proof.shopId!==shopId||
-    proof.record?.productId!==p.productId||proof.activityType!==review.type||!/^[a-f0-9]{64}$/i.test(proof.sha256||'')||
-    !Number.isFinite(review.createdAt)||review.createdAt>now+5000||!Number.isFinite(proof.observedAt)||proof.observedAt<=0||
-    proof.observedAt>review.createdAt+5000||review.createdAt-proof.observedAt>120000||!review.rows?.length)continue;
-   const rows=review.rows.map(r=>({...r,discount:r.previousDiscount,saleFen:r.previousFen}));
-   failures.push({type:review.type,state:'blocked',at:review.createdAt,message:proof.record.reason,taskId:null,
-    context:context(review.historicalFingerprint,rows),source:'recorded-platform-removal-rejection'});
-  }
-  for(const review of reviews.filter(r=>r.shopId===shopId&&r.productId===p.productId&&r.source==='live-platform-draft')){
-   const task=byTask.get(review.taskId),plan=task?.plans.find(q=>q.productId===p.productId);
-   if(!plan||task.phase!=='blocked'||task.submitAttempts!==0||!task.reason?.startsWith('PRICE_REVIEW_REQUIRED:')||
-    !types.includes(plan.type)||review.type!==plan.type||review.historicalFingerprint!==plan.historicalFingerprint||
-    !Number.isFinite(review.createdAt)||review.createdAt<=0||review.createdAt>now+5000||
-    review.rows.length!==plan.skus.length||!plan.skus.every(s=>review.rows.some(r=>r.id===s.id&&r.baseFen===s.baseFen&&r.name===s.name&&r.previousFen===s.saleFen&&r.previousDiscount===s.discount)))continue;
-   failures.push({type:plan.type,state:'blocked',at:review.createdAt,message:task.reason,taskId:task.id,
-    context:context(plan.historicalFingerprint,plan.skus),source:'recorded-platform-draft-rejection'});
-  }
+  const failures=recordedPriceRejections({shopId,productId:p.productId,reviews,tasks:scoped,now});
   const latestFailure=failures.sort((a,b)=>b.at-a.at)[0],target=targetByProduct.get(p.productId);
   const currentContext=target?context(target.historicalFingerprint,target.rows):latestFailure?.context;
   const schemes=Object.fromEntries(types.map(type=>{

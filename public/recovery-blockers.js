@@ -1,4 +1,6 @@
-export function createRecoveryBlockers({getState,post,toast,node,time,navigate}){
+import {createBlockerPrices} from './blocker-prices.js';
+export function createRecoveryBlockers({getState,post,toast,node,time,money,discount,navigate}){
+ const pricing=createBlockerPrices({getState,post,toast,node,time,money,discount});
  const $=id=>document.getElementById(id);let shop=null,onlyMode=null,filter='both',page=0,pages=1,loading=false,generation=0;
  const labels={blocked:'平台已拒绝',verified:'该次已回读',unverified:'尚未核验'};
  const friendly=value=>String(value||'').replace(/^[A-Z_]+:\s*/, '');
@@ -16,7 +18,7 @@ export function createRecoveryBlockers({getState,post,toast,node,time,navigate})
    const actions=node('div','button-row'),retry=node('button','button secondary',record.state==='verifying'?'正在核验':'重新核验恢复');
    const current=getState();retry.disabled=record.state==='verifying'||!current.online||current.state?.connection?.shopId!==shop;
    retry.onclick=async()=>{retry.disabled=true;try{await post('recovery/request',{shopId:shop,productId:record.productId});toast('已加入核验队列；没有批准新价格或切换活动类型。');}catch(e){toast(e.message);}finally{void refresh();}};actions.append(retry);
-   if(record.pendingReview&&!record.pricingDeferred){const price=node('button','button small secondary','查看价格确认');price.onclick=()=>navigate('prices');actions.append(price);}
+   const price=node('button','button small secondary','调整价格');price.dataset.blockerPricing=record.productId;price.onclick=()=>void pricing.open(record);actions.append(price);
    card.append(actions);return card;
   });
   $('blocker-records').replaceChildren(...(cards.length?cards:[node('div','panel empty',filter==='both'?'当前没有同一价格方案下限时、限量均明确受阻的商品。可切换查看其他待核验项。':'当前没有符合条件的受阻商品。')]));
@@ -30,5 +32,5 @@ export function createRecoveryBlockers({getState,post,toast,node,time,navigate})
  for(const button of document.querySelectorAll('[data-blocker-filter]'))button.onclick=()=>{filter=button.dataset.blockerFilter;page=0;generation++;for(const b of document.querySelectorAll('[data-blocker-filter]'))b.classList.toggle('selected',b===button);void refresh();};
  $('blocker-prev').onclick=()=>{page=Math.max(0,page-1);generation++;void refresh();};$('blocker-next').onclick=()=>{page=Math.min(pages-1,page+1);generation++;void refresh();};
  let timer;$('blocker-search').oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>{page=0;generation++;void refresh();},250);};
- return{sync(){const next=getState().state?.shopId||null,mode=getState().state?.originalPriceRecoveryEnabled===true;if(shop!==next||onlyMode!==mode){shop=next;onlyMode=mode;filter=mode?'all':'both';for(const b of document.querySelectorAll('[data-blocker-filter]'))b.classList.toggle('selected',b.dataset.blockerFilter===filter);page=0;generation++;$('blocker-records').replaceChildren(node('div','panel empty','正在读取受阻记录'));}},refresh};
+ return{sync(){pricing.sync();const next=getState().state?.shopId||null,mode=getState().state?.originalPriceRecoveryEnabled===true;if(shop!==next||onlyMode!==mode){shop=next;onlyMode=mode;filter=mode?'all':'both';for(const b of document.querySelectorAll('[data-blocker-filter]'))b.classList.toggle('selected',b.dataset.blockerFilter===filter);page=0;generation++;$('blocker-records').replaceChildren(node('div','panel empty','正在读取受阻记录'));}},refresh};
 }

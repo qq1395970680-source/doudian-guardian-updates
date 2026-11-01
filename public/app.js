@@ -22,7 +22,7 @@ function badge(value,color='neutral'){return node('span','badge '+color,value);}
 function icon(name){const s=document.createElementNS('http://www.w3.org/2000/svg','svg'),u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href','#i-'+name);s.append(u);return s;}
 const priceReviews=createPriceReviews({getState:()=>({state,online}),post,toast,node,money,discount,time});
 const migration=createMigration({getState:()=>({state,online}),post,toast,node,money,discount,time});
-const recoveryBlockers=createRecoveryBlockers({getState:()=>({state,online}),post,toast,node,time,navigate});
+const recoveryBlockers=createRecoveryBlockers({getState:()=>({state,online}),post,toast,node,time,money,discount,navigate});
 const recoveries=createRecoveries({getState:()=>({shopId:state?.shopId??null,visible:view==='recoveries'}),node,money,discount,time});
 function toast(message){text('toast',message);$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
 function navigate(next){if(!names[next]||view===next)return;view=next;for(const id of Object.keys(names)){const el=$('view-'+id);el.hidden=id!==view;el.classList.toggle('active',id===view);}

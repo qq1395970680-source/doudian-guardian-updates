@@ -6,6 +6,8 @@ import { fingerprint, normalizeName, requireThat, validateHistorical, proveDraft
 import {activePriceIncreaseGrant,isAutomaticPriceIncrease,validAutomaticPriceApproval} from './price-increase-policy.mjs';
 import {assertCampaignPolicy} from './campaign-policy.mjs';
 import {makeRemovalPriceReview} from './ratio-prices.mjs';
+import {blockerPriceOptions,activityPriceBasis} from './activity-price-comparison.mjs';
+import {manualPriceOption} from './manual-price-option.mjs';
 import {priceOptions} from './price-options.mjs';
 import {makePriceReconfirmation,assertPriceReconfirmation,needsPriceReconfirmation} from './price-reconfirmation.mjs';
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
@@ -245,7 +247,7 @@ export class Journal {
     this.db.prepare('INSERT INTO price_reviews VALUES(?,?,?,?,?,?)').run(saved.id,saved.shopId,saved.productId,saved.status,JSON.stringify(saved),now);
     this.event(saved.taskId,'price-review-pending',{shopId:saved.shopId,productId:saved.productId,reviewId:saved.id},now);return saved;
   }
-  decidePriceReview(shopId,reviewId,key,decision,{confirmedSkuIds=[],acceptPriceAndRisk=false,historicalFingerprint=null,optionId=null,optionKey=null,confirmRebuild=false,queueRecovery=false}={},now=Date.now()) {
+  decidePriceReview(shopId,reviewId,key,decision,{confirmedSkuIds=[],acceptPriceAndRisk=false,historicalFingerprint=null,optionId=null,optionKey=null,confirmRebuild=false,queueRecovery=false,approvalContext=null,manualDiscounts=null,manualActivityType=null}={},now=Date.now()) {
     return this.transaction(()=>{
       const r=this.priceReview(reviewId);
       requireThat(r&&r.shopId===shopId&&r.key===key,'PRICE_REVIEW_CHANGED','店铺或调价建议已变化');
@@ -269,7 +271,8 @@ export class Journal {
         const target=this.priceTarget(shopId,r.productId),previous=r.kind==='history-reconfirmation'?target?.id||null:target?.historicalFingerprint===r.historicalFingerprint?target.id:null;
         requireThat((r.previousApprovalId||null)===previous,'PRICE_REVIEW_CHANGED','此前已确认的价格已变化');
         if(optionId!==null||optionKey!==null){
-          const option=priceOptions(r).find(o=>o.id===optionId);
+          const priceContext={reviews:this.priceReviews(shopId),tasks:this.list(shopId),now};
+          const option=optionId==='manual-discount'&&approvalContext==='recovery-blockers'?manualPriceOption(activityPriceBasis(r,manualActivityType||r.type,priceContext),manualDiscounts,now):(approvalContext==='recovery-blockers'?blockerPriceOptions(r,priceContext):priceOptions(r)).find(o=>o.id===optionId);
           requireThat(option?.available&&option.key===optionKey,'PRICE_OPTION_CHANGED','所选方案不可用或已经变化，请重新核对');
           r.originalProposalRows=structuredClone(r.rows);
           r.rows=structuredClone(option.rows);
@@ -277,17 +280,17 @@ export class Journal {
           if(option.campaignTarget){
             r.campaignTarget=structuredClone(option.campaignTarget);
             r.type=option.campaignTarget.type;r.rules=structuredClone(option.campaignTarget.rules);
-            delete r.ratio;
+            if(!option.ratio)delete r.ratio;
           }
           if(option.rebuildTarget)r.rebuildTarget=structuredClone(option.rebuildTarget);
-          r.selectedOption={id:option.id,key:option.key,label:option.label};
+          r.selectedOption={id:option.id,key:option.key,label:option.label,...(option.evidenceReviewId?{evidenceReviewId:option.evidenceReviewId}:{}),activityType:option.activityType};
         }
         if(r.kind==='history-reconfirmation')assertHistoryReconfirmation(r,target,this.histories(shopId).find(b=>fingerprint(b)===r.historicalFingerprint));
         else if(r.kind==='rounding-reconfirmation')assertPriceReconfirmation(r,target);
         else requireThat(r.rows.every(row=>row.saleFen===saleFen(row.baseFen,row.discount)&&
           row.previousFen===saleFen(row.baseFen,row.previousDiscount)),
           'PRICE_REVIEW_CHANGED','价格取整规则已更新，请重新计算并核对全部规格价格');
-        r.status='approved';r.approvedAt=now;r.consent={exactPrices:true,matchedRiskConfirmation:true,continueGuardingExactPrices:true,
+        r.status='approved';r.approvedAt=now;if(approvalContext==='recovery-blockers')r.approvalContext=approvalContext;r.consent={exactPrices:true,matchedRiskConfirmation:true,continueGuardingExactPrices:true,
           ...(r.kind==='limited-rebuild'?{rebuildConfirmed:true,activityFingerprint:fingerprint(r.rebuildTarget),sourceFingerprint:fingerprint(r.rebuildSource)}:{})};
         this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(shopId,r.productId,r.id);
       }else{

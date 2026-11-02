@@ -38,7 +38,7 @@ export function priceOptions(review){
  const staleRounding=review.rows.some(row=>row.saleFen!==saleFen(row.baseFen,row.discount)||
   row.previousFen!==saleFen(row.baseFen,row.previousDiscount));
  if(staleRounding)return [...descriptions,...(['限量抢购','限时抢购'].includes(review.type)?[['switch-original','原折扣 · 切换活动类型','保留历史折扣，重新核对目标活动。']]:[])].map(([id,label,description])=>
-  ({id,label,description,available:false,rows:[],reason:'此建议使用了旧的价格取整规则。请点击重新计算，再核对逐规格确切价格；原确认记录会保留。'}));
+  ({id,label,description,activityType:id==='switch-original'?(review.type==='限量抢购'?'限时抢购':'限量抢购'):review.type,available:false,rows:[],reason:'此建议使用了旧的价格取整规则。请点击重新计算，再核对逐规格确切价格；原确认记录会保留。'}));
  const skus=review.rows.map(row=>({id:row.id,baseFen:row.baseFen,discount:row.previousDiscount,saleFen:row.previousFen}));
  const highest=Math.max(...skus.map(row=>row.saleFen));
  const options=descriptions.map(([id,label,description])=>{
@@ -57,7 +57,7 @@ export function priceOptions(review){
     key:fingerprint({algorithm:'price-strategies-v1',sourceKey:review.key,id,rows,ratio:ratio||null})};
   }catch(error){
    if(error.code!=='NO_FEASIBLE_PRICE')throw error;
-   return{id,label,description,available:false,rows:[],reason:id==='original'?error.message:'在当前商品原价、可用折扣档位和已读平台价格上下限内，没有满足条件的不降价方案。程序不会改商品原价或绕过平台限制。'};
+   return{id,label,description,activityType:review.type,available:false,rows:[],reason:id==='original'?error.message:'在当前商品原价、可用折扣档位和已读平台价格上下限内，没有满足条件的不降价方案。程序不会改商品原价或绕过平台限制。'};
   }
  });
  if(['限量抢购','限时抢购'].includes(review.type)){

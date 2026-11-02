@@ -29,12 +29,12 @@ test('unproven member loss requires in-app explicit rebuild consent before nativ
   const html=await(await fetch(app.url)).text(),token=html.match(/script nonce="([a-f0-9]+)"/)[1];
   await fetch(app.url+'/api/finish-login',{method:'POST',headers:{Origin:app.url,'Content-Type':'application/json','X-Guardian-Token':token},body:'{}'});
   while(app.snapshot().action)await new Promise(r=>setTimeout(r,10));
-  ui=await chromium.launch({headless:true});const page=await ui.newPage({viewport:{width:1280,height:850}});
-  await page.goto(app.url);await page.locator('[data-view="prices"]').click();const card=page.locator(`[data-review-id="${review.id}"]`);await card.waitFor();
-  await card.getByText(/重新提供总限量 1000 件/).waitFor();assert.equal(await card.getByRole('checkbox').isChecked(),false);
-  assert.match(await card.locator('.price-consent').innerText(),/退出原因尚未证实.*确切时长及限量额度/);
+  ui=await chromium.launch({channel:'chromium',headless:true});const page=await ui.newPage({viewport:{width:1280,height:850}});
+  await page.goto(app.url);await page.locator('[data-view="prices"]').click();const row=page.locator(`[data-review-id="${review.id}"]`);await row.waitFor();await row.getByRole('button',{name:'核对价格',exact:true}).click();const card=page.locator('[data-price-workspace]').locator(`[data-review-id="${review.id}"]`);await card.waitFor();
+  await card.getByText(/总限量 1000 件/).waitFor();assert.equal(await card.getByRole('checkbox').isChecked(),false);
+  assert.match(await card.innerText(),/退出原因尚未证实/);assert.match(await card.locator('.price-consent').innerText(),/全部 1 个规格.*确切价格及活动规则.*重新提供上方限量额度/);
   await page.screenshot({path:resolve('artifacts/beta38-rebuild-confirmation-ui.png'),animations:'disabled'});
-  const beforeConfirm=discoveries;await card.getByRole('checkbox').check();await card.getByRole('button',{name:'确认重新创建并继续守护',exact:true}).click();
+  const beforeConfirm=discoveries;await card.getByRole('checkbox').check();await card.getByRole('button',{name:'确认表内价格并继续守护',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('.price-consent')===null);
   assert.equal(j.priceTarget(policy.shopId,product.productId).consent.rebuildConfirmed,true);assert.equal(fixture.state.submits,0);
   for(let n=0;n<1200&&service.status().verified!==1;n++)await new Promise(r=>setTimeout(r,50));

@@ -64,15 +64,14 @@ test('dashboard displays a pre-enqueue failure and retry time with zero tasks',{
   assert.match(await product.innerText(),/尚未进入恢复任务入队和提交/);assert.match(await product.innerText(),/重试最早时间/);
   await product.getByText('查看商品集合与分页诊断',{exact:true}).click();assert.match(await product.innerText(),/缺失商品ID/);assert.equal(journal.list(b.shopId).length,0);
   await page.screenshot({path:resolve('artifacts/membership-failure-ui.png'),fullPage:true});
-  await page.locator('[data-view="prices"]').click();await page.locator(`[data-recovery-issue="${b.productId}"]`).waitFor();
-  assert.match(await page.locator('#recovery-issues').innerText(),/PRECHECK_MEMBERSHIP/);
-  assert.match(await page.locator('#recovery-issues').innerText(),/目标20件，实际10件/);
+  await page.locator('[data-view="prices"]').click();assert.equal(await page.locator('.price-review').count(),0,'read failures cannot become price approvals');
+  await page.locator('[data-view="blockers"]').click();const blocker=page.locator(`[data-recovery-blocker="${b.productId}"]`);await blocker.waitFor();assert.match(await blocker.innerText(),/目标20件，实际10件/);await blocker.locator('summary').click();assert.match(await blocker.innerText(),/PRECHECK_MEMBERSHIP/);
   assert.equal(journal.priceReviews(b.shopId).length,0);assert.equal(journal.list(b.shopId).length,0);
   await page.getByRole('button',{name:'程序工具',exact:true}).click();await page.locator('[data-tool="diagnostics"]').click();
   await page.getByRole('button',{name:'导出诊断包',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#diagnostics-status')?.textContent.startsWith('已保存：'));
   assert.match(await page.locator('#diagnostics-status').innerText(),/\.zip/);assert.equal(journal.list(b.shopId).length,0);
   assert.match(await page.locator('#diagnostics-status').innerText(),/当前构建 1 条/);assert.match(await page.locator('#diagnostics-status').innerText(),/来源未记录 1 条/);
-  assert.match(await page.locator('#events').innerText(),/发生版本/);assert.match(await page.locator('#events').innerText(),/未保存发生时的版本/);
+  for(const detail of await page.locator('#events .record-details').all())await detail.locator('summary').click();assert.match(await page.locator('#events').innerText(),/发生版本/);const legacyRecord=page.locator('#events .record').filter({hasText:'未记录版本的历史错误'});assert.equal(await legacyRecord.count(),1);assert.doesNotMatch(await legacyRecord.innerText(),/发生版本/,'old errors must never inherit the current runtime version');
   await page.screenshot({path:resolve('artifacts/diagnostics-export-ui.png'),fullPage:true});
  }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
 });

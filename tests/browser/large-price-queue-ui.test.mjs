@@ -8,7 +8,7 @@ import {createApp} from '../../src/server.mjs';
 import {DedicatedBrowser} from '../../src/browser.mjs';
 import {seedPriceQueue} from '../helpers/large-price-queue-fixture.mjs';
 
-test('500 pending products paginate past 200 with ten cards and no price approval',{timeout:90000},async()=>{
+test('500 pending products paginate past 200 with ten summaries, separate 220 history rows and no price approval',{timeout:90000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'guardian-large-price-ui-')),j=new Journal(':memory:');seedPriceQueue(j);
  const browser=new DedicatedBrowser(join(dir,'browser'),{test:true,viewport:{width:1440,height:960}});
  const service={running:true,busy:false,status:()=>({unknown:0,tasks:[]}),stop(){}};
@@ -22,17 +22,21 @@ test('500 pending products paginate past 200 with ten cards and no price approva
   });
   await page.goto(app.url);await page.locator('[data-view="prices"]').click();
   await page.locator('[data-price-direction="all"]').click();
-  await page.getByText('720 份记录 · 第 1 / 72 页',{exact:true}).waitFor();
+  await page.getByText('500 份记录 · 第 1 / 50 页',{exact:true}).waitFor();
   assert.equal(await page.locator('#price-count').innerText(),'500');
   for(let n=2;n<=22;n++){
    await page.locator('#price-next').click();
-   await page.getByText(`720 份记录 · 第 ${n} / 72 页`,{exact:true}).waitFor();
-   assert.equal(await page.locator('.price-review').count(),10);
+   await page.getByText(`500 份记录 · 第 ${n} / 50 页`,{exact:true}).waitFor();
+   assert.equal(await page.locator('.price-queue-row').count(),10);
   }
   await page.locator('[data-review-id="900001-review-289"]').waitFor();
   assert.equal(await page.locator('.price-consent input:checked').count(),0);
+  assert.equal(await page.locator('table[data-role="price-target-table"]').count(),0,'summaries do not mount hundreds of SKU editors');
+  await page.locator('[data-price-scope="history"]').click();await page.getByText('220 份记录 · 第 1 / 22 页',{exact:true}).waitFor();
+  assert.equal(await page.locator('.price-queue-row').count(),10);assert.equal(await page.locator('#price-count').innerText(),'500');
+  assert.equal(await page.locator('.price-consent input:checked').count(),0);
   assert.ok(sizes.length>=22&&sizes.every(n=>n===10));assert.deepEqual(writes,[]);assert.deepEqual(errors,[]);
-  assert.equal(j.priceReviewCounts('900001').pending,500);assert.equal(j.db.prepare('SELECT COUNT(*) AS n FROM price_targets').get().n,0);
+  assert.equal(j.priceReviewCounts('900001').pending,500);assert.equal(j.priceReviewCounts('900001').total,720);assert.equal(j.db.prepare('SELECT COUNT(*) AS n FROM price_targets').get().n,0);
   await page.screenshot({path:join(import.meta.dirname,'../../artifacts/beta21-large-price-queue.png')});
  }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
 });

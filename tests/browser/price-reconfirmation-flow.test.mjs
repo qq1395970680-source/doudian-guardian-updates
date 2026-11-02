@@ -63,8 +63,8 @@ for(const picker of ['arco'])for(const type of ['限量抢购','限时抢购'])t
   for(let i=0;i<50&&!app.snapshot().connection;i++)await new Promise(r=>setTimeout(r,10));
   assert.equal(app.snapshot().connection?.shopId,policy.shopId);
   uiBrowser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width:1280,height:960}});await uiBrowser.open(policy.shopId);const ui=await uiBrowser.page();
-  await ui.goto(app.url);await ui.locator('[data-view="prices"]').click();const card=ui.locator('[data-review-id="'+review.id+'"]');await card.waitFor();
-  assert.match(await card.innerText(),/¥65.31/);assert.match(await card.innerText(),/¥65.32/);assert.match(await card.innerText(),/28 天 0 时 0 分 7 秒/);
+  await ui.goto(app.url);await ui.locator('[data-view="prices"]').click();const row=ui.locator('[data-review-id="'+review.id+'"]');await row.waitFor();await row.getByRole('button',{name:'核对价格',exact:true}).click();const card=ui.locator('[data-price-workspace]').locator('[data-review-id="'+review.id+'"]');await card.waitFor();
+  assert.match(await card.innerText(),/¥65.31/);assert.match(await card.innerText(),/¥65.32/);assert.match(await card.innerText(),/取整规则已更新/);assert.equal(await card.locator('[data-role="price-target-table"]').count(),1);
   const button=card.getByRole('button',{name:'确认表内价格并继续守护',exact:true});assert.equal(await button.isDisabled(),true);assert.equal(await card.getByRole('checkbox').isChecked(),false);
   await ui.screenshot({path:resolve('artifacts','beta30-reconfirmation-'+(type==='限量抢购'?'limited':'timed')+'.png'),animations:'disabled',fullPage:true});
   await card.getByRole('checkbox').check();const response=ui.waitForResponse(r=>r.url().endsWith('/api/price-reviews/decide'));await button.click();assert.equal((await response).status(),200);

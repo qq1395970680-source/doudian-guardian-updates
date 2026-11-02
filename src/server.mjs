@@ -1,3 +1,5 @@
+import {wakeVerification} from './verification-schedule.mjs';
+import {activeCareRecoveryGrant,setCareRecoveryPolicy} from './care-recovery-policy.mjs';
 import {createServer} from 'node:http';
 import {randomBytes,createHash} from 'node:crypto';
 import {readFile,mkdir,writeFile,readdir} from 'node:fs/promises';
@@ -12,6 +14,8 @@ import {buildCatalog} from './catalog.mjs';
 import {hiddenInactiveProductIds,visibleCatalog} from './catalog-visibility.mjs';
 import {blockerPriceOptions,buildActivityPriceComparison,activityPriceBasis} from './activity-price-comparison.mjs';
 import {manualPriceOption,manualPriceEditable} from './manual-price-option.mjs';
+import {workspaceOwnership} from './workspace-ownership.mjs';
+import {recoveryRequests} from './recovery-requests.mjs';
 import {buildRecoveryBlockers} from './recovery-blockers.mjs';
 import {AccountRegistry} from './accounts.mjs';
 import {activePriceIncreaseGrant,setPriceIncreasePolicy} from './price-increase-policy.mjs';
@@ -56,29 +60,32 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   lastRun:service.status().lastRun,lastAction,readHealth:platform.readHealth?.(),loginOpen:browser.loginMode===true,persistence:browser.sessionPersistence||null});
  const acceptConnection=identity=>{connection=identity;markAuthenticated(journal,identity,Date.now(),{force:true});return identity;};
  const displayContext=()=>{
+  const tasks=shopId?journal.list(shopId):[],reviews=shopId?journal.priceReviews(shopId):[],queue=shopId?recoveryRequests(journal,shopId):{items:[],paused:false};
   const checks=shopId?journal.productChecks(shopId):[];
   const raw=buildCatalog({shopId,inventory:platform.inventory,observation:shopId?journal.settings('catalog-view:'+shopId):null,
-   histories:shopId?journal.histories(shopId):[],tasks:shopId?journal.list(shopId):[],checks,excluded:policy.excludedProductIds||[]});
+   histories:shopId?journal.histories(shopId):[],tasks,checks,excluded:policy.excludedProductIds||[]});
   const hiddenProductIds=hiddenInactiveProductIds({shopId,checks,catalog:raw});
-  return{catalog:visibleCatalog(raw,hiddenProductIds),hiddenProductIds};
+  const catalog=visibleCatalog(raw,hiddenProductIds),hidden=[...new Set([...hiddenProductIds,...(policy.excludedProductIds||[])])];
+  const ownership=workspaceOwnership({shopId,products:catalog.products,reviews,tasks,checks,requests:queue.items,hiddenProductIds:hidden,careEnabled:!!activeCareRecoveryGrant(journal,shopId)});
+  return{catalog,hiddenProductIds:hidden,reviews,tasks,checks,requests:queue.items,requestsPaused:queue.paused,ownership};
  };
  const originalPricesOnly=()=>!!activeOriginalPriceRecoveryGrant(journal,shopId);
  const blockerView=(options={},context=displayContext())=>buildRecoveryBlockers({shopId,catalog:context.catalog,
-  tasks:shopId?journal.list(shopId):[],reviews:shopId?journal.priceReviews(shopId):[],checks:shopId?journal.productChecks(shopId):[],
-  targets:shopId?journal.priceTargets(shopId):[],originalPricesOnly:originalPricesOnly(),...options});
- const snapshot=()=>{const context=displayContext(),{hiddenProductIds,catalog}=context,viewNow=Date.now();return({version,build:'isolated-headless-journal',sourceBuild,instance,startedAt,shopId,name:policy.name||null,connection:authView().required?null:connection,authentication:authView(),action,lastAction,
+  tasks:context.tasks,reviews:context.reviews,checks:context.checks,requests:context.requests,requestsPaused:context.requestsPaused,ownership:context.ownership,hiddenProductIds:context.hiddenProductIds,
+  targets:shopId?journal.priceTargets(shopId):[],originalPricesOnly:originalPricesOnly(),careEnabled:!!activeCareRecoveryGrant(journal,shopId),...options});
+ const snapshot=()=>{const context=displayContext(),{hiddenProductIds,catalog}=context,viewNow=Date.now(),blockers=blockerView({pageSize:1},context);return({version,build:'isolated-headless-journal',sourceBuild,instance,startedAt,shopId,name:policy.name||null,connection:authView().required?null:connection,authentication:authView(),action,lastAction,
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
   accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
-  automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId),
+  automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId)||!!activeCareRecoveryGrant(journal,shopId),careRecoveryEnabled:!!activeCareRecoveryGrant(journal,shopId),
   automaticOriginalRebuildEnabled:!!activeOriginalRebuildGrant(journal,shopId),
   originalPriceRecoveryEnabled:originalPricesOnly(),
   scanLoad:platform.readBudget?.()||null,
   campaignRule:shopId?journal.settings('campaign-policy:'+shopId)?.target||null:null,
   campaignConversion:shopId?(()=>{const s=journal.settings('campaign-conversion:'+shopId);return s?{status:s.status,total:s.products.length,verified:s.products.filter(p=>p.phase==='verified').length,updatedAt:s.updatedAt}:null;})():null,
   updates:{repository:UPDATE_REPOSITORY,currentVersion:version},
-  priceReviewsPending:shopId?journal.priceReviewCounts(shopId,{hiddenProductIds,hideExpiredAt:viewNow,hideUnconfirmed:originalPricesOnly()}).pending:0,
+  priceReviewsPending:context.ownership.priceReviewIds.length,
   priceRechecksPending:shopId?journal.priceRecheckProgress(shopId,{hiddenProductIds,products:catalog.products,hideExpiredAt:viewNow,hideUnconfirmed:originalPricesOnly()}).pending:0,
-  recoveryBothBlocked:shopId?blockerView({pageSize:1},context).counts.bothBlocked:0,
+  recoveryBothBlocked:blockers.counts.bothBlocked,recoveryBlockersTotal:blockers.counts.total,
   events:shopId?journal.events(150).filter(e=>e.detail?.shopId===shopId||e.task&&journal.get(e.task)?.shopId===shopId).slice(0,30):[]});};
  async function background(kind,fn){
   requireThat(!action&&!service.busy,'BUSY','当前任务完成前不能执行另一操作');action=kind;
@@ -121,26 +128,29 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
      filter:q.get('filter')||'verified',query:q.get('q')||'',page:q.get('page'),pageSize:q.get('size')||12}));return;
    }
    if(req.method==='GET'&&path==='/api/price-reviews'){
-    const q=requestUrl.searchParams;
-    const {catalog,hiddenProductIds}=displayContext();
-    const pricePage=journal.priceReviewPage(shopId,{page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all',recheckPage:q.get('recheckPage')??0,hiddenProductIds,products:catalog.products,hideExpiredAt:Date.now(),hideUnconfirmed:originalPricesOnly()});
+    const q=requestUrl.searchParams,scope=['pending','history'].includes(q.get('scope'))?q.get('scope'):null,context=displayContext(),{catalog,hiddenProductIds}=context;
+    const pricePage=journal.priceReviewPage(shopId,{scope,allowedReviewIds:scope==='pending'?context.ownership.priceReviewIds:null,page:q.get('page')??0,pageSize:q.get('size')??10,direction:q.get('direction')??'all',recheckPage:q.get('recheckPage')??0,hiddenProductIds,products:catalog.products,hideExpiredAt:Date.now(),hideUnconfirmed:scope?false:originalPricesOnly()});
     const tracked=new Set(pricePage.rechecks.trackedPendingProductIds);
-    json(200,{...pricePage,recoveryIssues:buildRecoveryIssues(catalog,shopId?journal.priceReviews(shopId).filter(r=>!originalPricesOnly()||r.status!=='pending'):[]).filter(issue=>!tracked.has(issue.productId))});return;
+    json(200,{...pricePage,recoveryIssues:scope?[]:buildRecoveryIssues(catalog,context.reviews.filter(r=>!originalPricesOnly()||r.status!=='pending')).filter(issue=>!tracked.has(issue.productId))});return;
    }
-   if(req.method==='GET'&&path==='/api/recovery-blockers/prices'){
-    const productId=id(requestUrl.searchParams.get('productId'),'商品ID');
-    const record=blockerView({filter:'all',query:productId,pageSize:20}).records.find(r=>r.productId===productId);
-    requireThat(record,'PRICE_REVIEW_CHANGED','商品不在当前恢复受阻列表，请刷新');
-    const latest=journal.priceReviews(shopId).find(r=>r.productId===productId&&['pending','declined'].includes(r.status)&&r.createdAt<=Date.now());
-    const review=latest?.expiresAt>Date.now()?latest:null;
-    const pending=journal.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId));
-    const context={reviews:journal.priceReviews(shopId),tasks:journal.list(shopId),now:Date.now()},options=review?.status==='pending'?blockerPriceOptions(review,context):[];
-    const comparison=buildActivityPriceComparison({review,reviews:context.reviews,tasks:context.tasks,shopId,productId,options,schemes:record.schemes,now:context.now});
-    const manualBasisKeys={};const manualTypes=review&&manualPriceEditable(review)?['限时抢购','限量抢购'].filter(type=>{try{const basis=activityPriceBasis(review,type,context);manualBasisKeys[type]=basis.activityBasisKey||null;return true;}catch{return false;}}):[];
-    json(200,{shopId,productId,blocked:pending,comparison,recheckReview:latest?{id:latest.id,key:latest.key}:null,review:review?{...review,...(review.status==='pending'?{options}:{}),activityComparison:comparison,manualTypes,manualBasisKeys,manualEditable:review.status==='pending'&&manualPriceEditable(review)}:null});return;
+   if(req.method==='GET'&&['/api/recovery-blockers/prices','/api/price-reviews/item'].includes(path)){
+    const productId=id(requestUrl.searchParams.get('productId'),'商品ID'),view=displayContext();
+    requireThat(!view.hiddenProductIds.includes(productId),'PRICE_REVIEW_CHANGED','该商品已排除或已下架，请刷新列表');
+    const record=blockerView({filter:'all',query:productId,pageSize:20,includePriceOwned:true},view).records.find(r=>r.productId===productId);
+    const latest=view.reviews.find(r=>r.productId===productId&&['pending','declined'].includes(r.status)&&r.createdAt<=Date.now());
+    const selectedId=requestUrl.searchParams.get('reviewId'),selected=selectedId?journal.priceReview(selectedId):null;
+    if(selectedId)requireThat(selected?.shopId===shopId&&selected.productId===productId&&['pending','approved','declined'].includes(selected.status)&&(!['pending','declined'].includes(selected.status)||selected.expiresAt>Date.now()),'PRICE_REVIEW_CHANGED','价格记录已变化或过期，请刷新列表');
+    const review=selectedId?selected:latest?.expiresAt>Date.now()?latest:journal.priceTarget(shopId,productId),readOnly=!!review&&(review.status!=='pending'||!!selectedId);
+    requireThat(record||review||view.catalog.products.some(p=>p.productId===productId),'PRICE_REVIEW_CHANGED','商品不在本店可展示列表');
+    const assignment=view.ownership.byProduct.get(productId),pending=view.tasks.some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId))||assignment?.carePending===true;
+    const canRecalculate=!selectedId&&!pending&&!!latest&&['pending','declined'].includes(latest.status);
+    const context={reviews:view.reviews,tasks:view.tasks,now:Date.now()},options=review?.status==='pending'&&!readOnly?blockerPriceOptions(review,context):[];
+    const comparison=buildActivityPriceComparison({review,reviews:context.reviews,tasks:context.tasks,shopId,productId,options,schemes:record?.schemes||{},now:context.now});
+    const manualBasisKeys={};const manualTypes=review&&!readOnly&&manualPriceEditable(review)?['限时抢购','限量抢购'].filter(type=>{try{const basis=activityPriceBasis(review,type,context);manualBasisKeys[type]=basis.activityBasisKey||null;return true;}catch{return false;}}):[];
+    json(200,{shopId,productId,blocked:pending,blockedReason:assignment?.blockedReason||null,canRecalculate,readOnly,comparison,recheckReview:!selectedId&&latest?{id:latest.id,key:latest.key}:null,review:review?{...review,canRecalculate:canRecalculate&&review.id===latest?.id,options:review.status==='pending'&&!readOnly?options:undefined,activityComparison:comparison,manualTypes,manualBasisKeys,manualEditable:review.status==='pending'&&!readOnly&&manualPriceEditable(review)}:null});return;
    }
    if(req.method==='GET'&&path==='/api/recovery-blockers'){
-    const q=requestUrl.searchParams,filter=['both','other','all'].includes(q.get('filter'))?q.get('filter'):'both';
+    const q=requestUrl.searchParams,filter=['both','other','all'].includes(q.get('filter'))?q.get('filter'):'all';
     json(200,blockerView({filter,page:q.get('page')??0,pageSize:q.get('size')??10,query:q.get('q')||''}));return;
    }
    if(req.method==='GET'&&path==='/api/products'){
@@ -149,7 +159,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }
    requireThat(req.method==='POST'&&req.headers.origin===origin&&req.headers['x-guardian-token']===token,'REQUEST_REJECTED','请求必须来自本机工作台');
    requireThat(req.headers['content-type']==='application/json','REQUEST_REJECTED','请求格式无效');
-   const bodyLimit=path==='/api/migration/preview'?TRANSFER_MAX_BYTES+1024:['/api/price-reviews/decide','/api/recovery-blockers/prices/decide','/api/recovery-blockers/prices/preview'].includes(path)?2097152:4096;
+   const bodyLimit=path==='/api/migration/preview'?TRANSFER_MAX_BYTES+1024:['/api/price-reviews/decide','/api/price-reviews/preview','/api/recovery-blockers/prices/decide','/api/recovery-blockers/prices/preview'].includes(path)?2097152:4096;
    const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;requireThat(bytes<bodyLimit,'REQUEST_REJECTED','请求过大');chunks.push(chunk);}
    const body=Buffer.concat(chunks).toString('utf8');
    const args=JSON.parse(body||'{}');requireThat(args&&typeof args==='object'&&!Array.isArray(args),'REQUEST_REJECTED','请求内容无效');
@@ -180,9 +190,29 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
      json(200,{ok:true,...result});return;
     }
     throw Object.assign(new Error('没有此迁移操作'),{code:'NOT_FOUND'});
+   }else if(path==='/api/care-recovery-policy'){
+    requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'SHOP_MISMATCH','请先连接并核对当前店铺');
+    requireThat(!action,'BUSY','请等待当前店铺操作完成');
+    requireThat(typeof args.enabled==='boolean'&&(!args.enabled||args.acceptNonReducingRecovery===true),'CARE_CONSENT_REQUIRED','请明确同意原价优先、全部规格不降价才自动调整，降价仍逐规格确认');
+    if(args.enabled&&!policy.originalRiskAllowed)Object.assign(policy,accounts.authorizeOriginal(shopId));
+    const setting=setCareRecoveryPolicy(journal,shopId,args);
+    if(setting.enabled){
+     if(!activeOriginalPriceRecoveryGrant(journal,shopId))setOriginalPriceRecoveryPolicy(journal,shopId,{enabled:true,acceptOriginalPricesOnly:true});
+     if(!activeOriginalRebuildGrant(journal,shopId))setOriginalRebuildPolicy(journal,shopId,{enabled:true,acceptOriginalRebuild:true});
+     setPriceIncreasePolicy(journal,shopId,{enabled:false});
+     const active=new Set(journal.list(shopId).filter(t=>!['verified','blocked'].includes(t.phase)).flatMap(t=>t.plans.map(p=>p.productId)));
+     // Last independently verified unavailable proofs also hide old proposals.
+     // Apply this after merging checks/reviews, so a pending review cannot add
+     // the same off-shelf product back into the wake/clear list.
+     const hiddenInactive=new Set(displayContext().hiddenProductIds);
+     const ids=[...new Set([...journal.productChecks(shopId).map(c=>c.productId),...journal.priceReviews(shopId).filter(r=>['pending','declined'].includes(r.status)).map(r=>r.productId)])].filter(productId=>!hiddenInactive.has(productId)&&!active.has(productId)&&!policy.excludedProductIds?.includes(productId)&&service.latestHistories().has(productId));
+     for(const productId of ids)journal.clearProductCheck(shopId,productId);
+     if(ids.length&&policy.liveEnabled&&policy.cutoverConfirmed)service.requestRecovery(ids,{reason:'care-recovery-enabled'});
+    }
+    json(200,{ok:true,enabled:setting.enabled,careRecoveryEnabled:setting.enabled});return;
    }else if(path==='/api/original-rebuild-policy'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'SHOP_MISMATCH','请先连接并核对当前店铺');
-    const setting=setOriginalRebuildPolicy(journal,shopId,args);
+    const setting=setOriginalRebuildPolicy(journal,shopId,args);if(!setting.enabled&&activeCareRecoveryGrant(journal,shopId))setCareRecoveryPolicy(journal,shopId,{enabled:false});
     if(setting.enabled){
      const ids=journal.productChecks(shopId).filter(c=>['LIMITED_LOSS_UNPROVEN','REBUILD_REVIEW_REQUIRED','TIMED_LOSS_UNPROVEN'].includes(c.code)&&!policy.excludedProductIds?.includes(c.productId)).map(c=>c.productId);
      for(const productId of ids)journal.clearProductCheck(shopId,productId);
@@ -191,8 +221,9 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     json(200,{ok:true,enabled:setting.enabled});return;
    }else if(path==='/api/original-price-recovery-policy'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'SHOP_MISMATCH','请先连接并核对当前店铺');
-    const setting=setOriginalPriceRecoveryPolicy(journal,shopId,args);
+    const setting=setOriginalPriceRecoveryPolicy(journal,shopId,args);if(activeCareRecoveryGrant(journal,shopId))setCareRecoveryPolicy(journal,shopId,{enabled:false});
     if(setting.enabled){
+     setCareRecoveryPolicy(journal,shopId,{enabled:false});
      setPriceIncreasePolicy(journal,shopId,{enabled:false});
      if(!activeOriginalRebuildGrant(journal,shopId))setOriginalRebuildPolicy(journal,shopId,{enabled:true,acceptOriginalRebuild:true});
      const pending=new Set(journal.list(shopId).filter(t=>!['verified','blocked'].includes(t.phase)).flatMap(t=>t.plans.map(p=>p.productId)));
@@ -206,11 +237,11 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     requireThat(!args.enabled||!originalPricesOnly(),'ORIGINAL_PRICE_BLOCKED','请先关闭仅按原价恢复，再开启自动提价');
     const setting=setPriceIncreasePolicy(journal,shopId,{enabled:args.enabled,acceptHigherPricesAndRisk:args.acceptHigherPricesAndRisk});
     json(200,{ok:true,enabled:setting.enabled});return;
-   }else if(['/api/recovery-blockers/prices/decide','/api/recovery-blockers/prices/preview'].includes(path)){
+   }else if(['/api/recovery-blockers/prices/decide','/api/recovery-blockers/prices/preview','/api/price-reviews/preview'].includes(path)||path==='/api/price-reviews/decide'&&args.acceptBlockedPriceChange===true){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'SHOP_MISMATCH','请先连接并核对当前店铺');
     requireThat(!action,'BUSY','请等待当前店铺操作完成');
-    const review=journal.priceReview(args.reviewId);
-    requireThat(review?.shopId===shopId&&review.key===args.key&&blockerView({filter:'all',query:review.productId,pageSize:20}).records.some(r=>r.productId===review.productId),'PRICE_REVIEW_CHANGED','商品或建议已变化，请刷新受阻列表');
+    const review=journal.priceReview(args.reviewId),context=displayContext();
+    requireThat(review?.shopId===shopId&&review.key===args.key&&!context.hiddenProductIds.includes(review.productId),'PRICE_REVIEW_CHANGED','商品或建议已变化，请刷新列表');
     if(path.endsWith('/preview')){service.assertBlockedPriceReview(review);const basis=activityPriceBasis(review,args.activityType||review.type,{reviews:journal.priceReviews(shopId),tasks:journal.list(shopId)});json(200,{ok:true,option:manualPriceOption(basis,args.discounts)});return;}
     requireThat(args.decision!=='approve'||args.acceptBlockedPriceChange===true,'PRICE_CONSENT_REQUIRED','须明确确认只调整本商品的确切价格');
     const result=service.decidePriceReview({...args,approvalContext:'recovery-blockers'});json(200,{ok:true,review:result});return;
@@ -233,6 +264,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     });
    }else if(path==='/api/finish-login'){
     requireThat(!service.running,'BUSY','守护期间不能切换登录');
+    if(shopId)wakeVerification(journal,shopId,journal.list(shopId).filter(t=>['unknown','verifying'].includes(t.phase)).map(t=>t.id));
     await background('识别店铺并同步当前折扣',async()=>{
      if(browser.loginMode){
       platform.stopping=false;const page=await browser.page();await page.goto(platform.base+LIST,{waitUntil:'domcontentloaded'});

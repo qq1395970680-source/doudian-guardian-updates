@@ -5,7 +5,7 @@ import {DoudianPlatform} from '../../src/platform.mjs';
 
 const format=t=>new Date(t+8*3600000).toISOString().slice(0,19).replaceAll('-','/').replace('T',' ');
 test('readonly limited dates use the visible seven-day shortcut and commit the picker',async()=>{
- const browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(1500);
+ const browser=await chromium.launch({channel:'chromium',headless:true});const page=await browser.newPage();page.setDefaultTimeout(1500);
  try{
   const start=Math.floor(Date.now()/1000)*1000;
   await page.setContent(`<input id="title"><input readonly placeholder="开始日期" value="${format(start)}"><input readonly placeholder="结束日期" value="${format(start+86400000)}"><div class="ecom-mcenter-picker-dropdown" hidden><span id="week">近7天</span><button id="confirm">确定</button></div><script>
@@ -21,7 +21,7 @@ test('readonly limited dates use the visible seven-day shortcut and commit the p
 
 for(const mode of ['already-correct','one-day','wrong-shortcut','unsupported-duration','editable-custom','disabled'])
 test(`limited date boundaries: ${mode}`,async()=>{
- const browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(1000);
+ const browser=await chromium.launch({channel:'chromium',headless:true});const page=await browser.newPage();page.setDefaultTimeout(1000);
  try{
   const start=Math.floor(Date.now()/1000)*1000,duration=mode==='one-day'?86400000:mode==='unsupported-duration'||mode==='editable-custom'?3*86400000:7*86400000;
   const initial=mode==='already-correct'?duration:2*86400000;
@@ -40,7 +40,7 @@ test(`limited date boundaries: ${mode}`,async()=>{
 
 for(const mode of ['thirty-days','wrong-time','disabled-day'])
 test(`readonly calendar preserves the original month duration: ${mode}`,async()=>{
- const browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(1000);
+ const browser=await chromium.launch({channel:'chromium',headless:true});const page=await browser.newPage();page.setDefaultTimeout(1000);
  try{
   const start=Math.floor(Date.now()/1000)*1000,end=start+30*86400000,date=format(end).slice(0,10).replaceAll('/','-');
   await page.setContent(`<input id="title"><input readonly placeholder="开始日期" value="${format(start)}"><input readonly placeholder="结束日期" value="${format(start+86400000)}"><div class="ecom-mcenter-picker-dropdown" hidden><a id="week">近7天</a><table><tr><td title="${date}" class="ecom-mcenter-picker-cell"><div>outside month</div></td><td title="${date}" class="ecom-mcenter-picker-cell ecom-mcenter-picker-cell-in-view ${mode==='disabled-day'?'ecom-mcenter-picker-cell-disabled':''}"><div>target date</div></td></tr></table><button id="confirm">确定</button></div><script>

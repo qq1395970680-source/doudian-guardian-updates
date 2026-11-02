@@ -10,7 +10,7 @@ import {parseDate} from '../../src/collector.mjs';
 import {installArcoDateFixture as install} from './arco-date-fixture.mjs';
 for(const mode of ['28days7seconds','minute-carry','midnight-carry','next-month','disabled-day','disabled-time','missing-end','wrong-final','changed-start'])
 test('real Arco structure '+mode,async()=>{
- const browser=await chromium.launch({headless:true}),page=await browser.newPage();page.setDefaultTimeout(1500);
+ const browser=await chromium.launch({channel:'chromium',headless:true}),page=await browser.newPage();page.setDefaultTimeout(1500);
  try{
   const start=Math.floor(Date.now()/1000)*1000;
   const duration=mode==='minute-carry'?86400000+(67-new Date(start).getUTCSeconds())*1000:mode==='midnight-carry'?86400000-(start+28800000)%86400000+7000:mode==='next-month'?62*86400000+7000:2419207000;

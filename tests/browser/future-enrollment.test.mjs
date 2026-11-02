@@ -37,6 +37,12 @@ for(const type of ['限时抢购','限量抢购'])test(`later-added ${type} join
   assert.equal(journal.list(policy.shopId).length,0);assert.equal(fixture.state.submits,0);
   Object.assign(future.products[0],{removalConfirmed:true,removalRiskConfirmed:true});future.risk=true;
   await service.tick();
+  if(!limited){
+   assert.equal(fixture.state.submits,0,'timed risk exits without the exact activity export cannot authorize a write');
+   assert.equal(journal.productChecks(policy.shopId).find(c=>c.productId===products[1].productId)?.code,'TIMED_LOSS_UNPROVEN');
+   future.removals=[{productId:products[1].productId,name:products[1].name,reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。'}];
+   await service.tick();
+  }
   const task=journal.list(policy.shopId).find(t=>t.plans.some(p=>p.productId===products[1].productId));
   assert.equal(task?.phase,'verified',JSON.stringify({status:service.status(),checks:journal.productChecks(policy.shopId)}));
   assert.equal(task.plans.length,1);assert.equal(task.plans[0].type,type);assert.equal(task.receipt.durationMs,durationMs);assert.equal(task.receipt.skuCount,3);

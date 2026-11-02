@@ -31,8 +31,8 @@ test('one in-app shop authorization restores saved prices now and again after ex
   const html=await(await fetch(app.url)).text(),token=html.match(/script nonce="([a-f0-9]+)"/)[1];
   await fetch(app.url+'/api/finish-login',{method:'POST',headers:{Origin:app.url,'Content-Type':'application/json','X-Guardian-Token':token},body:'{}'});
   while(app.snapshot().action)await new Promise(r=>setTimeout(r,10));
-  ui=await chromium.launch({headless:true});const page=await ui.newPage({viewport:{width:1280,height:850}});await page.goto(app.url);
-  await page.locator('[data-view="accounts"]').click();await page.locator('#original-rebuild-consent').check();
+  ui=await chromium.launch({channel:'chromium',headless:true});const page=await ui.newPage({viewport:{width:1280,height:850}});await page.goto(app.url);
+  await page.locator('[data-view="accounts"]').click();await page.locator('details.advanced-settings > summary').click();await page.locator('.policy-detail').filter({has:page.locator('#original-rebuild-consent')}).locator('summary').click();await page.locator('#original-rebuild-consent').check();
   await page.locator('#original-rebuild-policy').click();
   for(let n=0;n<1600&&service.status().verified!==1;n++)await new Promise(r=>setTimeout(r,50));
   await service.immediatePromise;

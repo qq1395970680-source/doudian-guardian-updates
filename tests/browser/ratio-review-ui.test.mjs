@@ -25,13 +25,14 @@ for(const width of [960,1440])test('ratio UI exposes all prices and reductions a
   page.on('pageerror',e=>errors.push(e.message));
   await page.goto(app.url);await page.locator('[data-view="prices"]').click();
   await page.locator('[data-price-direction="all"]').click();
+  await page.locator('[data-review-id="'+r.id+'"] [data-open-price-review]').click();
   const card=page.locator('.price-review');await card.waitFor();
-  assert.equal(await card.getByRole('checkbox').count(),0);
-  await card.locator('[data-price-option="original"]').click();
-  assert.match(await card.innerText(),/最高规格价不超过最低价的 3.5 倍/);
-  assert.match(await card.innerText(),/1 个规格降价/);
-  assert.match(await card.innerText(),/倍率推算不属于自动提价授权/);
+  assert.equal(await card.getByRole('checkbox').isChecked(),false);
+  await card.locator('.price-strategy-select').selectOption('original');
+  assert.match(await card.innerText(),/最高价\s*≤\s*最低价\s*×\s*3\.5/);
+  assert.match(await card.innerText(),/调低 1 个规格/);
   assert.match(await card.innerText(),/¥155.93/);
+  assert.equal(await card.locator('table[data-role="price-target-table"]').count(),1);
   assert.equal(await card.locator('tbody tr').count(),2);
   const approve=card.getByRole('button',{name:'确认表内价格并继续守护',exact:true});
   assert.equal(await approve.isDisabled(),true);assert.equal(j.priceTarget(r.shopId,r.productId),null);
@@ -40,13 +41,13 @@ for(const width of [960,1440])test('ratio UI exposes all prices and reductions a
   await mkdir(resolve('artifacts'),{recursive:true});
   await page.screenshot({path:resolve('artifacts',`ratio-review-${width}.png`),fullPage:false,animations:'disabled'});
   if(width===1440){
-   await card.locator('[data-price-option="switch-original"]').click();
+   await card.locator('[data-activity-price-choice="switch-original"]').click();
    assert.equal(await card.getByRole('checkbox').isChecked(),false);
    assert.match(await card.innerText(),/限时抢购/);
-   assert.match(await card.innerText(),/48小时/);
+   assert.match(await card.innerText(),/48\s*小时/);
    await card.getByRole('checkbox').check();
   }
-  await approve.click();await page.getByText('已确认',{exact:true}).waitFor();
+  await approve.click();await card.locator('.price-review-heading .badge').filter({hasText:'已确认价格'}).waitFor();
   assert.deepEqual(j.priceTarget(r.shopId,r.productId).rows.map(s=>s.discount),width===1440?[50,50]:[95,31]);
   if(width===1440)assert.equal(j.priceTarget(r.shopId,r.productId).campaignTarget.type,'限时抢购');
   assert.equal(j.list(r.shopId).length,0,'recording consent is not a direct platform submit');

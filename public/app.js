@@ -5,13 +5,14 @@ import {createPriceReviews} from './price-reviews.js';
 import {createMigration} from './migration.js';
 import {createRecoveries} from './recoveries.js';
 import {createRecoveryBlockers} from './recovery-blockers.js';
+import {createPriceWorkspace} from './blocker-prices.js';
 const names={overview:'折扣概览',recoveries:'恢复记录',accounts:'店铺管理',prices:'价格确认',blockers:'恢复受阻',activity:'运行记录',updates:'软件更新'};
 const labels={active:'生效中',scheduled:'未开始',missing:'待恢复',pending:'待核实',unconfirmed:'待更新',excluded:'已排除',recycled:'商品已回收','off-shelf':'商品已下架'};
 const phases={queued:'待准备',prepared:'草稿已核对',submitting:'提交已记录',verifying:'回读中',unknown:'待核实',verified:'回读通过',blocked:'受阻'};
 let state=null,catalog=null,view='overview',filter='all',query='',pageIndex=0,pending=false,polling=false,online=false,timer,catalogAt=0,catalogSignature='',activitySignature='',accountSignature='',toastTimer,updateBusy=false,lastUpdate={state:'idle'};
 const pageSize=16,expanded=new Set();
-let pricePolicySignature='',originalPriceSignature='';
-let originalRebuildSignature='';
+let pricePolicySignature='',originalPriceSignature='',carePolicySignature='';
+let originalRebuildSignature='',taskLimit=20,eventLimit=20;const openActivity=new Set();
 const text=(id,value)=>{const el=$(id),t=String(value??'—');if(el.textContent!==t)el.textContent=t;};
 const time=value=>value?new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}):'尚无记录';
 const money=n=>Number.isSafeInteger(n)?'¥'+(n/100).toFixed(2):'—';
@@ -20,13 +21,15 @@ const friendly=value=>/browserType\..*spawn|spawn UNKNOWN/.test(value||'')?'专�
 function node(tag,className,value){const n=document.createElement(tag);if(className)n.className=className;if(value!==undefined)n.textContent=value;return n;}
 function badge(value,color='neutral'){return node('span','badge '+color,value);}
 function icon(name){const s=document.createElementNS('http://www.w3.org/2000/svg','svg'),u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href','#i-'+name);s.append(u);return s;}
-const priceReviews=createPriceReviews({getState:()=>({state,online}),post,toast,node,money,discount,time});
+const priceWorkspace=createPriceWorkspace({getState:()=>({state,online}),post,toast,node,money,discount,time});
+const openPricing=record=>priceWorkspace.open(record);
+const priceReviews=createPriceReviews({getState:()=>({state,online}),node,money,time,openPricing,navigate});
 const migration=createMigration({getState:()=>({state,online}),post,toast,node,money,discount,time});
-const recoveryBlockers=createRecoveryBlockers({getState:()=>({state,online}),post,toast,node,time,money,discount,navigate});
+const recoveryBlockers=createRecoveryBlockers({getState:()=>({state,online}),post,toast,node,time,openPricing});
 const recoveries=createRecoveries({getState:()=>({shopId:state?.shopId??null,visible:view==='recoveries'}),node,money,discount,time});
 function toast(message){text('toast',message);$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
 function navigate(next){if(!names[next]||view===next)return;view=next;for(const id of Object.keys(names)){const el=$('view-'+id);el.hidden=id!==view;el.classList.toggle('active',id===view);}
- document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('selected',b.dataset.view===view));text('view-name',names[view]);if(state)render(state);if(view==='overview'&&catalog)renderCatalog(true);if(view==='prices'||view==='blockers')void priceReviews.refresh();if(view==='blockers')void recoveryBlockers.refresh();if(view==='recoveries')void recoveries.refresh();window.scrollTo({top:0,behavior:'instant'});}
+ document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('selected',b.dataset.view===view));text('view-name',names[view]);if(state)render(state);if(view==='overview'&&catalog)renderCatalog(true);if(view==='prices')void priceReviews.refresh();if(view==='blockers')void recoveryBlockers.refresh();if(view==='recoveries')void recoveries.refresh();window.scrollTo({top:0,behavior:'instant'});}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>navigate(b.dataset.view));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));
 function range(values,format){const a=values.filter(Number.isSafeInteger);if(!a.length)return'—';const lo=Math.min(...a),hi=Math.max(...a);return lo===hi?format(lo):format(lo)+' – '+format(hi);}
 function renderCatalog(force=false){
@@ -91,35 +94,47 @@ function renderCatalog(force=false){
 document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;pageIndex=0;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('selected',x===b));renderCatalog();});
 let searchTimer;$('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{query=$('search').value;pageIndex=0;renderCatalog();},120);};
 $('prev-page').onclick=()=>{pageIndex--;renderCatalog();};$('next-page').onclick=()=>{pageIndex++;renderCatalog();};
-function renderActivity(s){const signature=JSON.stringify([s.tasks,s.events]);if(signature===activitySignature)return;activitySignature=signature;
- const tasks=document.createDocumentFragment();for(const t of s.tasks||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',t.title),node('p','',t.products.join('、')),node('p','',t.reason||`独立回读：${t.receipt?.skuCount||0} 个规格`));item.append(badge(phases[t.phase]||t.phase,t.phase==='verified'?'green':t.phase==='blocked'?'amber':'purple'),body,node('time','',time(t.updatedAt)));tasks.append(item);}if(!s.tasks?.length)tasks.append(node('div','empty','尚无恢复任务'));$('tasks').replaceChildren(tasks);
- const events=document.createDocumentFragment();const kinds={'product-blocked':'商品等待处理','control-error':'连接 / 操作提示',verified:'规格回读通过',unknown:'等待平台确认',queued:'已生成恢复任务',submitting:'已记录提交尝试',verifying:'正在独立回读','verification-pending':'继续核实平台结果'};
- for(const e of s.events||[]){const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',kinds[e.kind]||'任务状态更新'),node('p','',friendly(e.detail.message||e.detail.reason||e.detail.productId||'记录已保存')));
-  if(e.detail.runtimeBuild?.version)body.append(node('small','detail-note',`发生版本：${e.detail.runtimeBuild.version}${e.detail.runtimeBuild.sourceBuild===s.sourceBuild?' · 当前运行构建':' · 其他运行构建'}`));
-  else body.append(node('small','detail-note','此记录未保存发生时的版本，不能归入当前版本错误'));
-  item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);}if(!s.events?.length)events.append(node('div','empty','新的运行动态会显示在这里'));$('events').replaceChildren(events);
+function renderActivity(s){
+ const signature=JSON.stringify([s.tasks,s.events,taskLimit,eventLimit]);if(signature===activitySignature)return;activitySignature=signature;
+ const readable=value=>{const text=friendly(value);return /LOAD_TIMEOUT|UI_READ_TIMEOUT/.test(text)?'平台读取较慢，等待重新核验':/PRICE_REVIEW_REQUIRED|SKU_RATIO_REVIEW_REQUIRED/.test(text)?'价格要求已更新，请在价格确认查看':text;};
+ const more=(list,total,limit,kind)=>{if(total<=limit)return;const button=node('button','button small secondary','再显示 '+Math.min(20,total-limit)+' 条');button.onclick=()=>{if(kind==='task')taskLimit+=20;else eventLimit+=20;renderActivity(s);};list.append(button);};
+ const tasks=document.createDocumentFragment();for(const t of (s.tasks||[]).slice(0,taskLimit)){
+  const item=node('div','record'),body=node('div','record-body'),names=t.products.map(id=>catalog?.products?.find(p=>p.productId===id)?.name).filter(Boolean);body.append(node('strong','',names.length===1?names[0]:t.products.length+' 件商品的恢复任务'));
+  body.append(node('p','',t.reason?readable(t.reason):t.phase==='verified'?'已独立回读 '+(t.receipt?.skuCount||0)+' 个规格':'后台继续核验当前状态'));
+  const detail=node('details','record-details'),key='task:'+t.id;detail.open=openActivity.has(key);detail.ontoggle=()=>detail.open?openActivity.add(key):openActivity.delete(key);detail.append(node('summary','','详细记录'),node('p','',t.title),node('p','',t.products.join('、')));if(t.reason)detail.append(node('p','',t.reason));body.append(detail);
+  item.append(badge(phases[t.phase]||t.phase,t.phase==='verified'?'green':t.phase==='blocked'?'amber':'purple'),body,node('time','',time(t.updatedAt)));tasks.append(item);
+ }if(!s.tasks?.length)tasks.append(node('div','empty','尚无恢复任务'));more(tasks,s.tasks?.length||0,taskLimit,'task');$('tasks').replaceChildren(tasks);
+ const events=document.createDocumentFragment(),kinds={'product-blocked':'商品等待核验','control-error':'连接或操作提示',verified:'恢复已回读',unknown:'结果待核实',queued:'已加入恢复队列',submitting:'已记录提交',verifying:'正在回读','verification-pending':'继续核实结果','care-recovery-enabled':'省心守护已开启','automatic-price-increase-approved':'按授权确认非降价目标'};
+ for(const e of (s.events||[]).slice(0,eventLimit)){
+  const item=node('div','record'),body=node('div','record-body');body.append(node('strong','',kinds[e.kind]||'守护状态更新'),node('p','',readable(e.detail.message||e.detail.reason||'记录已保存')));
+  const key='event:'+(e.id||e.at+':'+e.kind),detail=node('details','record-details');detail.open=openActivity.has(key);detail.ontoggle=()=>detail.open?openActivity.add(key):openActivity.delete(key);detail.append(node('summary','','详细记录'),node('p','',e.kind));if(e.detail.productId)detail.append(node('p','','商品 '+e.detail.productId));if(e.detail.message||e.detail.reason)detail.append(node('p','',e.detail.message||e.detail.reason));if(e.detail.runtimeBuild?.version)detail.append(node('p','','发生版本 '+e.detail.runtimeBuild.version));body.append(detail);item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);
+ }if(!s.events?.length)events.append(node('div','empty','新的运行记录会显示在这里'));more(events,s.events?.length||0,eventLimit,'event');$('events').replaceChildren(events);
 }
 function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s.running,s.busy,s.action,s.unknown]);if(signature!==accountSignature){accountSignature=signature;const fragment=document.createDocumentFragment();for(const a of s.accounts||[]){const row=node('div','setting-row'),body=node('div');body.append(node('strong','',a.name||'店铺'),node('p','',a.shopId));row.append(body);if(a.shopId===s.shopId)row.append(badge('当前店铺','blue'));else{const b=node('button','button small secondary','切换店铺');b.disabled=!!(s.running||s.busy||s.action||s.unknown);b.onclick=()=>act('accounts/select',{shopId:a.shopId});row.append(b);}fragment.append(row);}if(!s.accounts?.length)fragment.append(node('div','empty','登录后自动添加店铺，无需填写店铺 ID'));$('account-list').replaceChildren(fragment);}
  text('connection',s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':s.authentication?.required?'店铺登录已失效，请重新登录本店；历史折扣和确认方案已保留':s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:'登录后自动读取店铺名称、当前活动与规格价格');
- text('consent-status',s.originalRestoreAuthorized?'已确认原折扣恢复':'尚未确认');$('consent-wrap').hidden=!!s.originalRestoreAuthorized;text('exclusions',s.excluded?.length?s.excluded.join('、'):'当前没有排除商品');
+ text('consent-status',s.originalRestoreAuthorized?'已确认原折扣恢复':'尚未确认');$('consent-wrap').hidden=!!s.originalRestoreAuthorized;text('exclusions',s.excluded?.length?'已排除 '+s.excluded.length+' 件商品，可在概览的已排除列表查看':'当前没有排除商品');
  const automatic=s.automaticPriceIncreaseEnabled===true,signaturePolicy=JSON.stringify([s.shopId,automatic]);
  if(signaturePolicy!==pricePolicySignature){pricePolicySignature=signaturePolicy;$('price-increase-consent').checked=false;}
- $('price-increase-consent-wrap').hidden=automatic;text('price-increase-status',automatic?'已开启本店自动提价':'等待逐项确认');
- text('price-increase-policy',automatic?'停止自动提价':'开启自动提价');
+ $('price-increase-consent-wrap').hidden=automatic;text('price-increase-status',s.careRecoveryEnabled?'由省心守护统一管理':automatic?'已开启本店自动提价':'等待逐项确认');
+ text('price-increase-policy',s.careRecoveryEnabled?'由省心守护统一管理':automatic?'停止自动提价':'开启自动提价');
  const ready=online&&!pending&&!s.action&&s.shopId&&s.connection?.shopId===s.shopId;
- $('price-increase-consent').disabled=!ready||s.originalPriceRecoveryEnabled===true;$('price-increase-policy').disabled=!ready||s.originalPriceRecoveryEnabled===true||!automatic&&!$('price-increase-consent').checked;
+ const care=s.careRecoveryEnabled===true,careSignature=JSON.stringify([s.shopId,care]);
+ if(carePolicySignature!==careSignature){carePolicySignature=careSignature;$('care-policy-consent').checked=false;}
+ $('care-policy-consent-wrap').hidden=care;text('care-policy-status',care?'已开启':'未开启');text('care-policy-save',care?'停用省心守护':'开启省心守护');
+ $('care-policy-consent').disabled=!ready;$('care-policy-save').disabled=!ready||!care&&!$('care-policy-consent').checked;
+ $('price-increase-consent').disabled=!ready||s.careRecoveryEnabled===true||s.originalPriceRecoveryEnabled===true;$('price-increase-policy').disabled=!ready||s.careRecoveryEnabled===true||s.originalPriceRecoveryEnabled===true||!automatic&&!$('price-increase-consent').checked;
  const originalOnly=s.originalPriceRecoveryEnabled===true,onlySignature=JSON.stringify([s.shopId,originalOnly]);
  if(originalPriceSignature!==onlySignature){originalPriceSignature=onlySignature;$('original-price-consent').checked=false;}
- $('original-price-consent-wrap').hidden=originalOnly;text('original-price-status',originalOnly?'已开启，换价要求转入恢复受阻':'未开启');
- text('original-price-policy',originalOnly?'停止原价自动恢复':'开启原价自动恢复');
- $('original-price-consent').disabled=!ready||!s.originalRestoreAuthorized;
- $('original-price-policy').disabled=!ready||!s.originalRestoreAuthorized||!originalOnly&&!$('original-price-consent').checked;
+ $('original-price-consent-wrap').hidden=originalOnly;text('original-price-status',care?'由省心守护统一管理':originalOnly?'原价模式已开启':'未开启');
+ text('original-price-policy',care?'由省心守护统一管理':originalOnly?'停止原价自动恢复':'开启原价自动恢复');
+ $('original-price-consent').disabled=!ready||care||!s.originalRestoreAuthorized;
+ $('original-price-policy').disabled=!ready||care||!s.originalRestoreAuthorized||!originalOnly&&!$('original-price-consent').checked;
  const rebuild=s.automaticOriginalRebuildEnabled===true,rebuildSignature=JSON.stringify([s.shopId,rebuild]);
  if(rebuildSignature!==originalRebuildSignature){originalRebuildSignature=rebuildSignature;$('original-rebuild-consent').checked=false;}
  $('original-rebuild-consent-wrap').hidden=rebuild;text('original-rebuild-status',rebuild?'已开启，按原设置自动恢复':'未开启');
  text('original-rebuild-policy',rebuild?'停止自动重建':'开启原折扣自动重建');
- $('original-rebuild-consent').disabled=!ready||!s.originalRestoreAuthorized;
- $('original-rebuild-policy').disabled=!ready||!s.originalRestoreAuthorized||!rebuild&&!$('original-rebuild-consent').checked;
+ $('original-rebuild-consent').disabled=!ready||care||!s.originalRestoreAuthorized;
+ $('original-rebuild-policy').disabled=!ready||care||!s.originalRestoreAuthorized||!rebuild&&!$('original-rebuild-consent').checked;
 }
 function render(s){
  if(s.instance&&s.instance!==instance){location.reload();return;}state=s;
@@ -134,9 +149,9 @@ function render(s){
  text('version','后台 v'+s.version);text('update-version',desktopVersion?'桌面 '+desktopVersion+' · 后台 '+s.version+(versionMismatch?'（后台尚未切换）':''):'后台 '+s.version);text('footer-state',s.running?'守护正在后台运行':'后台已连接');
  text('connection-label',online?(s.running?'后台守护中':'后台已连接'):'正在重新连接');$('connection-dot').classList.toggle('online',online);
  const p=s.progress||{},working=!!(s.action||s.busy);text('run-pill',s.running?'后台守护已开启':working?'正在同步数据':s.connection?'店铺已连接':'等待连接店铺');
- text('hero-title',s.running?'折扣守护，正在进行':working?'正在同步店铺折扣':s.connection?'你的店铺，已准备就绪':'从连接店铺开始');
- text('hero-detail',s.running?'自动巡检当前活动，按本店已确认的价格恢复，并独立核对每个规格。':s.connection?'查看当前商品折扣，确认恢复规则后即可开启后台守护。':'登录一次，自动识别店铺与当前折扣。之后的巡检在后台完成。');
- if(s.campaignRule?.type==='限量抢购')text('hero-detail',`按各商品原折扣分组守护限量抢购 · 每件商品共用 ${s.campaignRule.activityLimit} 件 · ${s.campaignRule.durationMs/86400000} 天 · 自动续期${s.campaignRule.rules.autoRenew?'开启':'关闭'}。`);
+ text('hero-title',s.running?'守护已开启':working?'正在核对店铺':s.connection?'店铺已连接':'请先连接店铺');
+ text('hero-detail',s.running?(s.careRecoveryEnabled?'原价优先自动恢复；必要提价自动核验，降价等你确认。':'按本店已确认的价格自动核验恢复。'):s.connection?'查看当前商品折扣，确认恢复规则后即可开启后台守护。':'登录一次，自动识别店铺与当前折扣。之后的巡检在后台完成。');
+
  if(s.campaignConversion&&s.campaignConversion.status!=='complete')text('hero-detail',`限量活动迁移中，已核验 ${s.campaignConversion.verified} / ${s.campaignConversion.total} 件。完整历史保留，普通巡检待迁移完成后继续。`);
  text('progress',[s.action,p.stage,Number.isInteger(p.activeRead)&&Number.isInteger(p.activeTotal)?p.activeRead+' / '+p.activeTotal+' 个当前活动':''].filter(Boolean).join(' · ')||(s.running?'等待下一轮巡检':'守护尚未开启'));
  text('schedule','上次成功：'+time(s.lastSuccessfulRun?.finishedAt||(s.lastRun?.ok?s.lastRun.finishedAt:null))+'　'+(working?'本轮进行中':s.nextAt?'下一轮：'+time(s.nextAt):'等待开启'));
@@ -158,7 +173,7 @@ function render(s){
  text('login',s.shopId?'重新登录本店':'登录店铺');$('add-account').disabled=pending||!online||working||s.running||!!s.unknown;
  $('stop').disabled=pending||!online||!(s.running||s.busy);
  const priceAttention=s.priceReviewsPending||0;text('price-count',priceAttention);$('price-count').hidden=!priceAttention;priceReviews.sync();
- text('blocker-count',s.recoveryBothBlocked||0);$('blocker-count').hidden=!s.recoveryBothBlocked;recoveryBlockers.sync();renderAccounts(s);migration.sync();recoveries.sync();if(view==='activity')renderActivity(s);
+ text('blocker-count',s.recoveryBlockersTotal??s.recoveryBothBlocked??0);$('blocker-count').hidden=!(s.recoveryBlockersTotal??s.recoveryBothBlocked);recoveryBlockers.sync();priceWorkspace.sync();renderAccounts(s);migration.sync();recoveries.sync();if(view==='activity')renderActivity(s);
 }
 async function post(path,args={}){const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token},body:JSON.stringify(args),signal:AbortSignal.timeout(25000)});const result=await response.json();if(!response.ok)throw Error(result.message||'操作未完成');return result;}
 async function act(name,args={}){if(pending)return;if(name==='start'&&!state.originalRestoreAuthorized&&!$('original-consent').checked){navigate('accounts');toast('请先确认本店的原折扣恢复规则，然后开启守护。');$('original-consent').focus();return;}
@@ -167,6 +182,8 @@ for(const name of ['finish-login','audit','start','stop'])$(name).onclick=()=>ac
 $('login').onclick=()=>act('login',state?.shopId?{reauthenticate:true}:{});
 $('add-account').onclick=()=>act('login',{newAccount:true});
 $('reauthenticate').onclick=()=>act(state?.loginOpen?'finish-login':'login',{reauthenticate:true});
+$('care-policy-consent').onchange=()=>{if(state)renderAccounts(state);};
+$('care-policy-save').onclick=()=>{if(!state)return;const enabled=!state.careRecoveryEnabled;if(enabled&&!$('care-policy-consent').checked)return;void act('care-recovery-policy',{shopId:state.shopId,enabled,acceptNonReducingRecovery:enabled&&$('care-policy-consent').checked});};
 $('price-increase-consent').onchange=()=>{if(state)renderAccounts(state);};
 $('price-increase-policy').onclick=()=>{if(!state)return;const enabled=!state.automaticPriceIncreaseEnabled;if(enabled&&!$('price-increase-consent').checked)return;
  void act('price-increase-policy',{shopId:state.shopId,enabled,acceptHigherPricesAndRisk:enabled&&$('price-increase-consent').checked});};
@@ -177,7 +194,7 @@ $('original-rebuild-policy').onclick=()=>{if(!state)return;const enabled=!state.
  void act('original-rebuild-policy',{shopId:state.shopId,enabled,acceptOriginalRebuild:enabled&&$('original-rebuild-consent').checked});};
 async function poll(){if(polling||document.hidden)return;polling=true;clearTimeout(timer);try{
  const response=await fetch('/api/status',{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('offline');const s=await response.json();online=true;$('offline').hidden=true;render(s);
- if(view==='prices'||view==='blockers')await priceReviews.refresh();if(view==='blockers')await recoveryBlockers.refresh();
+ if(view==='prices')await priceReviews.refresh();if(view==='blockers')await recoveryBlockers.refresh();
  if(view==='recoveries')await recoveries.refresh();
  if(!catalog||Date.now()-catalogAt>10000){const response=await fetch('/api/products',{signal:AbortSignal.timeout(10000)});if(response.ok){catalog=await response.json();catalogAt=Date.now();if(view==='overview')renderCatalog();}}
  }catch{online=false;$('offline').hidden=false;text('connection-label','正在重新连接');$('connection-dot').classList.remove('online');if(state)render(state);}
@@ -185,7 +202,7 @@ async function poll(){if(polling||document.hidden)return;polling=true;clearTimeo
 document.addEventListener('visibilitychange',()=>{document.body.classList.toggle('hidden-page',document.hidden);if(document.hidden)clearTimeout(timer);else{catalogAt=0;void poll();}});
 function renderUpdate(u){
  lastUpdate=u;
- const message={checking:'正在连接 GitHub…',available:'发现新版本 '+u.release?.version,current:'当前已是最新发布版本',unpublished:'尚未发布可用安装包',downloading:'正在下载并校验更新…',ready:'更新已校验，准备安装',installing:'正在安装，程序将自动重新打开',error:u.message||'检查失败，请稍后再试'};
+ const message={checking:'正在连接 GitHub…',available:'发现新版本 '+u.release?.version,current:'当前已是最新发布版本',unpublished:'尚未发布可用安装包',downloading:'正在下载并校验更新…',ready:'更新已校验，准备安装',installing:'正在安装，程序将自动重新打开',error:/403/.test(u.message||'')?'更新服务暂时限流，可稍后重试或从发布页下载。':u.message||'检查失败，请稍后再试'};
  const mismatch=window.guardianDesktop?.version&&state?.version&&window.guardianDesktop.version!==state.version;
  text('update-status',u.state==='current'&&mismatch?'桌面安装包已是最新，实际后台仍为 '+state.version+'，后台切换尚未完成':message[u.state]||'点击检查，获取最新版本');$('check-updates').disabled=['checking','downloading','installing'].includes(u.state);
  $('install-update').hidden=u.state!=='available';$('install-update').disabled=updateBusy;
@@ -201,7 +218,7 @@ document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('app-too
 document.addEventListener('click',event=>{if(!event.target.closest('.app-tools-anchor'))closeTools();});
 document.querySelector('[data-tool="updates"]').onclick=()=>{closeTools();navigate('updates');};
 document.querySelector('[data-tool="refresh"]').onclick=()=>location.reload();
-document.querySelector('[data-tool="diagnostics"]').onclick=()=>{closeTools();navigate('activity');$('diagnostics-panel').scrollIntoView({block:'center'});};
+document.querySelector('[data-tool="diagnostics"]').onclick=()=>{closeTools();navigate('activity');$('diagnostics-panel').open=true;$('diagnostics-panel').scrollIntoView({block:'center'});};
 $('export-diagnostics').onclick=async()=>{
  if(!state?.shopId){toast('请先选择需要诊断的店铺');return;}
  $('export-diagnostics').disabled=true;text('diagnostics-status','正在整理当前店铺诊断，不会停止守护…');

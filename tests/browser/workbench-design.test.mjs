@@ -13,23 +13,35 @@ for(const width of [1440,960])test('light desktop UI, bounded catalog, lazy SKU 
  const inventory={listing:{complete:true,observedAt:now,campaigns:[{id:'400001',name:'全店折扣',status:'进行中',startAt:now-1000,endAt:now+1e7}]},activeComplete:true,details:new Map([['400001',{complete:true,observedAt:now,products}]])};
  const service={running:true,busy:false,status:()=>({unknown:0,verified:9,blocked:0,tasks:[],nextAt:now+60000,lastRun:{finishedAt:now}}),stop(){this.running=false;}};
  const app=await createApp({config:{shopId:'900001',name:'演示店铺',originalRiskAllowed:true},port:0,runtime:join(dir,'server'),dependencies:{journal,service,browser:{close:async()=>{}},platform:{inventory,progress:{stage:'当前活动核对完成'}}}});
- try{await browser.open('900001');const page=await browser.page(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(app.url);await page.locator('.product').first().waitFor();
+ try{await browser.open('900001');const page=await browser.page(),errors=[],writes=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.method()==='POST')writes.push(new URL(r.url()).pathname);});
+  // The overview must stay about the current job even when the shop uses a
+  // limited campaign. Its quota/duration belongs in settings or confirmation.
+  await page.route('**/api/status',async route=>{const response=await route.fetch(),status=await response.json();await route.fulfill({json:{...status,campaignRule:{type:'限量抢购',activityLimit:1000,durationMs:7*86400000,rules:{autoRenew:true}}}});});
+  await page.goto(app.url);await page.locator('.product').first().waitFor();
   assert.equal(await page.locator('.product').count(),16);assert.equal(await page.locator('.sku-table').count(),0);assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).colorScheme),'light');
   assert.doesNotMatch(await page.locator('body').innerText(),/旧版|旧扩展|接管|交接/);
+  assert.doesNotMatch(await page.locator('#hero-detail').innerText(),/按各商品原折扣分组守护限量抢购|每件商品共用|自动续期开启/);
+  assert.equal(await page.locator('.hero-symbol').count(),0);
+  assert.ok(await page.locator('.overview-status').evaluate(el=>el.getBoundingClientRect().height)<=220,'overview status stays compact');
+  assert.deepEqual(await page.locator('nav [data-view]').evaluateAll(elements=>elements.map(el=>el.dataset.view)),['overview','prices','blockers','recoveries','accounts','activity','updates']);
   await page.locator('.product-summary').first().click();await page.locator('.sku-table').waitFor();assert.equal(await page.locator('.sku-table tbody tr').count(),10);
   await page.evaluate(()=>window.testProductNode=document.querySelector('.product'));
   // Repeated status polls must not rebuild the same expanded product DOM.
   await page.waitForTimeout(3300);assert.equal(await page.evaluate(()=>window.testProductNode===document.querySelector('.product')),true);
+  await page.locator('#next-page').click();await page.waitForFunction(()=>document.querySelector('.product')?.dataset.productId==='300016');assert.equal(await page.locator('.product').count(),16);
+  await page.locator('#prev-page').click();await page.waitForFunction(()=>document.querySelector('.product')?.dataset.productId==='300000');
   await page.getByLabel('搜索商品名称或 ID').fill('300036');await page.waitForFunction(()=>document.querySelectorAll('.product').length===1);assert.equal(await page.locator('.product').getAttribute('data-product-id'),'300036');
   await page.getByLabel('搜索商品名称或 ID').fill('');await page.waitForFunction(()=>document.querySelectorAll('.product').length===16);
-  for(const name of ['accounts','activity','updates','overview']){await page.locator(`[data-view="${name}"]`).click();await page.locator('#view-'+name).waitFor({state:'visible'});}
+  for(const name of ['prices','blockers','recoveries','accounts','activity','updates','overview']){await page.locator(`[data-view="${name}"]`).click();await page.locator('#view-'+name).waitFor({state:'visible'});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
+  assert.deepEqual(writes,[],'reading, navigation, searching, pagination and expansion never send a business write');
   await page.route('**/api/updates/check',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({state:'available',release:{version:'2.0.0-beta.3',notes:'本地模拟更新测试'}})}));
   await page.locator('[data-view="updates"]').click();await page.locator('#check-updates').click();await page.getByText('发现新版本 2.0.0-beta.3',{exact:true}).waitFor();assert.equal(await page.locator('#install-update').isEnabled(),true);
+  assert.deepEqual(writes,['/api/updates/check']);
   await page.locator('[data-view="overview"]').click();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`workbench-light-${width}.png`),fullPage:false});
   await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('.view.active').evaluate(el=>getComputedStyle(el).animationName),'none');
-  assert.deepEqual(errors,[]);await writeFile(resolve('artifacts',`workbench-design-${width}.json`),JSON.stringify({width,light:true,errors,boundedRows:16,lazySkus:true,unchangedPollPreservesDom:true,noHorizontalOverflow:true,reducedMotion:true}));
+  assert.deepEqual(errors,[]);await writeFile(resolve('artifacts',`workbench-design-${width}.json`),JSON.stringify({width,light:true,errors,boundedRows:16,lazySkus:true,unchangedPollPreservesDom:true,searchAndPagination:true,allSevenViews:true,noBusinessPosts:true,updateCheckPostOnly:true,compactOverview:true,noPermanentCampaignQuotaBanner:true,noHorizontalOverflow:true,reducedMotion:true}));
  }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
 });

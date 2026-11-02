@@ -12,8 +12,9 @@ test('login expiry is conspicuous on every view and relogin reuses this account 
  const app=await createApp({port:0,runtime,config:{shopId:identity.shopId,name:identity.name,profileKey:'signin-stable'},dependencies:{journal:j,browser:dedicated,
   platform:{base:'https://fxg.jinritemai.com',progress:{},probe:async()=>identity,identify:async()=>identity,discover:async()=>({activeComplete:true,baselines:[],errors:[]})},
   service:{running:false,busy:false,status:()=>({tasks:[],unknown:0,lastRun:{ok:false,code:'LOGIN_REQUIRED',finishedAt:Date.now()-1000}}),stop(){},start(){assert.fail('No new execution consent was granted');}}}});
- const ui=await chromium.launch({headless:true}),page=await ui.newPage({viewport:{width:1280,height:850}});
+ let ui;
  try{
+  ui=await chromium.launch({headless:true,channel:'chromium'});const page=await ui.newPage({viewport:{width:1280,height:850}});
   await page.goto(app.url);await page.locator('#login-alert:visible').waitFor();
   assert.match(await page.locator('#hero-title').innerText(),/登录已失效/);assert.equal(await page.locator('#start').isDisabled(),true);
   assert.equal(await page.locator('#shop-dot').evaluate(e=>e.classList.contains('online')),false);
@@ -23,5 +24,5 @@ test('login expiry is conspicuous on every view and relogin reuses this account 
   await page.locator('#reauthenticate').click();await page.locator('#login-alert').waitFor({state:'hidden'});
   await page.locator('[data-view="accounts"]').click();assert.equal(await page.locator('#add-account').isVisible(),true);
   await writeFile(resolve('artifacts/beta38-auth-ui.json'),JSON.stringify({localFixtureOnly:true,expiredLoginVisible:true,staleConnectionNotGreen:true,originalProfileReused:true,reauthenticationVerified:true,noExecutionStarted:true},null,2)+'\n');
- }finally{await ui.close();await app.close();await rm(runtime,{recursive:true,force:true});}
+ }finally{await ui?.close();await app.close();await rm(runtime,{recursive:true,force:true});}
 });

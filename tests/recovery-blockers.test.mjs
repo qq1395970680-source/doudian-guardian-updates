@@ -36,3 +36,13 @@ test('an independently recorded removal rejection only covers its explicitly ide
  r.sourceProof.activityType='限时抢购';assert.equal(buildRecoveryBlockers(f).counts.bothBlocked,0);
  delete r.sourceProof.activityType;assert.equal(buildRecoveryBlockers(f).counts.bothBlocked,0);
 });
+test('care mode explains non-reducing recovery even while the original-price grant is retained',()=>{
+ const f=fixture(),legacy=buildRecoveryBlockers({...f,originalPricesOnly:true});
+ assert.match(legacy.records[0].note,/不自动改价/);
+ const care=buildRecoveryBlockers({...f,originalPricesOnly:true,careEnabled:true});
+ assert.match(care.records[0].note,/全部规格不降价时自动调整/);
+ assert.match(care.records[0].note,/任何规格降价仍须你确认/);
+ assert.doesNotMatch(care.records[0].note,/不自动改价/);
+ assert.equal(care.records[0].bothBlocked,legacy.records[0].bothBlocked);
+ assert.equal(f.tasks.every(t=>t.submitAttempts===0),true);
+});

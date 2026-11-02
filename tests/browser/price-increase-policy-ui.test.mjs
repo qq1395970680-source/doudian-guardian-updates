@@ -22,6 +22,8 @@ test('automatic increase is visibly opt-in, changeable without restarting, and n
   await browser.open('900001');const page=await browser.page(),errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(app.url);await page.locator('[data-view="accounts"]').click();
   const consent=page.locator('#price-increase-consent'),button=page.locator('#price-increase-policy');
+  const ancestors=page.locator('details').filter({has:consent});assert.ok(await ancestors.count()>0);
+  for(const detail of await ancestors.all())if(!await detail.evaluate(el=>el.open))await detail.locator(':scope > summary').click();
   await consent.waitFor({timeout:2000});assert.equal(await consent.isChecked(),false);assert.equal(await button.isDisabled(),true);
   await consent.check();assert.equal(await button.isEnabled(),true);assert.equal(activePriceIncreaseGrant(journal,'900001'),null,'checking alone is not an authorization request');
   await button.click();await page.waitForFunction(()=>document.querySelector('#price-increase-policy')?.textContent==='停止自动提价');

@@ -27,8 +27,8 @@ for(const width of [1440,960])test('separate sidebar shows true price count and 
   await page.goto(app.url);await page.waitForFunction(()=>document.getElementById('price-count').textContent==='1');
   assert.equal(await page.locator('[data-view="blockers"]').count(),1);
   await page.locator('[data-view="blockers"]').click();const card=page.locator('[data-recovery-blocker="300001"]');await card.waitFor();
-  assert.equal(await card.locator('.blocker-scheme').count(),2);assert.match(await card.innerText(),/限时抢购/);assert.match(await card.innerText(),/限量抢购/);
-  assert.equal(await page.locator('#blocker-both-count').innerText(),'1');assert.equal(await page.locator('#price-rechecks-panel').isVisible(),true);
+  await card.locator('.blocker-details > summary').click();assert.match(await card.innerText(),/限时抢购/);assert.match(await card.innerText(),/限量抢购/);assert.match(await card.innerText(),/恢复请求：queued/);
+  assert.equal(await page.locator('#blocker-both-count').innerText(),'1');assert.equal(await page.locator('#price-rechecks-panel').isVisible(),false);assert.equal(await page.locator('[data-price-recheck]').count(),0,'progress is folded into the same product instead of duplicated');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`recovery-blockers-${width}.png`),fullPage:false});
   await page.locator('[data-view="prices"]').click();assert.equal(await page.locator('#price-rechecks-panel').isVisible(),false);assert.equal(await page.locator('#recovery-issues-panel').isVisible(),false);

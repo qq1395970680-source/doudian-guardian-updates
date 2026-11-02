@@ -23,6 +23,11 @@ test('headless removal inside an ongoing old activity is restored before the unr
   fixture.state.campaigns[0].products.slice(0,5).forEach(p=>{p.removalConfirmed=true;});
   const unrelated=Array.from({length:6},(_,i)=>({...structuredClone(fixture.state.campaigns[0]),id:String(4000000000000000100n+BigInt(i)),name:'其他活动'+i,risk:false,startAt:original.startAt+60000+i*1000,products:structuredClone(fixtureProducts.slice(5))}));
   fixture.state.campaigns.push(...unrelated);
+  // A timed risk badge is a scheduling hint; only the matching live export
+  // supplies the product-specific exit evidence. These original prices already
+  // satisfy the explicit rule, so recovery still needs no price change.
+  fixture.state.campaigns[0].removals=fixtureProducts.slice(0,5).map(p=>({productId:p.productId,name:p.name,
+   reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。'}));
   const readIds=[],read=platform.detail.bind(platform);platform.detail=async c=>{readIds.push(c.id);return read(c);};
   const started=Date.now();await service.tick();
   assert.equal(readIds[0],original.id,'the affected old activity must be read first');

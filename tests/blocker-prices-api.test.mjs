@@ -24,6 +24,7 @@ for(const mode of ['correct','no-consent','wrong-key','missing-sku','duplicate-s
   assert.equal(journal.priceTarget(review.shopId,review.productId),null,'preview never approves or enqueues');assert.equal(journal.list(review.shopId).length,1);
   const args={...base,decision:'approve',acceptBlockedPriceChange:true,acceptPriceAndRisk:true,confirmedSkuIds:review.rows.map(r=>r.id),optionId:option.id,optionKey:option.key,manualDiscounts:discounts};
   if(mode==='no-consent')args.acceptBlockedPriceChange=false;
+  if(mode==='old-route')delete args.acceptBlockedPriceChange; // Legacy clients did not opt into the single-product exception.
   if(mode==='wrong-key')args.key='stale';
   if(mode==='missing-sku')args.manualDiscounts.pop();
   if(mode==='duplicate-sku')args.manualDiscounts[1].id=args.manualDiscounts[0].id;

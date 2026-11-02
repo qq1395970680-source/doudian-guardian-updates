@@ -7,7 +7,7 @@ import {installDateTimeFixture} from './date-time-fixture.mjs';
 
 for(const type of ['限量抢购','限时抢购'])for(const scenario of ['custom7seconds','minute-carry','midnight-carry','shortcut48'])
 test(`exact readonly duration ${type} ${scenario}`,async()=>{
- const browser=await chromium.launch({headless:true}),page=await browser.newPage();page.setDefaultTimeout(1200);
+ const browser=await chromium.launch({channel:'chromium',headless:true}),page=await browser.newPage();page.setDefaultTimeout(1200);
  try{
   const start=Math.floor(Date.now()/1000)*1000;
   const seconds=new Date(start).getUTCSeconds();
@@ -24,7 +24,7 @@ test(`exact readonly duration ${type} ${scenario}`,async()=>{
 });
 for(const mode of ['disabled-time','missing-column','ambiguous-time','ignored-time','changed-start','wrong-final'])
 test(`readonly exact time fails closed: ${mode}`,async()=>{
- const browser=await chromium.launch({headless:true}),page=await browser.newPage();page.setDefaultTimeout(1200);
+ const browser=await chromium.launch({channel:'chromium',headless:true}),page=await browser.newPage();page.setDefaultTimeout(1200);
  try{
   const start=Math.floor(Date.now()/1000)*1000;await page.setContent('<input id="title"><input placeholder="开始日期"><input placeholder="结束日期">');
   await page.evaluate(installDateTimeFixture,{start,duration:2419207000,mode});

@@ -1,3 +1,5 @@
+import {dueVerificationTasks,claimVerification,finishVerification,verificationState,wakeVerification,verificationSummary} from './verification-schedule.mjs';
+import {activeCareRecoveryGrant} from './care-recovery-policy.mjs';
 import {randomUUID} from 'node:crypto';
 import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat,restorationGroupKey} from './policy.mjs';
 import {preferCampaignBaselines,applyCampaignPolicy} from './campaign-policy.mjs';
@@ -35,7 +37,8 @@ export class GuardianService {
       this.lastRun=displayRun(patrol.lastRun,this.now());const success=displayRun(patrol.lastSuccessfulRun,this.now());this.lastSuccessfulRun=success?.ok?success:null;
     }
     this.recovered=false;this.lastHistoryRead=this.now();
-    this.priceIncreaseFollowups=new Set();
+    this.verificationAttemptsThisPass=0;this.priceIncreaseFollowups=new Set();
+    if(activeCareRecoveryGrant(journal,policy.shopId,this.now())){const tasks=journal.list(policy.shopId);for(const target of journal.priceTargets(policy.shopId))if(target.automaticConsent?.careGrantId&&!tasks.some(t=>['verified','unknown','submitting','verifying'].includes(t.phase)&&t.plans.some(p=>p.priceApprovalId===target.id)))this.priceIncreaseFollowups.add(target.productId);}
     this.priorityWatch=null;this.priorityListing=null;this.lastPriorityPoll=0;this.priorityPoll=null;this.priorityResume=false;this.lastPriorityCheck=null;
     this.discoveryCycleStartedAt=null;
     this.immediateEnabled=immediate;this.immediateTimer=null;this.immediatePromise=null;
@@ -43,6 +46,7 @@ export class GuardianService {
       const health=this.platform.readHealth?.();requireThat(!health?.quarantined&&!health?.active?.length,'READS_PENDING','只读页面尚未完成清理，暂停提交');
       this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
   }
+  retryDelay(code){return activeCareRecoveryGrant(this.journal,this.policy.shopId,this.now())&&/TIMEOUT|ACTIVE_UNKNOWN|ACTIVE_CHANGED|STALE_OR_INCOMPLETE|LOSS_EVIDENCE_EXPIRED|BATCH_PROOF_EXPIRED/.test(code||'')?60000:blockerDelay(code);}
   status() {
     const tasks=this.policy.shopId?this.journal.list(this.policy.shopId):[];
     const direct=this.immediateEnabled&&this.policy.shopId?recoveryRequests(this.journal,this.policy.shopId):null;
@@ -50,7 +54,7 @@ export class GuardianService {
       verified:tasks.filter(t=>t.phase==='verified').reduce((n,t)=>n+t.plans.length,0),unknown:tasks.filter(t=>['submitting','unknown','verifying'].includes(t.phase)).length,
       blocked:tasks.filter(t=>t.phase==='blocked').length,
       immediateRecovery:direct?{pending:direct.items.filter(r=>r.state==='pending').length,deferred:direct.items.filter(r=>r.state==='deferred').length,paused:direct.paused}:null,
-      readHealth:this.platform.readHealth?.()||null,
+      readHealth:this.platform.readHealth?.()||null,verificationSchedule:verificationSummary(this.journal,this.policy.shopId),
       tasks:tasks.slice(0,100).map(t=>({id:t.id,title:t.title,phase:t.phase,products:t.plans.map(p=>p.productId),updatedAt:t.updatedAt,reason:t.reason||null,receipt:t.receipt||null}))};
   }
   recordRun(run){
@@ -66,6 +70,7 @@ export class GuardianService {
     return preferCampaignBaselines(this.journal,this.policy.shopId,latest);
   }
   restorePlan(baseline,current) {
+    if(baseline.shopId===this.policy.shopId)this.journal.clearInactiveDisplayAfterPrecheck(this.policy.shopId,baseline.productId,current,this.now());
     const review=this.journal.priceTarget(this.policy.shopId,baseline.productId);
     let source=baseline;
     // Adding the previously unrecorded timed duration must not discard exact
@@ -90,7 +95,10 @@ export class GuardianService {
           {code:'PRICE_RECONFIRM_REQUIRED',reviewId:proposal.id});
       }
       if(error.code!=='PRICE_APPROVAL_CHANGED')throw error;
-      if(activeOriginalPriceRecoveryGrant(this.journal,plan.shopId,this.now()))throw Object.assign(new Error('原确认金额与当前价格规则不一致，已转入恢复受阻；不会自动采用新价格'),{code:'ORIGINAL_PRICE_BLOCKED'});
+      if(activeCareRecoveryGrant(this.journal,plan.shopId,this.now())){
+        try{this.journal.approveCareRounding(applyCampaignPolicy(plan,this.journal),this.now());return this.restorePlan(baseline,current);}
+        catch(careError){if(careError.code==='PENDING')throw careError;}
+      }else if(activeOriginalPriceRecoveryGrant(this.journal,plan.shopId,this.now()))throw Object.assign(new Error('原确认金额与当前价格规则不一致，已转入恢复受阻；不会自动采用新价格'),{code:'ORIGINAL_PRICE_BLOCKED'});
       const proposal=this.journal.recordPriceReconfirmation(applyCampaignPolicy(plan,this.journal),this.now());
       throw Object.assign(new Error(proposal.status==='declined'?'旧确认金额已失效；已保留暂不调整选择，可在价格确认页重新核对。':'旧确认金额与当前取整规则不一致，请在价格确认页核对新金额并重新确认。'),
         {code:'PRICE_RECONFIRM_REQUIRED',reviewId:proposal.id});
@@ -104,7 +112,9 @@ export class GuardianService {
     try{checkRemovalPrices(plan,loss.removal);}
     catch(error){
       if(error.code==='SKU_RATIO_REVIEW_REQUIRED'){
-        try{this.journal.recordRemovalPriceReview(plan,loss,this.now());}
+        try{const review=this.journal.recordRemovalPriceReview(plan,loss,this.now());if(activeCareRecoveryGrant(this.journal,plan.shopId,this.now())&&!this.policy.excludedProductIds?.includes(plan.productId)&&review.status==='pending'){
+          this.journal.approveCarePriceReview(plan.shopId,review.id,review.key,plan.historicalFingerprint,this.now());this.priceIncreaseFollowups.add(plan.productId);
+        }}
         catch(proposalError){this.journal.event(null,'price-review-unavailable',{shopId:plan.shopId,productId:plan.productId,
           code:proposalError.code||'ERROR',message:String(proposalError.message).slice(0,1000)},this.now());}
       }
@@ -143,6 +153,7 @@ export class GuardianService {
       productIds.every(productId=>histories.has(productId)&&!this.policy.excludedProductIds?.includes(productId)),
       'RECOVERY_SCOPE','请核对商品历史和排除设置');
     requestRecovery(this.journal,this.policy.shopId,productIds.map(productId=>({productId,approvalId})),reason,this.now());
+    wakeVerification(this.journal,this.policy.shopId,this.journal.list(this.policy.shopId).filter(t=>t.plans.some(p=>productIds.includes(p.productId))).map(t=>t.id),this.now());
     if(this.busy&&this.stopRequested)this.requestedResume=true;
     else{this.stopRequested=false;this.platform.stopping=false;}
     this.wakeImmediate();return{queued:productIds.length};
@@ -168,9 +179,9 @@ export class GuardianService {
       }
       const pending=this.journal.list(this.policy.shopId).filter(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===request.productId));
       if(pending.length){
-        for(const t of pending)if(['unknown','verifying'].includes(t.phase))try{await this.reconcile(t);}catch(error){this.journal.event(t.id,'verification-pending',{code:error.code,message:error.message},this.now());}
+        for(const t of dueVerificationTasks(this.journal,this.policy.shopId,pending,this.now()))try{await this.reconcileScheduled(t);}catch(error){this.journal.event(t.id,'verification-pending',{code:error.code,message:error.message},this.now());}
         const unresolved=this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===request.productId));
-        updateRecoveryRequest(this.journal,this.policy.shopId,request,unresolved?{state:'pending',retryAt:this.now()+10000,reason:'已有提交只回读核实'}:{state:'complete',reason:'已有任务已独立核实'},this.now());continue;
+        updateRecoveryRequest(this.journal,this.policy.shopId,request,unresolved?{state:'pending',retryAt:Math.max(this.now()+10000,...pending.map(t=>verificationState(this.journal,this.policy.shopId,t)?.nextAt||0)),reason:'已有提交只回读核实'}:{state:'complete',reason:'已有任务已独立核实'},this.now());continue;
       }
       members.push({baseline,loss:{complete:false},request});
     }
@@ -179,7 +190,7 @@ export class GuardianService {
       attempts.set(member.baseline.productId,error);
       const detail={shopId:this.policy.shopId,productId:member.baseline.productId,code:error.code||'ERROR',message:error.message,
         productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
-      this.journal.putProductCheck(this.policy.shopId,detail.productId,{...detail,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
+      this.journal.putProductCheck(this.policy.shopId,detail.productId,{...detail,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+this.retryDelay(detail.code)});
       this.journal.event(null,'product-blocked',detail,this.now());
     };
     for(const batch of recoveryBatches(members)){
@@ -200,7 +211,7 @@ export class GuardianService {
     requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed&&this.policy.originalRiskAllowed,'CUTOVER_REQUIRED','本店守护规则尚未确认');
     if(this.immediatePromise)return this.immediatePromise;
     const run=(async()=>{
-      this.journal.lease(this.policy.shopId,this.owner,this.now());this.busy=true;
+      this.journal.lease(this.policy.shopId,this.owner,this.now());this.busy=true;this.verificationAttemptsThisPass=0;
       let leaseError=null;
       const heartbeat=setInterval(()=>{try{this.journal.lease(this.policy.shopId,this.owner,this.now());}catch(error){leaseError=error;this.stopRequested=true;}},20000);heartbeat.unref?.();
       try{
@@ -249,6 +260,12 @@ export class GuardianService {
     this.journal.putSettings('preview:'+this.policy.shopId,result);
     this.platform.progress={stage:'只读规格核对完成',read:products.length,total:histories.size,eligible:products.filter(p=>p.status==='eligible').length,blocked:products.filter(p=>p.status==='blocked').length,at:this.now()};
     return result;
+  }
+  async reconcileScheduled(task){
+    if(this.verificationAttemptsThisPass>=1)return false;
+    const claim=claimVerification(this.journal,this.policy.shopId,task,this.now());if(!claim)return false;
+    this.verificationAttemptsThisPass++;try{const resolved=await this.reconcile(task);finishVerification(this.journal,this.policy.shopId,claim,{resolved},this.now());return resolved;}
+    catch(error){finishVerification(this.journal,this.policy.shopId,claim,{error},this.now());throw error;}
   }
   async reconcile(task) {
     let observed=await this.platform.readback(task);
@@ -306,16 +323,16 @@ export class GuardianService {
       }
       const current=this.journal.get(task.id),reason=`${error.code||'ERROR'}: ${String(error.message).slice(0,800)}`;
       if(this.platform.captureFailure)await this.platform.captureFailure(task,draft,current.phase,error).catch(()=>{});
-      if(['queued','prepared'].includes(current.phase))this.journal.transition(task.id,current.phase,'blocked',{reason,retryAfter:this.now()+15*60000},this.now());
+      if(['queued','prepared'].includes(current.phase))this.journal.transition(task.id,current.phase,'blocked',{reason,retryAfter:this.now()+this.retryDelay(error.code)},this.now());
       else if(['submitting','verifying'].includes(current.phase))this.journal.transition(task.id,current.phase,'unknown',{reason},this.now());
       else this.journal.event(task.id,'readback-error',{reason},this.now());
       // Grant only an exact higher target after the old draft is recorded as
       // unsubmitted. The next attempt gets fresh loss, SKU and draft proofs.
-      if(!this.stopRequested&&activePriceIncreaseGrant(this.journal,task.shopId,this.now()))for(const review of priceReviews){
-        if(review.status!=='pending'||!isAutomaticPriceIncrease(review)||this.policy.excludedProductIds?.includes(review.productId))continue;
+      if(!this.stopRequested&&(activePriceIncreaseGrant(this.journal,task.shopId,this.now())||activeCareRecoveryGrant(this.journal,task.shopId,this.now())))for(const review of priceReviews){
+        if(review.status!=='pending'||!activeCareRecoveryGrant(this.journal,task.shopId,this.now())&&!isAutomaticPriceIncrease(review)||this.policy.excludedProductIds?.includes(review.productId))continue;
         try{
           const baseline=this.latestHistories().get(review.productId);requireThat(baseline,'PRICE_REVIEW_CHANGED','当前历史来源待核对');
-          this.journal.approvePriceIncrease(task.shopId,review.id,review.key,fingerprint(baseline),this.now());
+          if(activeCareRecoveryGrant(this.journal,task.shopId,this.now()))this.journal.approveCarePriceReview(task.shopId,review.id,review.key,fingerprint(baseline),this.now());else this.journal.approvePriceIncrease(task.shopId,review.id,review.key,fingerprint(baseline),this.now());
           this.priceIncreaseFollowups.add(review.productId);
         }catch(approvalError){this.journal.event(null,'price-increase-review-required',{shopId:task.shopId,productId:review.productId,code:approvalError.code,message:approvalError.message},this.now());}
       }
@@ -340,7 +357,7 @@ export class GuardianService {
     const blocked=(member,error)=>{
       if(error.code==='STOPPED')throw error;
       const productId=member.baseline.productId,detail={shopId:this.policy.shopId,productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
-      this.journal.putProductCheck(this.policy.shopId,productId,{...detail,lossKey:member.loss?.lossKey,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
+      this.journal.putProductCheck(this.policy.shopId,productId,{...detail,lossKey:member.loss?.lossKey,contextKey:fingerprint(member.baseline),at:this.now(),retryAt:this.now()+this.retryDelay(detail.code)});
       this.journal.event(null,'price-increase-recovery-pending',detail,this.now());
     };
     if(this.platform.precheckBatch&&this.platform.lossBatch){
@@ -483,6 +500,9 @@ export class GuardianService {
       if(!plans.length)continue;
       const lossEvidence=lossEvidenceFor(proofs);
       let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
+      if(task.phase==='blocked'&&eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId)).every(m=>m.request?.requestedAt>task.updatedAt)){
+        if(this.journal.requestFreshUnsubmittedRecheck(task.id,Math.min(...eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId)).map(m=>m.request.requestedAt)),this.now()))task=this.journal.get(task.id);
+      }
       if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
       const execution=task.phase==='queued'?await this.execute(task):null;
       task=this.journal.get(task.id);submitted=submitted||task.submitAttempts>0;
@@ -566,7 +586,7 @@ export class GuardianService {
         if(error.code==='STOPPED')throw error;
         const {baseline,hint}=member;
         const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
-        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
+        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+this.retryDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       });
     }
@@ -582,7 +602,7 @@ export class GuardianService {
     const blocked=(baseline,hint,error)=>{
       if(error.code==='STOPPED')throw error;
       const prior=checks.get(baseline.productId),detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:String(error.message).slice(0,1000),productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
-      this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
+      this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,watchKey:hint.watchKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+this.retryDelay(detail.code)});
       if(prior?.code!==detail.code||prior?.watchKey!==hint.watchKey)this.journal.event(null,'product-blocked',detail,this.now());
     };
     for(const hint of hints){
@@ -686,15 +706,15 @@ export class GuardianService {
     const conversion=this.journal.settings('campaign-conversion:'+this.policy.shopId);
     requireThat(!conversion||conversion.status==='complete','CONVERSION_IN_PROGRESS','活动迁移尚未完成，保留原始记录并暂停普通巡检');
     if(this.busy)return {skipped:'busy'};
-    this.journal.lease(this.policy.shopId,this.owner,this.now());this.busy=true;this.priorityResume=false;this.priorityListing=null;
+    this.journal.lease(this.policy.shopId,this.owner,this.now());this.busy=true;this.verificationAttemptsThisPass=0;this.priorityResume=false;this.priorityListing=null;
     let leaseError=null;
     const heartbeat=setInterval(()=>{try{this.journal.lease(this.policy.shopId,this.owner,this.now());}catch(error){leaseError=error;this.stopRequested=true;}},20000);
     const startedAt=this.now();this.patrolStartedAt=startedAt;
     try{
       if(!this.recovered){this.journal.recoverInterrupted(this.policy.shopId,this.now());this.recovered=true;}
-      for(const task of this.journal.list(this.policy.shopId).filter(t=>['unknown','verifying'].includes(t.phase))){
+      for(const task of dueVerificationTasks(this.journal,this.policy.shopId,this.journal.list(this.policy.shopId),this.now())){
         if(this.stopRequested)break;
-        try{await this.reconcile(task);}catch(error){this.journal.event(task.id,'verification-pending',{code:error.code||'ERROR',message:error.message},this.now());}
+        try{await this.reconcileScheduled(task);}catch(error){this.journal.event(task.id,'verification-pending',{code:error.code||'ERROR',message:error.message},this.now());}
       }
       if(this.stopRequested)return;
       this.nextAt=null;
@@ -716,7 +736,7 @@ export class GuardianService {
       const blocked=(baseline,loss,error)=>{
         if(error.code==='STOPPED')throw error;
         const detail={shopId:this.policy.shopId,productId:baseline.productId,code:error.code||'ERROR',message:error.message,productState:error.detail?.productState,precheckMembership:error.detail?.precheckMembership,restoreCapacity:error.detail?.restoreCapacity,limitedLoss:error.detail?.limitedLoss,timedLoss:error.detail?.timedLoss,activeHintRemoval:error.detail?.activeHintRemoval};
-        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,lossKey:loss?.lossKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+blockerDelay(detail.code)});
+        this.journal.putProductCheck(this.policy.shopId,baseline.productId,{...detail,lossKey:loss?.lossKey,contextKey:fingerprint(baseline),at:this.now(),retryAt:this.now()+this.retryDelay(detail.code)});
         this.journal.event(null,'product-blocked',detail,this.now());
       };
       for(const baseline of latest.values()){

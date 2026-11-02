@@ -1,3 +1,4 @@
+import {validCarePriceApproval} from './care-recovery-policy.mjs';
 import {randomUUID} from 'node:crypto';
 import {id,requireThat,fingerprint} from './policy.mjs';
 import {combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
@@ -45,6 +46,7 @@ export function isAutomaticPriceIncrease(review){
 }
 
 export function validAutomaticPriceApproval(journal,review){
+ if(review?.automaticConsent?.careGrantId)return validCarePriceApproval(journal,review);
  if(review?.approvalKind!=='automatic-price-increase'||review.status!=='approved'||!review.automaticConsent?.grantId)return false;
  const grant=journal.settings(grantKey(review.shopId,review.automaticConsent.grantId));
  return validGrant(grant,review.shopId,review.approvedAt)&&review.automaticConsent.targetsFingerprint===fingerprint(review.rows)&&

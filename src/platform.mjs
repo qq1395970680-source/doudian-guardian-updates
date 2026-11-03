@@ -18,6 +18,7 @@ import {timedRemovalEvidence} from './timed-removal.mjs';
 import {authorizedOriginalContinuity} from './original-rebuild-policy.mjs';
 import {activeMembershipProofBatches} from './active-membership.mjs';
 import {computerReadBudget,normalizeReadBudget} from './scan-load.mjs';
+import {assertDualProbeAllowed} from './dual-activity-recovery.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -866,7 +867,13 @@ export class DoudianPlatform {
    complete:true,observedAt:Date.now(),rows:bindFormProducts(products,task.plans),warnings,dialogs:snapshot.dialogs,
    ...(isLimited(task.plans[0])?{productLimits:products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
  }
- async prepare(task){
+ async priceCheck(task){
+  assertDualProbeAllowed(this.journal,task);
+  try{const draft=await this.prepare(task,{priceCheck:true});return {...draft.observation,source:'live-platform-draft'};}
+  catch(error){if(error.code==='PRICE_REVIEW_REQUIRED'&&error.detail?.priceProbe)return error.detail.priceProbe;throw error;}
+  finally{await this.release(task);}
+ }
+ async prepare(task,{priceCheck=false}={}){
   assertRecoveryCapacity(task.plans);
   requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed,'CUTOVER_REQUIRED','尚未切换执行权');
   this.progress={stage:'准备独立的干净创建页',taskId:task.id,at:Date.now()};const page=await this.open(LIST+'/create');
@@ -880,7 +887,7 @@ export class DoudianPlatform {
    await this.radio(page,'Excel批量导入');await this.rules(page,task.plans[0]);await page.locator('#title').fill(task.title);
    await this.setDates(page,task.plans[0]);
    await this.identity(page);this.check();this.assertWrite();
-   this.journal.assertPricePlans(task.shopId,task.plans);
+   if(priceCheck)assertDualProbeAllowed(this.journal,task);else this.journal.assertPricePlans(task.shopId,task.plans);
    const file=page.locator('input[type="file"][accept*=".xlsx"]');requireThat(await file.count()===1,'UPLOAD_CONTROL','官方导入控件不唯一');
    await file.setInputFiles({name:task.title+'.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:makeWorkbook(task.plans)});
    const expected=`全部${task.plans.length}个商品（共${task.plans.reduce((n,p)=>n+p.skus.length,0)}个规格）上传成功`;

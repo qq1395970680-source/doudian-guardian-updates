@@ -9,7 +9,14 @@ import {selectRatioPrices,describeRatio} from './ratio-prices.mjs';
 const types=['限时抢购','限量抢购'];
 const previousContext=r=>priceContext(r.historicalFingerprint,r.rows.map(row=>({...row,discount:row.previousDiscount,saleFen:row.previousFen})));
 const rejections=(review,context)=>recordedPriceRejections({shopId:review.shopId,productId:review.productId,...context});
-function alternateSource(review,type,{reviews=[],tasks=[],now=Date.now()}={}){
+function alternateSource(review,type,{reviews=[],tasks=[],now=Date.now(),dualDecision=null}={}){
+ const dual=dualDecision;
+ if(review.dualPairKey){
+  if(!dual?.valid||!dual.approvalAllowed||dual.pairKey!==review.dualPairKey)return null;
+  const scheme=dual.schemes?.find(s=>s.type===type),source=reviews.find(r=>r.id===scheme?.reviewId);
+  if(scheme?.classification!=='reduction-required'||!source||source.dualPairKey!==dual.pairKey||source.status!=='pending'||source.type!==type||source.createdAt>now||source.expiresAt<=now||source.historicalFingerprint!==review.historicalFingerprint||source.rows.length!==review.rows.length||!review.rows.every(row=>source.rows.some(s=>s.id===row.id&&s.name===row.name&&s.baseFen===row.baseFen&&s.previousFen===row.previousFen&&s.previousDiscount===row.previousDiscount&&s.historicalDiscount===row.historicalDiscount)))return null;
+  return source;
+ }
  const failure=rejections(review,{reviews,tasks,now}).find(f=>f.type===type),source=reviews.find(r=>r.id===failure?.reviewId);
  if(!source||source.createdAt>now||source.expiresAt<=now||!Number.isFinite(source.expiresAt)||!manualPriceEditable(source)||source.type!==type||failure.context!==previousContext(review))return null;
  if(source.historicalFingerprint!==review.historicalFingerprint||source.rows.length!==review.rows.length||!review.rows.every(row=>source.rows.some(s=>s.id===row.id&&s.name===row.name&&s.baseFen===row.baseFen&&s.historicalDiscount===row.historicalDiscount)))return null;
@@ -31,7 +38,8 @@ export function activityPriceBasis(review,type,context={}){
  try{selected=source.ratio?selectRatioPrices(skus,source.ratio,bounds):skus.map((s,i)=>selectClosestPriceStep(s,bounds[i]));}
  catch(error){if(error.code!=='NO_FEASIBLE_PRICE')throw error;originalUnavailable={code:error.code,message:error.message};selected=skus;}
  const rows=review.rows.map((row,i)=>({...row,bounds:bounds[i],evidence:structuredClone(source.rows.find(s=>s.id===row.id).evidence||[]),discount:selected[i].discount,saleFen:saleFen(row.baseFen,selected[i].discount)}));
- return {...base,type,rules:campaignChoice(type).rules,campaignTarget:campaignChoice(type),rows,
+ const target=review.dualPairKey?source.campaignTarget||{type:source.type,rules:structuredClone(source.rules),durationMs:source.durationMs,activityLimit:source.activityLimit??null}:campaignChoice(type);
+ return {...base,type,rules:structuredClone(target.rules),campaignTarget:structuredClone(target),...(review.dualPairKey?{durationMs:source.durationMs,activityLimit:source.activityLimit??null}:{}),rows,
   activityBasisKey:fingerprint({reviewId:source.id,key:source.key,type,rows:source.rows,ratio:source.ratio||null}),activityBasisReviewId:source.id,
   ...(source.ratio?{kind:'sku-price-ratio',ratio:describeRatio(skus,rows,source.ratio)}:{}),...(originalUnavailable?{originalUnavailable}:{})};
 }
@@ -43,7 +51,7 @@ export function blockerPriceOptions(review,context={}){
  const basis=activityPriceBasis(review,other,context);
  const alternate=priceOptions(basis).filter(option=>option.activityType===other).map(option=>({...option,
   id:'activity-'+(other==='限时抢购'?'timed':'limited')+'-'+option.id,label:other+' · '+option.label,
-  campaignTarget:campaignChoice(other),evidenceReviewId:basis.activityBasisReviewId,
+  campaignTarget:basis.campaignTarget||campaignChoice(other),evidenceReviewId:basis.activityBasisReviewId,
   key:fingerprint({algorithm:'activity-specific-price-v1',parentKey:review.key,basisKey:basis.activityBasisKey,option})}));
  options=options.filter(option=>option.activityType!==other);
  return [...options,...alternate];

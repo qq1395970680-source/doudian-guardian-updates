@@ -4,9 +4,9 @@ import {mkdtemp,rm,mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {DedicatedBrowser} from '../../src/browser.mjs';
-import {blockerFixture} from '../helpers/blocker-prices-fixture.mjs';
+import {dualBlockerFixture as blockerFixture,openDualPriceWorkspace as openPriceWorkspace} from '../helpers/dual-price-ui-fixture.mjs';
 import {activeOriginalPriceRecoveryGrant} from '../../src/original-price-recovery-policy.mjs';
-import {openPriceWorkspace,choosePriceStrategy} from '../helpers/price-workspace-ui.mjs';
+import {choosePriceStrategy} from '../helpers/price-workspace-ui.mjs';
 
 for(const width of [1440,960])test('blocker screen previews exact manual prices and confirms one product only '+width,{timeout:60000},async()=>{
  const x=await blockerFixture(),dir=await mkdtemp(join(tmpdir(),'guardian-blocker-editor-ui-')),browser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width,height:1000}});
@@ -36,6 +36,6 @@ test('unknown product remains readable but cannot be approved from blockers',{ti
  const x=await blockerFixture(),dir=await mkdtemp(join(tmpdir(),'guardian-blocker-unknown-ui-')),browser=new DedicatedBrowser(join(dir,'ui'),{test:true});
  const task=x.journal.enqueue(x.review.shopId,[x.f.plan],{complete:true,lossKey:'unfinished',observedAt:Date.now()},Date.now());
  const {id,shopId,phase,updatedAt,...body}=task;body.submitAttempts=1;body.riskAttempts=0;x.journal.db.prepare('UPDATE tasks SET phase=?,body=? WHERE id=?').run('unknown',JSON.stringify(body),id);
- try{await browser.open(x.review.shopId);const page=await browser.page();await page.goto(x.app.url);await page.locator('[data-view="blockers"]').click();await page.locator('[data-recovery-blocker="'+x.review.productId+'"] [data-open-price-review]').click();const dialog=page.locator('dialog[data-price-workspace]');await dialog.locator('[data-pending-price]').waitFor();assert.equal(await dialog.getByRole('combobox',{name:'选择价格调整方案',exact:true}).isDisabled(),true);assert.equal(await dialog.locator('.price-consent input').isDisabled(),true);assert.equal(await dialog.getByRole('button',{name:'确认表内价格并继续守护',exact:true}).isDisabled(),true);assert.equal(x.journal.priceTarget(x.review.shopId,x.review.productId),null);}
+ try{await browser.open(x.review.shopId);const page=await browser.page(),posts=[];page.on('request',r=>{if(r.method()==='POST')posts.push(r.url());});await page.goto(x.app.url);const dialog=await openPriceWorkspace(page,x.review.productId,{scope:'automatic'});await dialog.locator('[data-pending-price]').waitFor();const strategy=dialog.getByRole('combobox',{name:'选择价格调整方案',exact:true});if(await strategy.count())assert.equal(await strategy.isDisabled(),true);assert.equal(await dialog.locator('.price-consent input').count(),0);assert.equal(await dialog.getByRole('button',{name:'确认表内价格并继续守护',exact:true}).count(),0);assert.equal(await dialog.locator('[data-manual-sku]').count(),0);assert.equal(x.journal.priceTarget(x.review.shopId,x.review.productId),null);assert.equal(x.journal.get(id).submitAttempts,1);assert.deepEqual(posts,[]);}
  finally{await browser.close();await x.close();await rm(dir,{recursive:true,force:true});}
 });

@@ -11,6 +11,7 @@ import {activeOriginalPriceRecoveryGrant} from '../../src/original-price-recover
 import {activePriceIncreaseGrant,setPriceIncreasePolicy} from '../../src/price-increase-policy.mjs';
 import {activeOriginalRebuildGrant,setOriginalRebuildPolicy} from '../../src/original-rebuild-policy.mjs';
 import {seedPriceQueue} from '../helpers/large-price-queue-fixture.mjs';
+import {seedWorkspaceQueueHistories} from '../helpers/workspace-queue-catalog-fixture.mjs';
 import {revealControl} from '../helpers/price-workspace-ui.mjs';
 
 test('original-only authorization stays shop scoped while explicit price decisions have one pending owner',{timeout:60000},async()=>{
@@ -21,7 +22,7 @@ test('original-only authorization stays shop scoped while explicit price decisio
   platformFactory:policy=>({probe:async()=>({shopId:policy.shopId}),discover:async()=>({baselines:[],activeComplete:true})})}});
  new AccountRegistry(journal).authorizeOriginal('900001');
  const originalGrant=setOriginalRebuildPolicy(journal,'900001',{enabled:true,acceptOriginalRebuild:true},Date.now()-1000);
- seedPriceQueue(journal,{pending:2,approved:1});setPriceIncreasePolicy(journal,'900001',{enabled:true,acceptHigherPricesAndRisk:true});
+ seedPriceQueue(journal,{pending:2,approved:1});seedWorkspaceQueueHistories(journal);setPriceIncreasePolicy(journal,'900001',{enabled:true,acceptHigherPricesAndRisk:true});
  try{
   const html=await(await fetch(app.url)).text(),token=html.match(/script nonce="([a-f0-9]+)"/)[1];
   await fetch(app.url+'/api/finish-login',{method:'POST',headers:{'Content-Type':'application/json',Origin:app.url,'X-Guardian-Token':token},body:'{}'});
@@ -41,9 +42,9 @@ test('original-only authorization stays shop scoped while explicit price decisio
   const candidate=pending.reviews[0],legacy=await fetch(app.url+'/api/price-reviews/decide',{method:'POST',headers:{'Content-Type':'application/json',Origin:app.url,'X-Guardian-Token':token},body:JSON.stringify({shopId:'900001',reviewId:candidate.id,key:candidate.key,decision:'approve',acceptPriceAndRisk:true,confirmedSkuIds:candidate.rows.map(r=>r.id)})});
   assert.equal(legacy.status,400);assert.equal((await legacy.json()).code,'ORIGINAL_PRICE_BLOCKED');assert.equal(journal.priceTarget('900001',candidate.productId),null,'legacy API cannot bypass explicit per-product exception');
   assert.equal(journal.priceReviewCounts('900001').pending,2);assert.equal(journal.priceReviews('900001').length,3);
-  await page.locator('[data-view="prices"]').click();await page.locator('[data-price-scope="pending"]').click();await page.locator('[data-price-direction="all"]').click();await page.waitForFunction(()=>document.querySelectorAll('#price-reviews [data-price-product]').length===2);assert.equal(await page.locator('#price-count').innerText(),'2');
-  await page.locator('[data-view="blockers"]').click();assert.equal(await page.locator('[data-blocker-filter="all"]').getAttribute('class').then(s=>s.includes('selected')),true);
-  assert.equal(await page.locator('#blocker-records [data-open-price-review]').count(),0,'actionable prices are not duplicated as blocked work');
+  await page.locator('[data-view="workspace"]').click();await page.locator('[data-workspace-scope="confirm"]').click();await page.waitForFunction(()=>document.querySelector('#workspace-confirm-count').textContent==='0');assert.equal(await page.locator('#price-reviews [data-price-product]').count(),0);assert.equal(await page.locator('#price-count').isVisible(),false);
+  await page.locator('[data-workspace-scope="automatic"]').click();await page.waitForFunction(()=>document.querySelectorAll('#price-reviews [data-price-product]').length===2);assert.equal(await page.locator('#price-count').innerText(),'0');assert.equal(await page.locator('[data-view="prices"],[data-view="blockers"]').count(),0,'one workspace owns both cases');
+  assert.equal(await page.locator('#blocker-records').isVisible(),false,'old panels cannot duplicate current work');
   await page.locator('[data-view="accounts"]').click();await revealControl(button);await button.click();await page.waitForFunction(()=>document.querySelector('#original-price-policy')?.textContent==='开启原价自动恢复');
   assert.equal(activeOriginalPriceRecoveryGrant(journal,'900001'),null);assert.equal((await(await fetch(app.url+'/api/price-reviews')).json()).pending,2);
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts','original-price-recovery-960.png'),fullPage:true});

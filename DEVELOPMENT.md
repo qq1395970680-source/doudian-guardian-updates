@@ -1,3 +1,13 @@
+## beta.60 双方案恢复与工作台
+
+核心执行/授权/证据合同见 src/dual-activity-recovery.mjs 与 tests/dual-*.test.mjs。两类草稿独立、当前目标价格为底线、逐商品选择；raw proof可重放，未知任务锁贯穿。人工批准、预览和UI入口均校验当前pair，不能用未核验方案/过期pair绕过；整pair暂缓与显式重核分离。
+
+src/recovery-workspace.mjs统一六页中的恢复待办投影；pending和unavailable均为后台核验，不作为降价结论。server读取同一context并缓存历史/目标/任务，避免每个pair重复解码整店历史。public/recovery-workspace.js只消费服务端approvalAllowed，默认禁止批准。展示与执行证据保持分离。
+
+界面风格依据 Apple iOS 27 和 HIG Materials：功能层使用Liquid Glass，内容保持稳定实底与清晰对比，减少动效和高对比偏好有降级。颜色/动效不得改变授权、金额或提交路径。
+
+本次发布验收必须包含两类型真实干净页、非降价自动切换、双降价零提交到明确人工确认、旧价格取整、未知重启、inactive proof与重新上架、全部六页及弹层/空态/错误/高级内容的实际渲染。各报告记录实际sourceBuild，历史旧hash证据不得冒充终版。
+
 # 开发与发布
 
 桌面与后台统一版本取自 `package.json`；运行中的版本和构建标识由 `/api/status` 返回。完整可编辑工程随安装器提供，右上角程序工具可以导出；GitHub Release 同时提供源码 ZIP。已发布包是该次发行的不可变快照，后续文档修订不替换同版本资产。

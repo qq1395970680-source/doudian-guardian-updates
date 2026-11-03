@@ -23,7 +23,7 @@ test('migration UI previews SKU history, requires a separate unchecked choice an
   for(const detail of await ancestors.all())if(!await detail.evaluate(el=>el.open))await detail.locator(':scope > summary').click();
   await page.locator('#choose-transfer').click();await page.locator('#transfer-preview').waitFor({state:'visible'});
   assert.equal(target.histories(f.policy.shopId).length,0);assert.equal(await page.locator('#transfer-consent').isChecked(),false);assert.equal(await page.locator('#import-transfer').isDisabled(),true);assert.deepEqual(imports,[],'preview alone never imports history');
-  await page.locator('.transfer-product summary').click();assert.equal(await page.locator('.transfer-product tbody tr').count(),2);const shown=await page.locator('#transfer-products').innerText();assert.match(shown,/规格甲/);assert.match(shown,/规格乙/);assert.match(shown,/69.50/);assert.match(shown,/60.00/);
+  await page.locator('.transfer-product summary').click();await page.locator('.transfer-product tbody tr').first().waitFor();assert.equal(await page.locator('.transfer-product tbody tr').count(),2);const shown=await page.locator('#transfer-products').innerText();assert.match(shown,/规格甲/);assert.match(shown,/规格乙/);assert.match(shown,/69.50/);assert.match(shown,/60.00/);
   await page.locator('#transfer-consent').check();await page.waitForResponse(r=>r.url().endsWith('/api/status'));assert.equal(await page.locator('#transfer-consent').isChecked(),true);
   assert.equal(target.histories(f.policy.shopId).length,0);assert.deepEqual(imports,[],'checking consent does not itself import');
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts/migration-preview.png'),fullPage:false});

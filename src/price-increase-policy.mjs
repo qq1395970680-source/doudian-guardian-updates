@@ -1,4 +1,5 @@
 import {validCarePriceApproval} from './care-recovery-policy.mjs';
+import {validDualActivityApproval} from './dual-activity-recovery.mjs';
 import {randomUUID} from 'node:crypto';
 import {id,requireThat,fingerprint} from './policy.mjs';
 import {combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
@@ -46,6 +47,7 @@ export function isAutomaticPriceIncrease(review){
 }
 
 export function validAutomaticPriceApproval(journal,review){
+ if(review?.automaticConsent?.dualGrantId)return validDualActivityApproval(journal,review);
  if(review?.automaticConsent?.careGrantId)return validCarePriceApproval(journal,review);
  if(review?.approvalKind!=='automatic-price-increase'||review.status!=='approved'||!review.automaticConsent?.grantId)return false;
  const grant=journal.settings(grantKey(review.shopId,review.automaticConsent.grantId));

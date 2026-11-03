@@ -12,8 +12,11 @@ import {fingerprint} from '../../src/policy.mjs';
 import {priceFixture} from './price-review-fixture.mjs';
 import {recoveryTask,seedRecoveries} from './recovery-fixture.mjs';
 import {seedLimitedRejection} from './activity-price-fixture.mjs';
+import {setDualActivityCarePolicy} from '../../src/dual-activity-recovery.mjs';
+import {seedDualDrafts} from './dual-price-ui-fixture.mjs';
+import {applyCampaignPolicy} from '../../src/campaign-policy.mjs';
 
-export const workspaceViews=['overview','recoveries','accounts','prices','blockers','activity','updates'];
+export const workspaceViews=['overview','workspace','recoveries','accounts','activity','updates'];
 export const workspaceShopId='900001';
 
 // In-memory journals, a loopback port selected by the OS, fake platform data,
@@ -25,11 +28,11 @@ export async function workspaceRedesignFixture({empty=false}={}){
   skus:Array.from({length:i===0?32:3},(_,n)=>({id:String(610000+i*100+n),name:'滤芯规格 '+(n+1),baseFen:10000+n*1200,discount:50,saleFen:5000+n*600}))}));
  const inventory={listing:{complete:true,observedAt:now,campaigns:empty?[]:[{id:'410001',name:'隔离演示活动',type:'限量抢购',status:'进行中',startAt:now-3600000,endAt:now+86400000}]},activeComplete:true,
   details:new Map(empty?[]:[['410001',{complete:true,observedAt:now,products}]])};
- let activeReview=null,priceProductId=null;
+ let activeReview=null,priceProductId=null,priceSeed=null;
  if(!empty){
   const f=priceFixture(journal,now),r=journal.recordPriceReview(makePriceReviews(f.task,f.probe,now)[0],now);
   journal.transition(f.task.id,'queued','blocked',{reason:'PRICE_REVIEW_REQUIRED: 活动价不得高于近15天最低价（68元）'},now);
-  seedLimitedRejection(journal,f,r,{at:now-10});activeReview=r;priceProductId=r.productId;
+  seedLimitedRejection(journal,f,r,{at:now-10});activeReview=r;priceProductId=r.productId;priceSeed=f;
   const history=Array.from({length:27},(_,i)=>recoveryTask(100+i,{skuCount:i===0?27:3}));
   const unknowns=[recoveryTask(200,{phase:'unknown'}),recoveryTask(201,{phase:'unknown'})];
   for(const t of unknowns){t.reason='LOAD_TIMEOUT: 提交结果等待独立回读';t.riskAttempts=t===unknowns[0]?0:1;}
@@ -59,11 +62,13 @@ export async function workspaceRedesignFixture({empty=false}={}){
   dependencies:{journal,service,platform,browser:{close:async()=>{}}}});
  if(!empty){
   platform.onAuthenticated({shopId,name:'全界面隔离验收店铺'});
+  setDualActivityCarePolicy(journal,shopId,{enabled:true,acceptBothActivityTypes:true,acceptNonReducingRecovery:true},now);
   setOriginalPriceRecoveryPolicy(journal,shopId,{enabled:true,acceptOriginalPricesOnly:true},now);
   setOriginalRebuildPolicy(journal,shopId,{enabled:true,acceptOriginalRebuild:true},now);
   // snapshot() reads this setting after spreading service.status(), so this
   // deliberately exercises the exact former limited-campaign banner branch.
   journal.putSettings('campaign-policy:'+shopId,{target:{type:'限量抢购',activityLimit:1000,durationMs:7*86400000,rules:{noLimit:false,noPerUserLimit:true,noWarmup:true,orderMinutes:30,autoRenew:true}}});
+  const pair=seedDualDrafts(journal,applyCampaignPolicy(priceSeed.plan,journal),{now,caps:{'限时抢购':6800,'限量抢购':6500}});activeReview=journal.priceReview(pair.reviewIds['限量抢购']);
  }
  const transferSource=new Journal(':memory:'),tf=priceFixture(transferSource,now);
  const transferFile=makeTransfer(transferSource,{...tf.policy,name:'迁移预览隔离店铺'},{version:'2.0.0-beta.59',now});

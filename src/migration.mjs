@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {fingerprint,id,normalizeName,requireThat,saleFen,validateHistorical,isLimited,validateLimited} from './policy.mjs';
+import {campaignChoice} from './campaign-choice.mjs';
 
 export const TRANSFER_FORMAT='doudian-guardian-transfer';
 export const TRANSFER_MAX_BYTES=32*1024*1024;
@@ -7,7 +8,7 @@ const phases=['queued','prepared','submitting','verifying','unknown','verified',
 const unresolved=t=>['submitting','verifying','unknown'].includes(t.phase);
 function tables(j){j.db.exec(`CREATE TABLE IF NOT EXISTS migration_imports(digest TEXT PRIMARY KEY,shop TEXT NOT NULL,at INTEGER NOT NULL,body TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS migration_task_archive(shop TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(shop,id));`);}
-function archivalPlan(plan){const {originalRiskAllowed,approvedRiskAllowed,priceApprovalId,priceApprovalKey,fingerprint:planHash,...record}=plan;return record;}
+function archivalPlan(plan){const {originalRiskAllowed,approvedRiskAllowed,priceApprovalId,priceApprovalKey,productCampaignApprovalId,fingerprint:planHash,...record}=plan;return record;}
 function taskMaterial(t){return {title:t.title,plans:t.plans.map(p=>({shopId:p.shopId,productId:p.productId,historicalFingerprint:p.historicalFingerprint,type:p.type,rules:p.rules,
  ...(p.durationMs!=null?{durationMs:p.durationMs}:{}),...(isLimited(p)?{activityLimit:p.activityLimit}:{}),
  skus:p.skus.map(s=>({id:s.id,name:normalizeName(s.name),baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen}))}))};}
@@ -64,9 +65,11 @@ export function validateTransfer(file,expectedShop,now=Date.now()){
    // These are archival facts, not transferred rule/price consent. Imported
    // unknown tasks can only be read back, with all confirmation counts locked.
    const converted=isLimited(plan)&&/^[a-f0-9]{64}$/.test(plan.campaignPolicyFingerprint||'');
+   const target=plan.campaignTarget,canonical=target&&['限时抢购','限量抢购'].includes(target.type)?campaignChoice(target.type):null;
+   const selected=canonical&&fingerprint(target)===fingerprint(canonical)&&fingerprint({type:plan.type,rules:plan.rules,durationMs:plan.durationMs,activityLimit:plan.activityLimit??null})===fingerprint(canonical);
    if(isLimited(plan)){validateLimited(plan);validateHistorical({...plan,source:'verified-platform-history',complete:true});}
    requireThat(b&&plan.shopId===p.shopId&&plan.productId===b.productId&&!members.has(plan.productId)&&
-    (plan.type===b.type&&fingerprint(plan.rules)===fingerprint(b.rules)||converted),
+    (plan.type===b.type&&fingerprint(plan.rules)===fingerprint(b.rules)||converted||selected),
     'TRANSFER_TASK','任务与完整历史不匹配');members.add(plan.productId);
    requireThat(Array.isArray(plan.skus)&&plan.skus.length>0&&new Set(plan.skus.map(s=>s.id)).size===plan.skus.length,'TRANSFER_TASK','任务规格缺失或重复');
    for(const s of plan.skus){const original=b.skus.find(r=>r.id===s.id);requireThat(original&&s.baseFen===original.baseFen&&normalizeName(s.name)===normalizeName(original.name)&&s.saleFen===saleFen(s.baseFen,s.discount),

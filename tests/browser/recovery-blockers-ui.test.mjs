@@ -9,7 +9,7 @@ import {DedicatedBrowser} from '../../src/browser.mjs';
 import {seedPriceQueue} from '../helpers/large-price-queue-fixture.mjs';
 import {requestRecovery} from '../../src/recovery-requests.mjs';
 
-for(const width of [1440,960])test('separate sidebar shows true price count and both-type blockers without any mutation '+width,{timeout:45000},async()=>{
+for(const width of [1440,960])test('one workspace keeps historical type failures out of human confirmation without mutation '+width,{timeout:45000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'guardian-blockers-ui-')),j=new Journal(':memory:'),now=Date.now(),shopId='900001',productId='300001';
  const sku={id:'500001',name:'测试规格',baseFen:10000,discount:50,saleFen:5000};
  for(const [i,type] of ['限时抢购','限量抢购'].entries()){
@@ -24,14 +24,14 @@ for(const width of [1440,960])test('separate sidebar shows true price count and 
  const browser=new DedicatedBrowser(join(dir,'browser'),{test:true,viewport:{width,height:960}});
  try{
   await browser.open(shopId);const page=await browser.page(),errors=[],writes=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.method()==='POST')writes.push(r.url());});
-  await page.goto(app.url);await page.waitForFunction(()=>document.getElementById('price-count').textContent==='1');
-  assert.equal(await page.locator('[data-view="blockers"]').count(),1);
-  await page.locator('[data-view="blockers"]').click();const card=page.locator('[data-recovery-blocker="300001"]');await card.waitFor();
-  await card.locator('.blocker-details > summary').click();assert.match(await card.innerText(),/限时抢购/);assert.match(await card.innerText(),/限量抢购/);assert.match(await card.innerText(),/恢复请求：queued/);
-  assert.equal(await page.locator('#blocker-both-count').innerText(),'1');assert.equal(await page.locator('#price-rechecks-panel').isVisible(),false);assert.equal(await page.locator('[data-price-recheck]').count(),0,'progress is folded into the same product instead of duplicated');
+  await page.goto(app.url);await page.waitForFunction(()=>document.getElementById('price-count').textContent==='0');
+  assert.equal(await page.locator('[data-view="workspace"]').count(),1);assert.equal(await page.locator('[data-view="prices"],[data-view="blockers"]').count(),0);
+  await page.locator('[data-view="workspace"]').click();assert.equal(await page.locator('#price-reviews [data-workspace-product]').count(),0,'historical errors alone do not prove both current schemes need reductions');
+  await page.locator('[data-workspace-scope="automatic"]').click();const card=page.locator('[data-workspace-product="300001"]');await card.waitFor();assert.equal(await card.count(),1);await card.locator('[data-open-price-review]').click();const dialog=page.locator('dialog[data-price-workspace]');await dialog.locator('[data-activity-price-type]').first().waitFor();assert.equal(await dialog.locator('[data-activity-price-type]').count(),2);assert.equal(await dialog.locator('[data-scheme-state="pending"]').count(),2);assert.equal(await dialog.locator('.price-consent input').count(),0);await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#price-rechecks-panel').isVisible(),false);assert.equal(await page.locator('[data-price-recheck]').count(),0,'progress has one visible product owner');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`recovery-blockers-${width}.png`),fullPage:false});
-  await page.locator('[data-view="prices"]').click();assert.equal(await page.locator('#price-rechecks-panel').isVisible(),false);assert.equal(await page.locator('#recovery-issues-panel').isVisible(),false);
-  assert.equal(await page.locator('#price-count').innerText(),'1');assert.deepEqual(writes,[]);assert.deepEqual(errors,[]);
+  await page.locator('[data-workspace-scope="confirm"]').click();assert.equal(await page.locator('#price-rechecks-panel').isVisible(),false);assert.equal(await page.locator('#recovery-issues-panel').isVisible(),false);
+  assert.equal(await page.locator('#price-count').innerText(),'0');assert.equal(j.list(shopId).every(t=>t.submitAttempts===0),true);assert.equal(j.priceTargets(shopId).length,0);assert.deepEqual(writes,[]);assert.deepEqual(errors,[]);
  }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
 });

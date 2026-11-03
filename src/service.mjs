@@ -13,6 +13,7 @@ import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 import {recoveryRequests,requestRecovery,updateRecoveryRequest,pauseRecoveryRequests} from './recovery-requests.mjs';
 import {priceRemovalAfterActiveHint} from './active-hint-removal.mjs';
 import {activeOriginalPriceRecoveryGrant} from './original-price-recovery-policy.mjs';
+import {activeDualActivityCareGrant,dualActivityTypes,dualProbePlan,makeDualActivityDecision,getDualActivityDecision} from './dual-activity-recovery.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -46,7 +47,7 @@ export class GuardianService {
       const health=this.platform.readHealth?.();requireThat(!health?.quarantined&&!health?.active?.length,'READS_PENDING','只读页面尚未完成清理，暂停提交');
       this.journal.assertLease(this.policy.shopId,this.owner,this.now());};
   }
-  retryDelay(code){return activeCareRecoveryGrant(this.journal,this.policy.shopId,this.now())&&/TIMEOUT|ACTIVE_UNKNOWN|ACTIVE_CHANGED|STALE_OR_INCOMPLETE|LOSS_EVIDENCE_EXPIRED|BATCH_PROOF_EXPIRED/.test(code||'')?60000:blockerDelay(code);}
+  retryDelay(code){return (activeCareRecoveryGrant(this.journal,this.policy.shopId,this.now())||activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now()))&&/TIMEOUT|ACTIVE_UNKNOWN|ACTIVE_CHANGED|STALE_OR_INCOMPLETE|LOSS_EVIDENCE_EXPIRED|BATCH_PROOF_EXPIRED|DUAL_/.test(code||'')?60000:blockerDelay(code);}
   status() {
     const tasks=this.policy.shopId?this.journal.list(this.policy.shopId):[];
     const direct=this.immediateEnabled&&this.policy.shopId?recoveryRequests(this.journal,this.policy.shopId):null;
@@ -95,7 +96,10 @@ export class GuardianService {
           {code:'PRICE_RECONFIRM_REQUIRED',reviewId:proposal.id});
       }
       if(error.code!=='PRICE_APPROVAL_CHANGED')throw error;
-      if(activeCareRecoveryGrant(this.journal,plan.shopId,this.now())){
+      if(activeDualActivityCareGrant(this.journal,plan.shopId,this.now())){
+        try{this.journal.approveDualRounding(applyCampaignPolicy(plan,this.journal),this.now());return this.restorePlan(baseline,current);}
+        catch(dualError){if(dualError.code==='PENDING')throw dualError;throw Object.assign(new Error('取整金额或原目标尚未完整核实，继续后台核验：'+dualError.message),{code:'DUAL_ROUNDING_BLOCKED'});}
+      }else if(activeCareRecoveryGrant(this.journal,plan.shopId,this.now())){
         try{this.journal.approveCareRounding(applyCampaignPolicy(plan,this.journal),this.now());return this.restorePlan(baseline,current);}
         catch(careError){if(careError.code==='PENDING')throw careError;}
       }else if(activeOriginalPriceRecoveryGrant(this.journal,plan.shopId,this.now()))throw Object.assign(new Error('原确认金额与当前价格规则不一致，已转入恢复受阻；不会自动采用新价格'),{code:'ORIGINAL_PRICE_BLOCKED'});
@@ -104,11 +108,32 @@ export class GuardianService {
         {code:'PRICE_RECONFIRM_REQUIRED',reviewId:proposal.id});
     }
   }
+  async chooseDualRecoveryPlan(plan,loss){
+    const grant=activeDualActivityCareGrant(this.journal,plan.shopId,this.now());if(!grant)return plan;
+    requireThat(loss?.complete===true&&loss.active===false&&!loss.ambiguous&&loss.lossKey&&loss.observedAt>0&&loss.observedAt<=this.now()&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','双方案恢复前必须独立证明商品当前没有有效活动');
+    requireThat(!this.journal.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),'PENDING','已有未完成或未知结果，只独立回读，不重新提交');
+    requireThat(this.platform.priceCheck,'DUAL_CHECK_UNAVAILABLE','当前平台适配器尚未提供两种活动的独立干净草稿核验');
+    const probes=[];
+    for(const type of [plan.type,...dualActivityTypes.filter(t=>t!==plan.type)]){
+      requireThat(!this.stopRequested,'STOPPED','后台双方案核验已暂停');
+      const task={id:randomUUID(),shopId:plan.shopId,title:'守护双方案核验-'+randomUUID().slice(0,12),phase:'queued',plans:[dualProbePlan(plan,type,grant.choices)],lossEvidence:lossEvidenceFor([loss]),submitAttempts:0,riskAttempts:0,dualProbe:{grantId:grant.id,choices:structuredClone(grant.choices),plan:structuredClone(plan)}};
+      try{probes.push({type,task,observation:await this.platform.priceCheck(task)});}
+      catch(error){if(['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH','READ_CLEANUP_BLOCKED'].includes(error.code))throw error;probes.push({type,error:{code:error.code||'READ_FAILED',message:String(error.message).slice(0,1000)}});}
+    }
+    const decision=this.journal.recordDualActivityDecision(makeDualActivityDecision({plan,probes,now:this.now()}),this.now());
+    requireThat(decision?.valid,'DUAL_CHECK_PENDING',decision?.blockedReason||'两种活动的独立核验尚未完成');
+    if(!decision.selectedType)throw Object.assign(new Error(decision.approvalAllowed?'两种活动均已证明至少一个规格需要降价，等待逐规格明确确认。':'两种活动尚未都证明必须降价；继续自动核验，不要求确认未经证明的价格。'),{code:decision.approvalAllowed?'DUAL_REDUCTION_REQUIRED':'DUAL_CHECK_PENDING',detail:{dualPairKey:decision.pairKey}});
+    const scheme=decision.schemes.find(s=>s.type===decision.selectedType);
+    if(scheme.type===plan.type&&scheme.unchanged)return plan;
+    const target=this.journal.approveDualActivityDecision(plan.shopId,plan.productId,decision.pairKey,this.now());
+    const selected=applyCampaignPolicy(applyPriceTarget(plan,target),this.journal);assertRecoveryCapacity([selected]);return selected;
+  }
   checkPriceRules(plan,loss){
+    if(activeDualActivityCareGrant(this.journal,plan.shopId,this.now()))return this.chooseDualRecoveryPlan(plan,loss);
     // Another activity's removal rule is evidence of that activity's loss,
     // not proof that a newly selected type accepts or rejects these prices.
     // The fresh target-type draft must still pass every price/rule check.
-    if(plan.campaignTarget&&loss.removalEvidence?.activityType&&loss.removalEvidence.activityType!==plan.type)return;
+    if(plan.campaignTarget&&loss.removalEvidence?.activityType&&loss.removalEvidence.activityType!==plan.type)return plan;
     try{checkRemovalPrices(plan,loss.removal);}
     catch(error){
       if(error.code==='SKU_RATIO_REVIEW_REQUIRED'){
@@ -120,8 +145,10 @@ export class GuardianService {
       }
       throw error;
     }
+    return plan;
   }
   recordExistingActivity(productId,loss){
+    this.journal.resolveDualActivityDecision(this.policy.shopId,productId,loss,this.now());
     const request=recoveryRequests(this.journal,this.policy.shopId).items.find(r=>r.productId===productId);if(!request)return;
     requireThat(loss?.complete&&loss.active&&!loss.ambiguous&&loss.observedAt>0&&this.now()-loss.observedAt<=120000&&loss.observedAt<=this.now()+5000&&
       typeof loss.campaignId==='string'&&loss.campaignId.length>0,'ACTIVE_UNKNOWN','已有活动提示尚未取得新鲜的独立活动证明');
@@ -137,6 +164,7 @@ export class GuardianService {
   decidePriceReview(args) {
     const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
     requireThat(review?.shopId===this.policy.shopId&&baseline&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','店铺、历史或排除设置已变化');
+    if(args.decision==='approve'&&(review.dualPairKey||activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now()))){const decision=getDualActivityDecision(this.journal,this.policy.shopId,review.productId,this.now());requireThat(decision?.valid&&decision.approvalAllowed&&decision.pairKey===review.dualPairKey&&(!args.dualPairKey||args.dualPairKey===decision.pairKey)&&decision.schemes.some(s=>s.reviewId===review.id&&s.type===review.type&&s.classification==='reduction-required'),'DUAL_APPROVAL_BLOCKED','只有两种活动均独立证明必须降价后，才能明确确认新的降价方案');}
     const result=this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline),optionId:args.optionId??null,optionKey:args.optionKey??null,confirmRebuild:args.confirmRebuild===true,queueRecovery:this.immediateEnabled,approvalContext:args.approvalContext,manualDiscounts:args.manualDiscounts,manualActivityType:args.manualActivityType},this.now());
     if(this.immediateEnabled&&['approve','recalculate'].includes(args.decision)){
       if(this.policy.liveEnabled&&this.policy.cutoverConfirmed&&this.policy.originalRiskAllowed){
@@ -152,6 +180,7 @@ export class GuardianService {
     requireThat(productIds.length>0&&productIds.length<=10000&&new Set(productIds).size===productIds.length&&
       productIds.every(productId=>histories.has(productId)&&!this.policy.excludedProductIds?.includes(productId)),
       'RECOVERY_SCOPE','请核对商品历史和排除设置');
+    if(['user-recheck','user-recalculate'].includes(reason))for(const productId of productIds)this.journal.requestDualActivityRecheck(this.policy.shopId,productId,this.now());
     requestRecovery(this.journal,this.policy.shopId,productIds.map(productId=>({productId,approvalId})),reason,this.now());
     wakeVerification(this.journal,this.policy.shopId,this.journal.list(this.policy.shopId).filter(t=>t.plans.some(p=>productIds.includes(p.productId))).map(t=>t.id),this.now());
     if(this.busy&&this.stopRequested)this.requestedResume=true;
@@ -311,7 +340,7 @@ export class GuardianService {
       this.journal.transition(task.id,'submitting','verifying',{},this.now());
       if(!await this.reconcile(this.journal.get(task.id)))this.journal.transition(task.id,'verifying','unknown',{reason:'平台结果尚未回读确认'},this.now());
     }catch(error){
-      if(error.code==='PRICE_REVIEW_REQUIRED'&&error.detail?.priceProbe){
+      if(error.code==='PRICE_REVIEW_REQUIRED'&&error.detail?.priceProbe&&!activeDualActivityCareGrant(this.journal,task.shopId,this.now())){
         try{
           const validatedAt=this.now(),probe=structuredClone(error.detail.priceProbe);
           for(const review of makePriceReviews(task,probe,validatedAt))priceReviews.push(this.journal.recordPriceReview(review,this.now(),{
@@ -328,7 +357,7 @@ export class GuardianService {
       else this.journal.event(task.id,'readback-error',{reason},this.now());
       // Grant only an exact higher target after the old draft is recorded as
       // unsubmitted. The next attempt gets fresh loss, SKU and draft proofs.
-      if(!this.stopRequested&&(activePriceIncreaseGrant(this.journal,task.shopId,this.now())||activeCareRecoveryGrant(this.journal,task.shopId,this.now())))for(const review of priceReviews){
+      if(!this.stopRequested&&!activeDualActivityCareGrant(this.journal,task.shopId,this.now())&&(activePriceIncreaseGrant(this.journal,task.shopId,this.now())||activeCareRecoveryGrant(this.journal,task.shopId,this.now())))for(const review of priceReviews){
         if(review.status!=='pending'||!activeCareRecoveryGrant(this.journal,task.shopId,this.now())&&!isAutomaticPriceIncrease(review)||this.policy.excludedProductIds?.includes(review.productId))continue;
         try{
           const baseline=this.latestHistories().get(review.productId);requireThat(baseline,'PRICE_REVIEW_CHANGED','当前历史来源待核对');
@@ -373,8 +402,7 @@ export class GuardianService {
         const loss=await this.platform.loss(baseline,{fresh:true});
         requireThat(loss?.complete&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','自动提价前尚未确认当前活动');
         if(loss.active){this.journal.clearProductCheck(this.policy.shopId,productId);if(!loss.ambiguous)this.recordExistingActivity(productId,loss);continue;}
-        const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
-        this.checkPriceRules(plan,loss);
+        const current=await this.platform.precheck(baseline),plan=await this.checkPriceRules(this.restorePlan(baseline,current),loss);
         const proof=lossEvidenceFor([loss]);
         requireThat(loss.lossKey,'LOSS_UNPROVEN','自动提价缺少当前失效证明');
         let next=this.journal.enqueue(this.policy.shopId,[plan],proof,this.now());
@@ -435,7 +463,7 @@ export class GuardianService {
     }
     // A price target or permitted missing SKU subset can change the final
     // discount group. Each final group gets new absence evidence at execution.
-    for(const group of recoveryBatches(ready,{key:m=>restorationGroupKey(m.plan)})){
+    for(const group of recoveryBatches(ready,{key:m=>activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now())?m.baseline.productId:restorationGroupKey(m.plan)})){
       if(this.stopRequested)break;
       let losses;
       try{
@@ -490,9 +518,8 @@ export class GuardianService {
         try{
           const refresh=refreshed.find(r=>r.member.baseline.productId===member.baseline.productId);
           if(refresh?.error)throw refresh.error;
-          const plan=this.restorePlan(member.baseline,refresh?.current||member.current);
-          this.checkPriceRules(plan,member.loss);
-          requireThat(restorationGroupKey(plan)===restorationGroupKey(member.plan),'BATCH_CHANGED','刷新后的折扣组发生变化，等待重新分组');
+          const plan=await this.checkPriceRules(this.restorePlan(member.baseline,refresh?.current||member.current),member.loss);
+          requireThat(activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now())||restorationGroupKey(plan)===restorationGroupKey(member.plan),'BATCH_CHANGED','刷新后的折扣组发生变化，等待重新分组');
           requireThat(this.now()-member.loss.observedAt<=120000,'LOSS_UNPROVEN','批量预查期间失效证明已过期');
           plans.push(plan);proofs.push(member.loss);
         }catch(error){blocked(member,error);}
@@ -629,8 +656,7 @@ export class GuardianService {
           this.priorityWatch.recordOne(baseline.productId,loss.campaignId,loss.observedAt);this.priorityWatch.save();this.journal.clearProductCheck(this.policy.shopId,baseline.productId);continue;
         }
         requireThat(loss.lossKey&&loss.observedAt>0&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','优先恢复缺少新鲜的独立失效证明');
-        const current=await this.platform.precheck(baseline),plan=this.restorePlan(baseline,current);
-        this.checkPriceRules(plan,loss);
+        const current=await this.platform.precheck(baseline),plan=await this.checkPriceRules(this.restorePlan(baseline,current),loss);
         const key=restorationGroupKey(plan);if(!groups.has(key))groups.set(key,[]);
         groups.get(key).push({baseline,hint,loss,plan});
       }catch(error){blocked(baseline,hint,error);}
@@ -801,7 +827,7 @@ export class GuardianService {
         // Recheck expiry at execution time. A large store cannot use probes
         // gathered many minutes earlier to authorize a later price write.
         const plans=[],losses=[],batchStarted=this.now();let read=0;
-        while(start<group.length&&read<5&&(read===0||this.now()-batchStarted<60000)){
+        while(start<group.length&&read<(activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now())?1:5)&&(read===0||this.now()-batchStarted<60000)){
           const member=group[start++];read++;
           try{
             const baseline=latest.get(member.plan.productId),loss=await this.platform.loss(baseline,{fresh:true});
@@ -811,7 +837,7 @@ export class GuardianService {
             // prepare/submit still independently prove exact draft contents.
             const age=this.now()-(member.current?.observedAt||0);
             const current=member.current&&age>=0&&age<=30000?member.current:await this.platform.precheck(baseline);
-            const plan=this.restorePlan(baseline,current);this.checkPriceRules(plan,loss);
+            const plan=await this.checkPriceRules(this.restorePlan(baseline,current),loss);
             plans.push(plan);losses.push(loss);
           }catch(error){this.journal.event(null,'product-blocked',{productId:member.plan.productId,code:error.code||'ERROR',message:error.message},this.now());}
         }

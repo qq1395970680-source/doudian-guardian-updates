@@ -19,6 +19,7 @@ import {assertOriginalRebuildConsent} from './original-rebuild-policy.mjs';
 import {activeOriginalPriceRecoveryGrant,validOriginalPriceApproval} from './original-price-recovery-policy.mjs';
 import {makeHistoryReconfirmation,assertHistoryReconfirmation} from './history-reconfirmation.mjs';
 import {lastInactiveProductEvidence,explicitOnShelfState} from './catalog-visibility.mjs';
+import {activeDualActivityCareGrant,dualDecisionKey,dualDeclineKey,dualDecisionIntentKey,makeDualActivityDecision,getDualActivityDecision,validDualActivityApproval} from './dual-activity-recovery.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -202,14 +203,14 @@ export class Journal {
   }
   priceTargets(shopId){return this.db.prepare('SELECT r.body FROM price_targets t JOIN price_reviews r ON r.id=t.review WHERE t.shop=?').all(shopId).map(r=>JSON.parse(r.body));}
   priceTarget(shopId,productId) {const r=this.db.prepare('SELECT review FROM price_targets WHERE shop=? AND product=?').get(shopId,productId);return r?this.priceReview(r.review):null;}
-  supersedePriceReviews(shopId,productId,reason,now=Date.now()) {
-    return this.transaction(()=>{
+  supersedePriceReviews(shopId,productId,reason,now=Date.now(),{transaction=true}={}) {
+    const work=()=>{
       const rows=this.db.prepare("SELECT id,body FROM price_reviews WHERE shop=? AND product=? AND state='pending'").all(shopId,productId);
       for(const row of rows){const review={...JSON.parse(row.body),status:'superseded',supersededAt:now,supersededReason:reason};
         this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(review.status,JSON.stringify(review),now,row.id);
       }
       return rows.length;
-    });
+    };return transaction?this.transaction(work):work();
   }
   recordPriceReview(review,now=Date.now(),{refreshPending=false}={}) {
     const task=this.get(review.taskId);
@@ -232,13 +233,13 @@ export class Journal {
     const proposal=makeRemovalPriceReview(plan,loss,now),care=activeCareRecoveryGrant(this,plan.shopId,now),nonReducing=proposal.rows.every(row=>row.saleFen>=row.previousFen)&&proposal.rows.some(row=>row.saleFen>row.previousFen);
     return this.savePriceReview(proposal,now,{refreshPending:!!care&&nonReducing,refreshDeclinedBefore:care&&nonReducing?care.at:0});
   }
-  recordPriceReconfirmation(plan,now=Date.now()){
+  recordPriceReconfirmation(plan,now=Date.now(),{refreshPending=false}={}){
     requireThat(!this.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),
       'PENDING','此商品有未完成或结果未知的提交，先独立核实');
     const history=this.histories(plan.shopId).find(b=>fingerprint(b)===plan.historicalFingerprint);
     requireThat(history&&history.productId===plan.productId&&plan.skus.every(s=>history.skus.some(h=>h.id===s.id&&h.baseFen===s.baseFen&&normalizeName(h.name)===s.name&&h.discount===s.discount)),
       'PRICE_APPROVAL_CHANGED','重新确认价格需要匹配的原始规格历史');
-    return this.savePriceReview(makePriceReconfirmation(plan,this.priceTarget(plan.shopId,plan.productId),now),now);
+    return this.savePriceReview(makePriceReconfirmation(plan,this.priceTarget(plan.shopId,plan.productId),now),now,{refreshPending});
   }
   recordHistoryReconfirmation(plan,now=Date.now()){
     requireThat(!this.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),
@@ -264,6 +265,54 @@ export class Journal {
     this.db.prepare('INSERT INTO price_reviews VALUES(?,?,?,?,?,?)').run(saved.id,saved.shopId,saved.productId,saved.status,JSON.stringify(saved),now);
     this.event(saved.taskId,'price-review-pending',{shopId:saved.shopId,productId:saved.productId,reviewId:saved.id},now);return saved;
   }
+  recordDualActivityDecision(decision,now=Date.now()){
+    return this.transaction(()=>{
+      requireThat(activeDualActivityCareGrant(this,decision.shopId,now),'DUAL_ACTIVITY_CONSENT_REQUIRED','本店尚未明确授权双方案自动选择');
+      requireThat(!this.list(decision.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===decision.productId)),'PENDING','已有未知或执行中的提交，只能独立回读');
+      requireThat(makeDualActivityDecision({plan:decision.plan,probes:decision.probes,now:decision.createdAt}).pairKey===decision.pairKey&&decision.expiresAt>now,'DUAL_PROBE_CHANGED','双方案证据已变化或过期');
+      this.assertPricePlans(decision.shopId,[decision.plan]);
+      this.supersedePriceReviews(decision.shopId,decision.productId,'本次已分别核验两种活动方案',now,{transaction:false});
+      const priorDecline=this.settings(dualDeclineKey(decision.shopId,decision.productId)),suppressed=decision.approvalAllowed&&priorDecline?.intentKey===dualDecisionIntentKey(decision),reviewIds={};
+      for(const scheme of decision.schemes){if(!scheme.review)continue;
+        const saved={...structuredClone(scheme.review),id:randomUUID(),status:suppressed?'declined':'pending',dualPairKey:decision.pairKey,dualClassification:scheme.classification,...(suppressed?{declinedByPriorDecision:true,declinedAt:priorDecline.at,priorDeclinePairKey:priorDecline.pairKey}:{})};
+        this.db.prepare('INSERT INTO price_reviews VALUES(?,?,?,?,?,?)').run(saved.id,saved.shopId,saved.productId,saved.status,JSON.stringify(saved),now);reviewIds[scheme.type]=saved.id;
+      }
+      const saved={...structuredClone(decision),reviewIds,...(suppressed?{declineSuppression:{intentKey:priorDecline.intentKey,at:priorDecline.at,pairKey:priorDecline.pairKey}}:{})};this.putSettings(dualDecisionKey(decision.shopId,decision.productId),saved);
+      this.event(null,'dual-activity-checked',{shopId:decision.shopId,productId:decision.productId,pairKey:decision.pairKey,schemes:decision.schemes.map(s=>({type:s.type,classification:s.classification})),selectedType:decision.selectedType},now);return getDualActivityDecision(this,decision.shopId,decision.productId,now);
+    });
+  }
+  approveDualActivityDecision(shopId,productId,pairKey,now=Date.now()){
+    return this.transaction(()=>{
+      const grant=activeDualActivityCareGrant(this,shopId,now),decision=getDualActivityDecision(this,shopId,productId,now);
+      requireThat(grant&&decision?.valid&&decision.pairKey===pairKey,'DUAL_PROBE_CHANGED','本店双方案授权、当前守护价或独立依据已变化');
+      const scheme=decision.schemes.find(s=>s.type===decision.selectedType),r=this.priceReview(scheme?.reviewId);
+      requireThat(scheme?.classification==='non-reducing'&&r?.status==='pending'&&r.dualPairKey===pairKey&&scheme.candidate?.rows.every(row=>row.saleFen>=row.previousFen),'DUAL_REDUCTION_REQUIRED','自动恢复不能采用任何低于当前守护价的规格');
+      r.rows=structuredClone(scheme.candidate.rows);if(scheme.candidate.ratio)r.ratio=structuredClone(scheme.candidate.ratio);
+      r.status='approved';r.approvedAt=now;r.approvalKind='automatic-price-increase';r.dualSource={plan:structuredClone(decision.plan),probes:structuredClone(decision.probes),createdAt:decision.createdAt,pairKey:decision.pairKey};
+      r.selectedOption={id:'dual-balanced',key:scheme.candidate.key,label:'双方案守护：已独立核验的不降价方案',activityType:r.type};
+      r.automaticConsent={dualGrantId:grant.id,targetsFingerprint:fingerprint(r.rows),sourceFingerprint:fingerprint(r.dualSource),continueGuardingExactPrices:true};
+      requireThat(validDualActivityApproval(this,r),'DUAL_APPROVAL_CHANGED','双方案确切价格或来源无法完整重放核验');
+      this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(r.status,JSON.stringify(r),now,r.id);
+      this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(shopId,productId,r.id);
+      this.event(null,'dual-activity-price-approved',{shopId,productId,reviewId:r.id,pairKey,grantId:grant.id,type:r.type},now);return r;
+    });
+  }
+  requestDualActivityRecheck(shopId,productId,now=Date.now()){
+    const pair=this.settings(dualDecisionKey(shopId,productId));if(!pair)return false;
+    if(this.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId)))return false;
+    const check=this.productChecks(shopId).find(c=>c.productId===productId);if(lastInactiveProductEvidence({shopId,productId,check,now}))return false;
+    return this.transaction(()=>{this.putSettings(dualDeclineKey(shopId,productId),null);this.putSettings(dualDecisionKey(shopId,productId),{...pair,recheckRequestedAt:now});
+      this.supersedePriceReviews(shopId,productId,'本人明确请求重新核验两种活动',now,{transaction:false});this.clearProductCheck(shopId,productId);
+      this.event(null,'dual-activity-explicit-recheck',{shopId,productId,pairKey:pair.pairKey},now);return true;});
+  }
+  resolveDualActivityDecision(shopId,productId,loss,now=Date.now()){
+    const pair=this.settings(dualDecisionKey(shopId,productId));if(!pair)return false;
+    requireThat(loss?.complete===true&&loss.active===true&&!loss.ambiguous&&loss.observedAt>0&&loss.observedAt<=now+5000&&now-loss.observedAt<=120000&&typeof loss.campaignId==='string'&&loss.campaignId.length,'ACTIVE_UNKNOWN','当前有效活动必须先经新鲜独立读取');
+    requireThat(!this.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId)),'PENDING','未知提交尚未核实，不能按其它活动收尾');
+    return this.transaction(()=>{const {recheckRequestedAt,...body}=pair;this.supersedePriceReviews(shopId,productId,'本次独立核对已有有效活动',now,{transaction:false});
+      this.putSettings(dualDecisionKey(shopId,productId),{...body,resolution:{source:'live-platform-current-membership',shopId,productId,campaignId:loss.campaignId,observedAt:loss.observedAt,at:now}});
+      this.event(null,'dual-activity-current-verified',{shopId,productId,pairKey:pair.pairKey,campaignId:loss.campaignId},now);return true;});
+  }
   decidePriceReview(shopId,reviewId,key,decision,{confirmedSkuIds=[],acceptPriceAndRisk=false,historicalFingerprint=null,optionId=null,optionKey=null,confirmRebuild=false,queueRecovery=false,approvalContext=null,manualDiscounts=null,manualActivityType=null}={},now=Date.now()) {
     return this.transaction(()=>{
       const r=this.priceReview(reviewId);
@@ -271,6 +320,20 @@ export class Journal {
       requireThat(['approve','decline','recalculate'].includes(decision),'PRICE_REVIEW_DECISION','调价确认操作无效');
       requireThat(!this.list(shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===r.productId)),
         'PENDING','此商品仍有未完成或结果未知的提交，先独立核实');
+      if(r.dualPairKey&&['decline','recalculate'].includes(decision)){
+        const pair=this.settings(dualDecisionKey(shopId,r.productId));requireThat(pair?.pairKey===r.dualPairKey&&Object.values(pair.reviewIds||{}).includes(r.id),'PRICE_REVIEW_CHANGED','双方案已经重新核验，请打开当前商品记录');
+        requireThat(['pending','declined'].includes(r.status),'PRICE_REVIEW_CHANGED','这份双方案已处理');
+        const affected=[];for(const reviewId of Object.values(pair.reviewIds)){const peer=this.priceReview(reviewId);if(!peer||!['pending','declined'].includes(peer.status)||peer.dualPairKey!==pair.pairKey)continue;
+          peer.status=decision==='decline'?'declined':'superseded';if(decision==='decline')peer.declinedAt=now;else peer.supersededAt=now;
+          this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(peer.status,JSON.stringify(peer),now,peer.id);affected.push(peer.id);
+        }
+        if(decision==='decline')this.putSettings(dualDeclineKey(shopId,r.productId),{schema:1,shopId,productId:r.productId,intentKey:dualDecisionIntentKey(pair),pairKey:pair.pairKey,reviewIds:affected,at:now});
+        else{this.putSettings(dualDeclineKey(shopId,r.productId),null);this.putSettings(dualDecisionKey(shopId,r.productId),{...pair,recheckRequestedAt:now});
+          const check=this.productChecks(shopId).find(c=>c.productId===r.productId);if(!lastInactiveProductEvidence({shopId,productId:r.productId,check,now}))this.clearProductCheck(shopId,r.productId);
+          if(queueRecovery)requestRecovery(this,shopId,[{productId:r.productId,approvalId:r.id}],'price-recalculation-requested',now,{transaction:false});
+        }
+        this.event(null,decision==='decline'?'dual-activity-price-declined':'dual-activity-price-recalculation-requested',{shopId,productId:r.productId,pairKey:pair.pairKey,reviewIds:affected},now);return this.priceReview(r.id);
+      }
       if(decision==='recalculate'&&needsPriceReconfirmation(r)){
         requireThat(this.priceTarget(shopId,r.productId)?.id===r.id,'PRICE_REVIEW_CHANGED','当前守护目标已经变化');
         this.clearProductCheck(shopId,r.productId);
@@ -279,6 +342,7 @@ export class Journal {
         return r; // Never rewrite or revoke the immutable approved record.
       }
       if(decision==='approve'){
+        if(r.dualPairKey||activeDualActivityCareGrant(this,shopId,now)){const pair=getDualActivityDecision(this,shopId,r.productId,now);requireThat(pair?.valid&&pair.approvalAllowed&&pair.pairKey===r.dualPairKey&&pair.schemes.some(s=>s.type===r.type&&s.reviewId===r.id&&s.classification==='reduction-required'),'DUAL_APPROVAL_BLOCKED','只有两种活动均独立证明必须降价，才能人工确认新的价格');r.dualManualSource=structuredClone(pair);}
         requireThat(r.kind!=='limited-rebuild'||confirmRebuild===true,'REBUILD_CONSENT_REQUIRED','须明确确认重新创建活动、准确时长及重新提供的限量额度');
         requireThat(!r.originalUnavailable||optionId!==null&&optionKey!==null,'PRICE_OPTION_CHANGED','当前活动没有可直接确认的价格方案，请选择可用方案并核对全部规格');
         requireThat(acceptPriceAndRisk===true&&Array.isArray(confirmedSkuIds)&&new Set(confirmedSkuIds).size===confirmedSkuIds.length&&
@@ -288,9 +352,10 @@ export class Journal {
         const target=this.priceTarget(shopId,r.productId),previous=r.kind==='history-reconfirmation'?target?.id||null:target?.historicalFingerprint===r.historicalFingerprint?target.id:null;
         requireThat((r.previousApprovalId||null)===previous,'PRICE_REVIEW_CHANGED','此前已确认的价格已变化');
         if(optionId!==null||optionKey!==null){
-          const priceContext={reviews:this.priceReviews(shopId),tasks:this.list(shopId),now};
+          const priceContext={reviews:this.priceReviews(shopId),tasks:this.list(shopId),now,dualDecision:getDualActivityDecision(this,shopId,r.productId,now)};
           const option=optionId==='manual-discount'&&approvalContext==='recovery-blockers'?manualPriceOption(activityPriceBasis(r,manualActivityType||r.type,priceContext),manualDiscounts,now):(approvalContext==='recovery-blockers'?blockerPriceOptions(r,priceContext):priceOptions(r)).find(o=>o.id===optionId);
           requireThat(option?.available&&option.key===optionKey,'PRICE_OPTION_CHANGED','所选方案不可用或已经变化，请重新核对');
+          if(r.dualPairKey){const pair=getDualActivityDecision(this,shopId,r.productId,now),peer=pair?.schemes.find(s=>s.type===option.activityType);requireThat(pair?.valid&&pair.approvalAllowed&&pair.pairKey===r.dualPairKey&&option.validationStatus!=='unverified'&&peer?.classification==='reduction-required'&&(option.activityType===r.type||peer.reviewId===option.evidenceReviewId&&this.priceReview(peer.reviewId)?.status==='pending'),'DUAL_APPROVAL_BLOCKED','只能选择本次同一双方案中已独立核验的确切价格，不采用未核验的切换方案');}
           r.originalProposalRows=structuredClone(r.rows);
           r.rows=structuredClone(option.rows);
           if(option.ratio)r.ratio=structuredClone(option.ratio);
@@ -379,6 +444,22 @@ export class Journal {
       this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(plan.shopId,plan.productId,r.id);
       this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(r.status,JSON.stringify(r),now,r.id);
       this.clearProductCheck(plan.shopId,plan.productId);this.event(null,'care-rounding-approved',{shopId:plan.shopId,productId:plan.productId,reviewId:r.id,grantId:grant.id},now);return r;
+    });
+  }
+  approveDualRounding(plan,now=Date.now()){
+    const proposal=this.recordPriceReconfirmation(plan,now,{refreshPending:true});
+    return this.transaction(()=>{
+      const grant=activeDualActivityCareGrant(this,plan.shopId,now),r=this.priceReview(proposal.id),previous=this.priceTarget(plan.shopId,plan.productId);
+      requireThat(grant&&r?.status==='pending'&&r.createdAt<=now&&now-r.createdAt<=30000&&r.expiresAt>now,'DUAL_ACTIVITY_CONSENT_REQUIRED','本店双方案授权或当前金额依据已变化');
+      requireThat(!this.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),'PENDING','已有未知提交，只独立回读，不重建');
+      assertPriceReconfirmation(r,previous);
+      requireThat((previous.consent?.exactPrices&&previous.consent?.matchedRiskConfirmation||validAutomaticPriceApproval(this,previous)||validOriginalPriceApproval(this,previous))&&r.rows.length===previous.rows.length&&!r.skippedSkuIds.length&&r.rows.every(row=>row.saleFen>=row.previousFen)&&r.type===previous.type&&fingerprint(r.rules)===fingerprint(previous.rules),'DUAL_ROUNDING_BLOCKED','金额取整涉及降价、规格或活动变化，不能自动沿用');
+      r.dualRoundingSource=structuredClone(r);r.status='approved';r.approvedAt=now;r.approvalKind='automatic-price-increase';
+      r.automaticConsent={dualGrantId:grant.id,dualKind:'rounding-reconfirmation',targetsFingerprint:fingerprint(r.rows),sourceFingerprint:fingerprint(r.dualRoundingSource),continueGuardingExactPrices:true};
+      requireThat(validDualActivityApproval(this,r),'DUAL_APPROVAL_CHANGED','确切取整金额或原批准无法重放验证');
+      this.db.prepare('UPDATE price_reviews SET state=?,body=?,updated=? WHERE id=?').run(r.status,JSON.stringify(r),now,r.id);
+      this.db.prepare('INSERT INTO price_targets VALUES(?,?,?) ON CONFLICT(shop,product) DO UPDATE SET review=excluded.review').run(plan.shopId,plan.productId,r.id);
+      this.event(null,'dual-activity-rounding-continuity-approved',{shopId:plan.shopId,productId:plan.productId,reviewId:r.id,previousApprovalId:previous.id,grantId:grant.id,notRestored:true},now);return r;
     });
   }
   approvePriceIncrease(shopId,reviewId,key,historicalFingerprint,now=Date.now()) {

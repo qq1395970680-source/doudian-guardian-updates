@@ -12,8 +12,9 @@ import {planOriginalRestore,fingerprint} from '../../src/policy.mjs';
 import {fixtureServer,fixtureProducts} from './platform-fixture.mjs';
 import {installDateTimeFixture} from './date-time-fixture.mjs';
 import {installArcoDateFixture} from './arco-date-fixture.mjs';
+import {openPriceWorkspace,closePriceWorkspace} from '../helpers/price-workspace-ui.mjs';
 
-for(const picker of ['arco'])for(const type of ['限量抢购','限时抢购'])test(`old approved price requires UI reconfirmation before blocked recovery: ${type} ${picker}`,{timeout:180000},async()=>{
+for(const picker of ['arco'])for(const type of ['限量抢购','限时抢购'])test(`old upward rounding stays blocked without a new grant, then dual recovery proves both types and exact native duration: ${type} ${picker}`,{timeout:240000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'guardian-duration-retry-')),file=join(dir,'tasks.sqlite');
  const catalogProducts=[{productId:'3849118543765439254',name:'取整测试',skus:[{id:'3386359933583653',name:'规格甲',baseFen:6875,discount:95}]}];
  const fixture=await fixtureServer({catalogProducts,detailObservedPrices:true,limited:type==='限量抢购'}),policy={shopId:'900001',originalRiskAllowed:true,liveEnabled:true,cutoverConfirmed:true};
@@ -24,12 +25,13 @@ for(const picker of ['arco'])for(const type of ['限量抢购','限时抢购'])t
   rules:{noLimit:type!=='限量抢购',noPerUserLimit:true,noWarmup:true,orderMinutes:30,...(type==='限量抢购'?{autoRenew:true}:{})}};
  const create=()=>{
   const platform=new DoudianPlatform({browser,policy,journal,base:fixture.base});
+  const nativePrepare=platform.prepare.bind(platform);platform.prepare=async(task,options)=>{fixture.state.formActivityType=task.plans[0].type;return nativePrepare(task,options);};
   // Discovery/loss are controlled fixture evidence. SKU precheck, draft,
   // submit, risk prompt and independent receipt all use the browser adapter.
   const facade={progress:{stage:'local fixture'},probe:async()=>({shopId:policy.shopId,name:'隔离测试店'}),discover:async()=>({baselines:[baseline],activeComplete:true}),
-   loss:async()=>{lossReads++;return {complete:true,active:fixture.state.submits>0,observedAt:clock,lossKey:'fixture-explicit-removal'};},
+   loss:async()=>{lossReads++;return {complete:true,active:fixture.state.submits>0,...(fixture.state.submits?{campaignId:fixture.state.campaigns.at(-1).id}:{}),observedAt:failOld?clock:Date.now(),lossKey:'fixture-explicit-removal'};},
    precheck:async b=>{prechecks++;return {...await platform.precheck(b),observedAt:clock};},
-   prepare:async t=>{return platform.prepare(t);},
+   priceCheck:platform.priceCheck.bind(platform),prepare:async t=>{return platform.prepare(t);},
    submit:platform.submit.bind(platform),readback:platform.readback.bind(platform),release:platform.release.bind(platform)};
   platform.setDates=async(page,plan)=>{
    await page.evaluate(picker==='arco'?installArcoDateFixture:installDateTimeFixture,{start:Math.floor(Date.now()/1000)*1000,duration:plan.durationMs});
@@ -63,16 +65,16 @@ for(const picker of ['arco'])for(const type of ['限量抢购','限时抢购'])t
   for(let i=0;i<50&&!app.snapshot().connection;i++)await new Promise(r=>setTimeout(r,10));
   assert.equal(app.snapshot().connection?.shopId,policy.shopId);
   uiBrowser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width:1280,height:960}});await uiBrowser.open(policy.shopId);const ui=await uiBrowser.page();
-  await ui.goto(app.url);await ui.locator('[data-view="prices"]').click();const row=ui.locator('[data-review-id="'+review.id+'"]');await row.waitFor();await row.getByRole('button',{name:'核对价格',exact:true}).click();const card=ui.locator('[data-price-workspace]').locator('[data-review-id="'+review.id+'"]');await card.waitFor();
+  await ui.goto(app.url);const card=await openPriceWorkspace(ui,baseline.productId,{scope:'automatic'});
   assert.match(await card.innerText(),/¥65.31/);assert.match(await card.innerText(),/¥65.32/);assert.match(await card.innerText(),/取整规则已更新/);assert.equal(await card.locator('[data-role="price-target-table"]').count(),1);
-  const button=card.getByRole('button',{name:'确认表内价格并继续守护',exact:true});assert.equal(await button.isDisabled(),true);assert.equal(await card.getByRole('checkbox').isChecked(),false);
+  assert.equal(await card.getByRole('button',{name:'确认表内价格并继续守护',exact:true}).count(),0);assert.equal(await card.locator('.price-consent input').count(),0);assert.equal(app.snapshot().recoveryWorkspaceCounts.confirm,0);
   await ui.screenshot({path:resolve('artifacts','beta30-reconfirmation-'+(type==='限量抢购'?'limited':'timed')+'.png'),animations:'disabled',fullPage:true});
-  await card.getByRole('checkbox').check();const response=ui.waitForResponse(r=>r.url().endsWith('/api/price-reviews/decide'));await button.click();assert.equal((await response).status(),200);
-  assert.equal(journal.priceTarget(policy.shopId,baseline.productId).id,review.id);assert.deepEqual(journal.priceReview(oldReview.id),oldReview);
+  await closePriceWorkspace(ui);const allowed=await fetch(app.url+'/api/dual-activity-care-policy',{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token,Origin:app.url},body:JSON.stringify({shopId:policy.shopId,enabled:true,acceptBothActivityTypes:true,acceptNonReducingRecovery:true})});assert.equal(allowed.status,200,await allowed.clone().text());assert.equal(fixture.state.submits,0);assert.equal(app.snapshot().careRecoveryEnabled,false);
   await service.tick();const actual=journal.list(policy.shopId).find(t=>t.id!==blocked.id);
   assert.equal(journal.get(blocked.id).plans[0].skus[0].saleFen,6531);assert.equal(journal.get(blocked.id).submitAttempts,0);
   assert.equal(actual.phase,'verified',JSON.stringify({actual,run:service.lastRun}));assert.equal(journal.list(policy.shopId).length,2);
   assert.equal(actual.receipt.salePriceEvidence,'observed');assert.equal(actual.plans[0].skus[0].saleFen,6532);assert.equal(actual.draftProof.observation.rows[0].saleFen,6532);
+  const target=journal.priceTarget(policy.shopId,baseline.productId);assert.equal(target.automaticConsent.dualKind,'rounding-reconfirmation');assert.ok(target.automaticConsent.dualGrantId);assert.equal(target.consent,undefined);assert.deepEqual(journal.priceReview(oldReview.id),oldReview);assert.equal(journal.priceReview(review.id).status,'superseded');assert.equal(fixture.state.uploads,4,'old rejected draft, two independent type checks, and one final exact draft');
   assert.ok(prechecks>previousReads);assert.ok(lossReads>=2);assert.equal(actual.submitAttempts,1);assert.equal(actual.receipt.durationMs,2419207000);
   const campaign=fixture.state.campaigns.at(-1);assert.equal(campaign.endAt-campaign.startAt,2419207000);
   assert.equal(actual.receipt.startAt,actual.draftProof.observation.startAt);assert.equal(actual.receipt.endAt,actual.draftProof.observation.endAt);

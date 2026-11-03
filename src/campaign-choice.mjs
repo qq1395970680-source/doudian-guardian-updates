@@ -14,6 +14,8 @@ export function approvedCampaignChoice(review,plan){
    review.approvalKind==='original-price-continuity'&&review.continuityConsent?.targetsFingerprint===fingerprint(review.rows)),
   'CAMPAIGN_CHOICE_CHANGED','商品活动方案未明确确认或历史来源已变化');
  const canonical=campaignChoice(review.campaignTarget.type);
- requireThat(fingerprint(canonical)===fingerprint(review.campaignTarget),'CAMPAIGN_CHOICE_CHANGED','商品活动规则与已核对的方案不符');
- return canonical;
+ const prior=review.dualManualSource?.plan,original=prior&&{type:prior.type,rules:prior.rules,durationMs:prior.durationMs??48*3600000,activityLimit:prior.activityLimit??null};
+ const retained=review.dualPairKey===review.dualManualSource?.pairKey&&review.consent?.exactPrices===true&&prior?.shopId===plan.shopId&&prior.productId===plan.productId&&prior.historicalFingerprint===plan.historicalFingerprint&&fingerprint(original)===fingerprint(review.campaignTarget);
+ requireThat(fingerprint(canonical)===fingerprint(review.campaignTarget)||retained,'CAMPAIGN_CHOICE_CHANGED','商品活动规则与已核对的方案不符');
+ return retained?structuredClone(original):canonical;
 }

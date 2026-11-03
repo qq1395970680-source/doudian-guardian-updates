@@ -1,44 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,mkdir} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {mkdir} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
-import {createApp} from '../../src/server.mjs';
-import {Journal} from '../../src/journal.mjs';
 import {DedicatedBrowser} from '../../src/browser.mjs';
-import {openPriceWorkspace,closePriceWorkspace} from '../helpers/price-workspace-ui.mjs';
+import {openPriceWorkspace,closePriceWorkspace,choosePriceStrategy} from '../helpers/price-workspace-ui.mjs';
+import {dualPriceUiFixture} from '../helpers/dual-large-price-ui-fixture.mjs';
 
-for(const width of [1440,960])test('one shared exact-price table needs explicit consent and stays stable during polling '+width,{timeout:60000},async()=>{
- const dir=await mkdtemp(join(tmpdir(),'guardian-price-ui-')),journal=new Journal(':memory:'),browser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width,height:960}});
- const service={running:true,busy:false,status:()=>({unknown:0,tasks:[]}),stop(){}};
- const app=await createApp({config:{shopId:'900001',name:'测试店铺'},runtime:join(dir,'server'),port:0,dependencies:{journal,service,browser:{close:async()=>{}},platform:{progress:{stage:'test'}}}});
- const now=Date.now(),review={id:'test-review',key:'exact-price-key',shopId:'900001',productId:'3000000000000000001',name:'净水器全套滤芯',status:'pending',createdAt:now,expiresAt:now+1800000,skippedSkuIds:[],rows:Array.from({length:56},(_,i)=>({id:String(500000+i),name:'滤芯规格 '+(i+1),baseFen:13900,previousFen:6950,previousDiscount:50,discount:i===0?48:i===1?51:50,saleFen:i===0?6672:i===1?7089:6950,evidence:i===0?['活动价不得高于近15天最低价（68元）']:i===1?['活动价不得低于近15天最低价（70元）']:[]}))};
- let available=[review],posts=[],getCount=0,connectedShop='900001';
- try{await browser.open('900001');const page=await browser.page(),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.route('**/api/status',async route=>{const r=await route.fetch(),s=await r.json();await route.fulfill({json:{...s,connection:{shopId:connectedShop},priceReviewsPending:available.filter(r=>r.status==='pending'&&r.expiresAt>Date.now()).length}});});
-  await page.route(/\/api\/price-reviews\?/,route=>{getCount++;const q=new URL(route.request().url()).searchParams,scope=q.get('scope'),rows=available.filter(r=>scope==='history'?r.status!=='pending':r.status==='pending'&&r.expiresAt>Date.now());return route.fulfill({json:{shopId:'900001',reviews:rows,total:rows.length,page:0,pages:1,pageSize:10,directionCounts:{increase:0,decrease:rows.length}}});});
-  await page.route(/\/api\/price-reviews\/item\?/,route=>{const q=new URL(route.request().url()).searchParams,r=available.find(r=>r.productId===q.get('productId')&&(!q.get('reviewId')||r.id===q.get('reviewId'))),visible=r&&(!['pending','declined'].includes(r.status)||r.expiresAt>Date.now());return route.fulfill({json:{shopId:'900001',productId:review.productId,blocked:false,readOnly:r?.status!=='pending',review:visible?r:null,comparison:[]}});});
-  await page.route('**/api/price-reviews/decide',async route=>{const body=route.request().postDataJSON();posts.push(body);available=available.map(r=>({...r,status:'approved'}));await route.fulfill({json:{ok:true,review:available[0]}});});
-  await page.goto(app.url);const dialog=await openPriceWorkspace(page,review.productId),table=dialog.locator('table[data-role="price-target-table"]');
-  assert.equal(await table.locator('tbody tr').count(),25);assert.equal(await page.locator('#price-reviews table').count(),0,'queue stays a summary list');
-  assert.match(await table.innerText(),/¥66.72/);assert.match(await table.innerText(),/近15天最低价/);assert.match(await table.innerText(),/提高 ¥1.39/);assert.match(await table.innerText(),/降低 ¥2.78/);
+for(const width of [1440,960])test('a real double-reduction pair keeps one full price table, fresh consent and read-only history '+width,{timeout:60000},async()=>{
+ const x=await dualPriceUiFixture({skuCount:56,mixed:true}),browser=new DedicatedBrowser(join(x.runtime,'ui'),{test:true,viewport:{width,height:960}});
+ try{
+  await browser.open(x.plan.shopId);const page=await browser.page(),errors=[],posts=[];page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(request.method()==='POST')posts.push(request.postDataJSON());});
+  let connectedShop=x.plan.shopId;await page.route('**/api/status',async route=>{const response=await route.fetch(),status=await response.json();await route.fulfill({json:{...status,connection:{shopId:connectedShop}}});});
+  await page.goto(x.app.url);let dialog=await openPriceWorkspace(page,x.plan.productId);await choosePriceStrategy(dialog,'original');let table=dialog.locator('table[data-role="price-target-table"]');
+  assert.equal(await table.locator('tbody tr').count(),25);assert.equal(await page.locator('#price-reviews table').count(),0);
+  assert.equal(await dialog.locator('[data-scheme-state="reduction-required"]').count(),2,'both classifications come from replayable independent service proofs');
+  assert.match(await table.innerText(),/¥66.72/);assert.match(await table.innerText(),/提高 ¥1.39/);assert.match(await table.innerText(),/降低 ¥2.78/);
   assert.match(await dialog.locator('.price-change-summary').innerText(),/调高 1 个规格/);assert.match(await dialog.locator('.price-change-summary').innerText(),/调低 1 个规格/);
-  const approve=dialog.getByRole('button',{name:'确认表内价格并继续守护',exact:true}),consent=dialog.locator('.price-consent input');
-  assert.equal(await approve.isDisabled(),true);assert.equal(await consent.isChecked(),false);assert.equal(posts.length,0);await consent.check();assert.equal(await approve.isEnabled(),true);
-  await page.evaluate(()=>window.priceRow=document.querySelector('dialog[data-price-workspace] [data-role="price-target-table"] tbody tr'));
-  await page.waitForResponse(r=>r.url().includes('/api/price-reviews/item?'),{timeout:12000});
+  let consent=dialog.locator('.price-consent input'),approve=dialog.getByRole('button',{name:'确认表内价格并继续守护',exact:true});assert.equal(await consent.isChecked(),false);assert.equal(await approve.isDisabled(),true);assert.deepEqual(posts,[]);
+  await consent.check();await page.evaluate(()=>window.priceRow=document.querySelector('dialog[data-price-workspace] [data-role="price-target-table"] tbody tr'));
+  await page.waitForResponse(response=>response.url().includes('/api/price-reviews/item?'),{timeout:12000});
   assert.equal(await page.evaluate(()=>window.priceRow===document.querySelector('dialog[data-price-workspace] [data-role="price-target-table"] tbody tr')),true);assert.equal(await consent.isChecked(),true);
-  await dialog.getByRole('button',{name:'下一页规格'}).click();assert.match(await table.innerText(),/滤芯规格 26/);assert.equal(await consent.isChecked(),true);
-  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);assert.ok(getCount>0);
-  await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`price-review-${width}-consent.png`),fullPage:false});
-  await approve.click();await page.waitForFunction(()=>document.querySelector('dialog[data-price-workspace] .price-review-heading .badge')?.textContent==='已确认价格');
-  assert.equal(posts.length,1);assert.deepEqual(posts[0],{shopId:review.shopId,reviewId:review.id,key:review.key,decision:'approve',acceptBlockedPriceChange:true,confirmedSkuIds:review.rows.map(r=>r.id),acceptPriceAndRisk:true});assert.equal(await dialog.locator('.price-consent input').count(),0);
-  await closePriceWorkspace(page);available=[{...review,id:'new-review',key:'new-key',rows:review.rows.slice(0,2)}];
-  const next=await openPriceWorkspace(page,review.productId);assert.equal(await next.locator('.price-consent input').isChecked(),false);
-  await next.locator('.price-consent input').check();connectedShop='900002';await page.waitForResponse(r=>r.url().endsWith('/api/status'),{timeout:7000});
-  await page.waitForFunction(()=>document.querySelector('dialog[data-price-workspace] .price-consent input')?.disabled);assert.equal(await next.getByRole('button',{name:'确认表内价格并继续守护',exact:true}).isDisabled(),true);
-  connectedShop='900001';available=[{...available[0],expiresAt:Date.now()-1}];
-  await next.locator('.price-review').waitFor({state:'hidden',timeout:15000});assert.equal(await page.getByText('建议已过期',{exact:true}).count(),0);assert.equal(posts.length,1);
-  await closePriceWorkspace(page);await page.screenshot({path:resolve('artifacts',`price-review-${width}.png`),fullPage:false});assert.deepEqual(errors,[]);
- }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
+  await dialog.getByRole('button',{name:'下一页规格',exact:true}).click();assert.match(await table.innerText(),/滤芯规格 26/);assert.equal(await consent.isChecked(),true);
+  await closePriceWorkspace(page);dialog=await openPriceWorkspace(page,x.plan.productId);await choosePriceStrategy(dialog,'original');consent=dialog.locator('.price-consent input');approve=dialog.getByRole('button',{name:'确认表内价格并继续守护',exact:true});assert.equal(await consent.isChecked(),false,'reopening does not carry an unsubmitted approval');
+  connectedShop='900002';await page.waitForResponse(response=>response.url().endsWith('/api/status'));await page.waitForFunction(()=>document.querySelector('dialog[data-price-workspace] .price-consent input')?.disabled);assert.equal(await approve.isDisabled(),true);
+  connectedShop=x.plan.shopId;await page.waitForResponse(response=>response.url().endsWith('/api/status'));await page.waitForFunction(()=>!document.querySelector('dialog[data-price-workspace] .price-consent input')?.disabled);
+  await consent.check();await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`price-review-${width}-consent.png`),fullPage:false});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await approve.click();await dialog.locator('.price-review-heading .badge').filter({hasText:'已确认价格'}).waitFor();
+  assert.equal(posts.length,1);assert.equal(posts[0].decision,'approve');assert.equal(posts[0].dualPairKey,x.decision.pairKey);assert.equal(posts[0].acceptBlockedPriceChange,true);assert.equal(posts[0].acceptPriceAndRisk,true);assert.deepEqual(posts[0].confirmedSkuIds,x.plan.skus.map(s=>s.id));
+  const target=x.journal.priceTarget(x.plan.shopId,x.plan.productId);assert.equal(target.rows.length,56);assert.equal(target.rows[0].saleFen,6672);assert.equal(target.rows[1].saleFen,7089);assert.equal(x.f.state.submits,0);assert.equal(x.journal.list(x.plan.shopId).length,0);
+  await closePriceWorkspace(page);const history=await openPriceWorkspace(page,x.plan.productId,{scope:'history'});assert.equal(await history.locator('.price-consent input,[data-manual-sku]').count(),0);assert.equal(await history.getByRole('button',{name:'重新核对',exact:true}).count(),0);assert.equal(await history.getByRole('button',{name:'手动调整折扣',exact:true}).count(),0);assert.equal(posts.length,1);assert.deepEqual(errors,[]);
+ }finally{await browser.close();await x.close();}
 });

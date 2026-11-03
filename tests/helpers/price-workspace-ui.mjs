@@ -1,7 +1,6 @@
-export async function openPriceWorkspace(page,productId,{scope='pending',direction='all'}={}){
- await page.locator('[data-view="prices"]').click();
- await page.locator(`[data-price-scope="${scope}"]`).click();
- if(scope==='pending')await page.locator(`[data-price-direction="${direction}"]`).click();
+export async function openPriceWorkspace(page,productId,{scope='confirm'}={}){
+ await page.locator('[data-view="workspace"]').click();
+ await page.locator(`[data-workspace-scope="${scope==='pending'?'confirm':scope}"]`).click();
  await page.locator(`button[data-open-price-review="${productId}"]`).first().click();
  const dialog=page.locator('dialog[data-price-workspace]');await dialog.waitFor({state:'visible'});
  await dialog.locator('[data-review-id]').waitFor();return dialog;

@@ -23,7 +23,7 @@ for(const width of [1440,960])test('light desktop UI, bounded catalog, lazy SKU 
   assert.doesNotMatch(await page.locator('#hero-detail').innerText(),/按各商品原折扣分组守护限量抢购|每件商品共用|自动续期开启/);
   assert.equal(await page.locator('.hero-symbol').count(),0);
   assert.ok(await page.locator('.overview-status').evaluate(el=>el.getBoundingClientRect().height)<=220,'overview status stays compact');
-  assert.deepEqual(await page.locator('nav [data-view]').evaluateAll(elements=>elements.map(el=>el.dataset.view)),['overview','prices','blockers','recoveries','accounts','activity','updates']);
+  assert.deepEqual(await page.locator('nav [data-view]').evaluateAll(elements=>elements.map(el=>el.dataset.view)),['overview','workspace','recoveries','accounts','activity','updates']);
   await page.locator('.product-summary').first().click();await page.locator('.sku-table').waitFor();assert.equal(await page.locator('.sku-table tbody tr').count(),10);
   await page.evaluate(()=>window.testProductNode=document.querySelector('.product'));
   // Repeated status polls must not rebuild the same expanded product DOM.
@@ -32,7 +32,7 @@ for(const width of [1440,960])test('light desktop UI, bounded catalog, lazy SKU 
   await page.locator('#prev-page').click();await page.waitForFunction(()=>document.querySelector('.product')?.dataset.productId==='300000');
   await page.getByLabel('搜索商品名称或 ID').fill('300036');await page.waitForFunction(()=>document.querySelectorAll('.product').length===1);assert.equal(await page.locator('.product').getAttribute('data-product-id'),'300036');
   await page.getByLabel('搜索商品名称或 ID').fill('');await page.waitForFunction(()=>document.querySelectorAll('.product').length===16);
-  for(const name of ['prices','blockers','recoveries','accounts','activity','updates','overview']){await page.locator(`[data-view="${name}"]`).click();await page.locator('#view-'+name).waitFor({state:'visible'});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
+  for(const name of ['workspace','recoveries','accounts','activity','updates','overview']){await page.locator(`[data-view="${name}"]`).click();await page.locator('#view-'+name).waitFor({state:'visible'});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
   assert.deepEqual(writes,[],'reading, navigation, searching, pagination and expansion never send a business write');
   await page.route('**/api/updates/check',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({state:'available',release:{version:'2.0.0-beta.3',notes:'本地模拟更新测试'}})}));
   await page.locator('[data-view="updates"]').click();await page.locator('#check-updates').click();await page.getByText('发现新版本 2.0.0-beta.3',{exact:true}).waitFor();assert.equal(await page.locator('#install-update').isEnabled(),true);
@@ -42,6 +42,6 @@ for(const width of [1440,960])test('light desktop UI, bounded catalog, lazy SKU 
   await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`workbench-light-${width}.png`),fullPage:false});
   await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('.view.active').evaluate(el=>getComputedStyle(el).animationName),'none');
-  assert.deepEqual(errors,[]);await writeFile(resolve('artifacts',`workbench-design-${width}.json`),JSON.stringify({width,light:true,errors,boundedRows:16,lazySkus:true,unchangedPollPreservesDom:true,searchAndPagination:true,allSevenViews:true,noBusinessPosts:true,updateCheckPostOnly:true,compactOverview:true,noPermanentCampaignQuotaBanner:true,noHorizontalOverflow:true,reducedMotion:true}));
+  assert.deepEqual(errors,[]);await writeFile(resolve('artifacts',`workbench-design-${width}.json`),JSON.stringify({width,light:true,errors,boundedRows:16,lazySkus:true,unchangedPollPreservesDom:true,searchAndPagination:true,allSixViews:true,noBusinessPosts:true,updateCheckPostOnly:true,compactOverview:true,noPermanentCampaignQuotaBanner:true,noHorizontalOverflow:true,reducedMotion:true}));
  }finally{await browser.close();await app.close();await rm(dir,{recursive:true,force:true});}
 });

@@ -24,7 +24,7 @@ export class BackendUpgrade {
  constructor(){this.inFlight=null;this.blocked=null;this.resumeIntent=null;this.state={phase:'idle'};}
  reset(){if(this.inFlight)throw Error('后台更新仍在进行');this.blocked=null;}
  run(options){if(this.inFlight)return this.inFlight;this.inFlight=this.execute(options).finally(()=>{this.inFlight=null;});return this.inFlight;}
- async execute({probe,control,start,takeover,onState=()=>{},now=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms)),
+ async execute({probe,control,start,takeover,interruption=null,onState=()=>{},now=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms)),
   shouldContinue=()=>true,expectedBuild,expectedVersion,url,shopId,timeoutMs=300000,stallMs=120000,pollMs=2000,
   shutdownWaitMs=30000,readyTimeoutMs=60000}){
   let original,stopped=false,shutdown=false,launched=false,forceAttempted=false,resumeOnLaunch=false,shutdownAt=0;
@@ -86,7 +86,7 @@ export class BackendUpgrade {
      if(this.resumeIntent?.instance!==original.instance||this.resumeIntent.expectedBuild!==expectedBuild)
       this.resumeIntent={instance:original.instance,expectedBuild,wasRunning:original.running===true};
      resumeOnLaunch=this.resumeIntent.wasRunning;
-     if(this.blocked?.instance===original.instance&&this.blocked.expectedBuild===expectedBuild&&
+     if(!interruption&&this.blocked?.instance===original.instance&&this.blocked.expectedBuild===expectedBuild&&
       (original.busy||original.action||pending(original))){this.state=this.blocked.state;onState(this.state);return{state:'blocked',code:this.state.code,status:lastStatus,upgrade:this.state};}
      emit('checking','新版已安装，正在核对实际运行的旧后台');
     }else if(!same(original,lastStatus))return block('UPGRADE_INSTANCE_CHANGED','等待期间后台实例或店铺已变化，已停止自动接管');
@@ -95,6 +95,14 @@ export class BackendUpgrade {
     if(shutdown){
      if(now()-shutdownAt>=shutdownWaitMs)return block('UPGRADE_SHUTDOWN_TIMEOUT','旧后台退出尚未确认，未启动新版；请查看更新记录');
      emit('stopping','正在确认旧后台及其专用浏览器退出');await sleep(pollMs);continue;
+    }
+    if(interruption){
+     if(forceAttempted)return block('UPGRADE_DUPLICATE_TAKEOVER','本次切换已发起，未重复关闭或启动进程');forceAttempted=true;
+     emit('taking-over','正在停止派发并保存未完成记录，随后直接切换新版；未知结果只回读，不重复提交');
+     const proof=await interruption({original,status:lastStatus,resumeOnLaunch,shouldContinue});
+     if(proof?.ok!==true||proof.state!=='stopped'||proof.recordsPreserved!==true||proof.tasksCheckpointed!==true||proof.oldProcessExited!==true)return block('UPGRADE_TAKEOVER_UNCONFIRMED','旧进程退出或完整任务保存未确认，不启动新版');
+     if(typeof proof.resumeOnLaunch==='boolean')resumeOnLaunch=proof.resumeOnLaunch;
+     stopped=true;shutdown=true;shutdownAt=now();continue;
     }
     if(pending(lastStatus)){
      emit('waiting-results','存在未完成任务或待核实提交，等待原后台处理；不会强行接管或重复提交');

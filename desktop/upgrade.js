@@ -9,7 +9,7 @@ function render(state){
  const current=ranks[state.phase]??1;
  for(const item of document.querySelectorAll('#steps li')){const rank=order.indexOf(item.dataset.phase);item.classList.toggle('active',rank===current);item.classList.toggle('done',rank<current);}
  const p=state.progress;text('progress',p?`${p.stage||''}${Number.isFinite(p.read)?' · '+p.read+'/'+(p.total??'—'):''}`:'');
- text('timing',`已等待 ${Math.floor((state.elapsedMs||0)/1000)} 秒 · 最长等待 ${Math.floor((state.timeoutMs||300000)/1000)} 秒${state.code?' · '+state.code:''}`);
+ text('timing',`已用时 ${Math.floor((state.elapsedMs||0)/1000)} 秒`);
  document.getElementById('retry').hidden=!['blocked','cancelled'].includes(state.phase);
 }
 api.onBackendUpgrade(render);void api.backendUpgradeStatus().then(render);

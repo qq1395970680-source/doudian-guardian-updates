@@ -20,5 +20,14 @@ export default async function afterPack({appOutDir}){
    if(!embedded.equals(await readFile(join(root,file))))throw Error('Desktop code or icon omitted: '+file);
   }
  }}await checkDesktop('desktop');
- console.log('Desktop backend and editable source manifests verified before installer creation.');
+ // Desktop entry points import shared service modules (for example migration
+ // imports campaign-choice). Check the complete runtime module set in ASAR,
+ // rather than accepting a desktop directory whose transitive imports vanish.
+ async function checkRuntime(dir){for(const e of await readdir(join(root,dir),{withFileTypes:true})){
+  const file=join(dir,e.name);if(e.isDirectory())await checkRuntime(file);else if(e.name.endsWith('.mjs')){
+   let embedded;try{embedded=asar.extractFile(join(appOutDir,'resources/app.asar'),file);}catch{throw Error('Desktop startup dependency omitted: '+file);}
+   if(!embedded.equals(await readFile(join(root,file))))throw Error('Desktop shared module changed: '+file);
+  }
+ }}await checkRuntime('src');
+ console.log('Desktop startup modules, backend and editable source manifests verified before installer creation.');
 }

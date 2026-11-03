@@ -4,7 +4,7 @@ import {join} from 'node:path';
 // SQLite is opened by the bundled Node runtime, not Electron's Node ABI.
 // Commands only inspect/backup/verify this program's own database; no import,
 // SQL, task mutation, price decision or restoration input is accepted.
-export async function upgradeJournalCommand({root,runtime,mode,backupId}){
+export async function upgradeJournalCommand({root,runtime,mode,backupId,cutoverId,expected}){
  return new Promise((accept,reject)=>{
   const child=spawn(join(root,'engine','node.exe'),[join(root,'desktop','upgrade-journal-worker.mjs')],{windowsHide:true,stdio:['pipe','pipe','pipe']});
   let output='',error='',settled=false;
@@ -15,6 +15,6 @@ export async function upgradeJournalCommand({root,runtime,mode,backupId}){
   child.once('close',code=>{if(settled)return;if(code!==0){fail(Error(error||'数据库核验失败'));return;}
    try{const value=JSON.parse(output);settled=true;clearTimeout(timer);accept(value);}catch(e){fail(e);}
   });
-  child.stdin.on('error',()=>{});child.stdin.end(JSON.stringify({runtime,mode,backupId}));
+  child.stdin.on('error',()=>{});child.stdin.end(JSON.stringify({runtime,mode,backupId,cutoverId,expected}));
  });
 }

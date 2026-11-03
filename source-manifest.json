@@ -15,6 +15,11 @@
     "sha256": "C43C950D925A4C61A9F5802B0AFA09466C966086FCAB4679D398D99A8E18F13B"
   },
   {
+    "path": "desktop\\active-upgrade.mjs",
+    "bytes": 11090,
+    "sha256": "F6AC0415AC973FF2C6CC935EF13A2260CABC9550C2AB8428A04D751481DD575F"
+  },
+  {
     "path": "desktop\\assets\\guardian.ico",
     "bytes": 98093,
     "sha256": "D00DAC59A703909D0506F1C072A518A78439931FBAA5466DF11A8B77394FF3AB"
@@ -32,17 +37,17 @@
   {
     "path": "desktop\\assets\\GuardianOwnedProcesses.exe",
     "bytes": 13312,
-    "sha256": "847A6345E6D72D665226B054A7F99E6C3EF0C5CBAF73FAB62B8C47A1CCDBE82E"
+    "sha256": "BE4BC27E6A73C5915B78C3697ED51A6A8EE35632735C1C19721BE38A237FFF55"
   },
   {
     "path": "desktop\\assets\\GuardianProfileVault.exe",
     "bytes": 4608,
-    "sha256": "9DF236209F6F242EC1D7FD38B9B2B41943193FFDBB6DA42C75991EB3D674EB84"
+    "sha256": "0BF472668FA28C143ACCAF4B4D424F2A25E1B60191F0DDFEF4B48AFD880BEA82"
   },
   {
     "path": "desktop\\backend-upgrade.mjs",
-    "bytes": 10609,
-    "sha256": "FAD1588AD915DB8168680288A0F72EBE2C3C279DB05095C904DE8AF9C1B175D1"
+    "bytes": 11451,
+    "sha256": "3E8E492B3C022CDBF03497C6A9EEA098C3F68A15D516E306778EDC4CB5427653"
   },
   {
     "path": "desktop\\backend.mjs",
@@ -55,9 +60,14 @@
     "sha256": "86168E847881EF9BF0A7E9B8E3D09F11D8218B51EFB80D403472A7ED32272DEA"
   },
   {
+    "path": "desktop\\interrupted-upgrade-journal.mjs",
+    "bytes": 8843,
+    "sha256": "CC44580C71A4AC0876E3A2C321B73B53A6B3334E025D7A9AEEC147268F1E4D6C"
+  },
+  {
     "path": "desktop\\main.mjs",
-    "bytes": 19241,
-    "sha256": "28692447981539BC1FEA06FAE809B5B7D5CF7F36A6C7385E9EDE4C7391CA6F04"
+    "bytes": 24271,
+    "sha256": "D4BB20C963846EC4F33C497F95B226A65707AC55AAC7C16F79C72BB2EF39C5AD"
   },
   {
     "path": "desktop\\owned-processes.cs",
@@ -96,8 +106,8 @@
   },
   {
     "path": "desktop\\service-controller.mjs",
-    "bytes": 4604,
-    "sha256": "5D07BAEC11D9F81A197FE8F96321BF84478490F0BD08DB414AAE0BFA0872AA7A"
+    "bytes": 4768,
+    "sha256": "22A5675676A9CDE5D9E0FC66FE6470FD1F9A9C095EE0E472D88AB047B4D29D18"
   },
   {
     "path": "desktop\\update-network.mjs",
@@ -105,9 +115,14 @@
     "sha256": "2949F873982A284B363DCF1C91717A00FE17B698DBF5E79A097084B1257C76E1"
   },
   {
+    "path": "desktop\\upgrade-handoff.mjs",
+    "bytes": 1704,
+    "sha256": "D73A74E9F53F0BD922FE3B9F230F36BEF208ACD2408287C70943C0B5E2FE1616"
+  },
+  {
     "path": "desktop\\upgrade-journal-client.mjs",
-    "bytes": 1363,
-    "sha256": "A24DCA41D010B14209D9AD6F4FDC12128F31FAB1CC01446FADAEF24C60EF2AC8"
+    "bytes": 1401,
+    "sha256": "AC75DFAEFA9EC5E5A5592110F3A8E31A4482AB807C551C6C7D48753D06D11A7A"
   },
   {
     "path": "desktop\\upgrade-journal-snapshot.mjs",
@@ -116,8 +131,8 @@
   },
   {
     "path": "desktop\\upgrade-journal-worker.mjs",
-    "bytes": 510,
-    "sha256": "CB95C694793490DDC54F3E4BF86BB6C7A16CF293ADCB019184C84E918323DD86"
+    "bytes": 670,
+    "sha256": "C7FB1DEEC204AA0517E319F373A80DC86881300CBD34DC58F1F6C4590D1BAD01"
   },
   {
     "path": "desktop\\upgrade.css",
@@ -126,33 +141,33 @@
   },
   {
     "path": "desktop\\upgrade.html",
-    "bytes": 1538,
-    "sha256": "5E8659F826684E518F7D1AD6F49F12B48FB325C9DBCA189402F4FE7F5AD858EF"
+    "bytes": 1442,
+    "sha256": "5781955D4899101B556616FF7D5F892A9E4C6F05D1A17EF405E5E315642C84EA"
   },
   {
     "path": "desktop\\upgrade.js",
-    "bytes": 1788,
-    "sha256": "D020C3D8843F3E25CF5E58BC9653474B6B93E0EF2B096D98C16861FC6A794B04"
+    "bytes": 1688,
+    "sha256": "BB17895053C12708BFC906890E931377DB12FF372F7BA00DA2334F291F5747A4"
   },
   {
     "path": "DEVELOPMENT.md",
-    "bytes": 24675,
-    "sha256": "2E7C1C609D65235DE5144C850BD748BC0CF48B8439BDD8E69E680BBE73CBF0BD"
+    "bytes": 25457,
+    "sha256": "217AE8DDBF3E3C25B08B762D69C625A5073DC880683EFC4476934FD30B2E7FFE"
   },
   {
     "path": "electron-builder.json",
-    "bytes": 1376,
-    "sha256": "4F1A6BC7766C0DD0F9FCCFBC11A18481F1D4A4D847C8F2031B51574D8391A842"
+    "bytes": 1334,
+    "sha256": "016DB05F45CE9127EC5BC5E08CA1BECDA7FA81E0A69AED24DBA09EDBFD9A96BF"
   },
   {
     "path": "package-lock.json",
     "bytes": 128605,
-    "sha256": "1D6F647160205555BEE552CE299340D9D2F202F9A7C582BF283B82BF9497C07B"
+    "sha256": "AB74A6A134E8185E9B825796BA794CAFC557545A9FC8A75C5EC81A2526F21A8B"
   },
   {
     "path": "package.json",
     "bytes": 898,
-    "sha256": "F600052986B6BAB2B7DFB05C3A76F7AE531553F369FCEDB8556E16B27EE9E631"
+    "sha256": "563D3C3B7A79AF6205D2370FF847111A1813640D85C41B7D3B88048FDC925083"
   },
   {
     "path": "public\\activity-prices.js",
@@ -216,13 +231,13 @@
   },
   {
     "path": "README.md",
-    "bytes": 19538,
-    "sha256": "7467D7221412920106CC90DB8216DE567C90393AE762C2193F2EAE3209D2ABB3"
+    "bytes": 20128,
+    "sha256": "9F2CB515EBE046ECBEEAE26CA3A9CCFA3A77FB28C7E1991EDDCA544487CE650A"
   },
   {
     "path": "scripts\\after-desktop-pack.mjs",
-    "bytes": 1528,
-    "sha256": "B92C34DF8B3CC3600D1BC031C076021B4F54F83770C0E3C6BD534D4D1D4FF009"
+    "bytes": 2287,
+    "sha256": "562D7D68865F42AE2B1089087208C8C4E156BE9546AF2EA5D6DBB84DC989CEEA"
   },
   {
     "path": "scripts\\build-owned-processes.ps1",
@@ -266,8 +281,8 @@
   },
   {
     "path": "scripts\\prepare-desktop.mjs",
-    "bytes": 4561,
-    "sha256": "23D83B0051B35BAF89738FE819DBFD37782013475DB8EC02EF2F3EF7E040374F"
+    "bytes": 4706,
+    "sha256": "A7E2B6AD1926D28A289B9A73F09D3DD0088C9341331D521F7006374DE227D305"
   },
   {
     "path": "scripts\\record-delivery.ps1",
@@ -670,6 +685,16 @@
     "sha256": "1596E139576FCB3C3EB00402471FDE4716E3CE185D7A5EB43E88E891243C0BE3"
   },
   {
+    "path": "tests\\active-upgrade-pending-safety.test.mjs",
+    "bytes": 8551,
+    "sha256": "70729093FB4AAFC0E5760EF2E9CD1884CD19D86D4BA5EE64A6EC6CEC3C18A085"
+  },
+  {
+    "path": "tests\\active-upgrade.test.mjs",
+    "bytes": 9429,
+    "sha256": "BF911F283F78DCCB178F8CD51B88A1A4586F2E58F660CFFAD329AA38B7D29596"
+  },
+  {
     "path": "tests\\activity-price-comparison.test.mjs",
     "bytes": 5386,
     "sha256": "8F350E29C6562E350FEBEA7A88D2C6E4F96386314B3DEA5F271A55EE5C4A1B2A"
@@ -706,8 +731,8 @@
   },
   {
     "path": "tests\\backend-upgrade.test.mjs",
-    "bytes": 6776,
-    "sha256": "37A23E1041863B707FB31EAA1187BE76CB3A7820C74FB0F20D500116DF744803"
+    "bytes": 9115,
+    "sha256": "6A562CFBA73D04FC44F7CAD2F8B6BC2FDCED92EF32A8036DE19512FD5838B3D7"
   },
   {
     "path": "tests\\blocker-prices-api.test.mjs",
@@ -1215,14 +1240,19 @@
     "sha256": "6A1FEC541EEAFDDBF0BA5CD16ADF2A6C8DA9BC0A0C64CFABEA9C70297F11DCDF"
   },
   {
+    "path": "tests\\desktop\\packaged-startup.test.mjs",
+    "bytes": 2933,
+    "sha256": "158ECBE9E84ACE030C221B288C5E3DC9513671811597FC68C0529B258BB8B410"
+  },
+  {
     "path": "tests\\desktop\\update-network.test.mjs",
     "bytes": 1093,
     "sha256": "C877F0EE24B766193D4A69961F674AF6D1EF81714173A6E6CD533EE9D7DDE6AC"
   },
   {
     "path": "tests\\desktop\\upgrade.test.mjs",
-    "bytes": 4032,
-    "sha256": "E47A95B3B7FC8961EA0325BA2B9ADA7D4771242A93400492A5A86F47533AB6CD"
+    "bytes": 4524,
+    "sha256": "5610FB5DA6E4F208D6F831495BFB92ADA02FCF9A9F39B92891171A03B80CE385"
   },
   {
     "path": "tests\\desktop\\window.test.mjs",
@@ -1408,6 +1438,16 @@
     "path": "tests\\inactive-proof-retention.test.mjs",
     "bytes": 7506,
     "sha256": "360AC9A695C0CD92A2F7685A9280AD4D587C7700ADEDFD5DFBF211A7A168375E"
+  },
+  {
+    "path": "tests\\interrupted-upgrade-boundaries.test.mjs",
+    "bytes": 10527,
+    "sha256": "74270BC970DD0E5E3F20A07B89756AE22AE792CF8DE713198E1F91BDF2D50DAE"
+  },
+  {
+    "path": "tests\\interrupted-upgrade-journal.test.mjs",
+    "bytes": 5938,
+    "sha256": "DF2562A3F14BD4754B4241468BF9EB76B4073B62CCAF938586270BA6F59FF9D7"
   },
   {
     "path": "tests\\inventory.test.mjs",
@@ -1755,6 +1795,11 @@
     "sha256": "B3F3BCE53F242085CABD92566052A7B3021311776496BBD3F6833D20C0831B76"
   },
   {
+    "path": "tests\\upgrade-probe-maintenance.test.mjs",
+    "bytes": 1349,
+    "sha256": "E1D4AD3A5AAC6B98765192D5C700EC3F90B1E8E6C4E9A0ECCEAAF6263C9EEB90"
+  },
+  {
     "path": "tests\\upgrade-resume.test.mjs",
     "bytes": 3147,
     "sha256": "F613E2F8880C95C4F5899FF6BE433B8F343B7200A895E817EC8A28D3309B5BDA"
@@ -1771,7 +1816,7 @@
   },
   {
     "path": "USER-GUIDE.md",
-    "bytes": 2786,
-    "sha256": "FBBA6FC50B8FE8AFC745208552D0A62DBFF872A50FE652ED18137D7EE03B9528"
+    "bytes": 3293,
+    "sha256": "3D6FC97A49E255DBE5ABCB490A2BF0E7828A9B70238728A737107027AB77D3ED"
   }
 ]

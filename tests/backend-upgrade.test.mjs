@@ -58,6 +58,19 @@ test('unknown submissions have a visible deadline and never permit stop, takeove
  assert.equal(r.state,'blocked');assert.equal(r.code,'UPGRADE_PENDING_SUBMISSIONS');assert.equal(f.calls.length,0);
  assert.ok(f.states.some(s=>s.phase==='waiting-results'));assert.equal(f.states.at(-1).phase,'blocked');
 });
+test('the explicitly enabled active updater checkpoints unknown and busy work immediately, preserves resume intent and launches only once',async()=>{
+ const f=fixture({unknown:3,busy:true,tasks:[{phase:'unknown'},{phase:'submitting'}],progress:{stage:'准备独立的干净创建页'}}),coordinator=new BackendUpgrade();f.options.coordinator=coordinator;let resume;
+ f.options.interruption=async()=>{f.calls.push('interrupt');await f.options.control({path:'stop',args:{forUpgrade:true}});await f.options.control({path:'shutdown'});return{ok:true,state:'stopped',recordsPreserved:true,tasksCheckpointed:true,oldProcessExited:true};};
+ const start=f.options.start;f.options.start=async args=>{resume=args.resumeOnLaunch;await start(args);};const result=await upgradeService(f.options);assert.equal(result.state,'upgraded');assert.equal(resume,true);assert.ok(f.clock()<50,'no task/results deadline is awaited');assert.equal(f.calls.filter(c=>c==='interrupt').length,1);assert.equal(f.calls.filter(c=>c==='launch').length,1);assert.ok(!f.states.some(s=>s.phase==='waiting-results'));
+});
+test('unconfirmed active handoff is blocked without starting and the same refresh cannot repeatedly terminate or launch',async()=>{
+ const f=fixture({unknown:3}),coordinator=new BackendUpgrade();f.options.coordinator=coordinator;let calls=0;f.options.interruption=async()=>{calls++;return{ok:true,state:'stopped',recordsPreserved:false};};assert.equal((await upgradeService(f.options)).state,'blocked');assert.equal((await upgradeService(f.options)).state,'blocked');assert.equal(calls,1);assert.ok(!f.calls.includes('launch'));coordinator.reset();assert.equal((await upgradeService(f.options)).state,'blocked');assert.equal(calls,2);
+});
+test('retry preserves the prior running intent from the durable same-cutover proof rather than treating an upgrade pause as a user pause',async()=>{
+ const f=fixture({running:false,unknown:3,busy:true});let resume;
+ f.options.interruption=async()=>{await f.options.control({path:'shutdown'});return{ok:true,state:'stopped',recordsPreserved:true,tasksCheckpointed:true,oldProcessExited:true,resumeOnLaunch:true};};
+ const start=f.options.start;f.options.start=async args=>{resume=args.resumeOnLaunch;await start(args);};assert.equal((await upgradeService(f.options)).state,'upgraded');assert.equal(resume,true);
+});
 test('heartbeat timestamps and alternating list polls cannot hide a stalled detail reader',async()=>{
  const f=fixture(),probe=f.options.probe;let n=0;
  f.options.probe=async()=>{const p=await probe();if(p.status?.sourceBuild==='old'){

@@ -1,3 +1,9 @@
+## beta.61 桌面启动与主动更新
+
+ASAR包含desktop和全部src共享模块；afterPack核对全部共享mjs字节，service payload保留完整desktop helper模块。不可只检查主窗口句柄：必须对实际安装器解包的DoudianGuardian.exe运行隔离桌面用例，等待店名和主界面元素实际出现，覆盖托盘、重开、更新切换及隔离权限。
+
+主动更新停止派发后不以unknown或busy清零为条件。核对旧实例、店铺、不可变包及进程归属，保存一致快照并确认旧HTTP/PID/专用浏览器退出后，才离线整理中断任务并启动新版一次。主提交/风险计数与持久证明不可降低；任何可能已点击的任务保持只回读。常规只读修复的零pending保护不因此放宽。
+
 ## beta.60 双方案恢复与工作台
 
 核心执行/授权/证据合同见 src/dual-activity-recovery.mjs 与 tests/dual-*.test.mjs。两类草稿独立、当前目标价格为底线、逐商品选择；raw proof可重放，未知任务锁贯穿。人工批准、预览和UI入口均校验当前pair，不能用未核验方案/过期pair绕过；整pair暂缓与显式重核分离。

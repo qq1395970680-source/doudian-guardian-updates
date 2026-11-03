@@ -8,19 +8,22 @@ import {runtimeDirectory} from './runtime-directory.mjs';
 import {createUpdateFetcher,createSystemUpdateFetcher} from './update-network.mjs';
 import {tmpdir} from 'node:os';
 import {pathToFileURL} from 'node:url';
-import {ensureService,probeService,shutdownService,isAllowedNavigation,upgradeService} from './service-controller.mjs';
+import {ensureService,probeService,postControl,shutdownService,isAllowedNavigation,upgradeService} from './service-controller.mjs';
 import {prepareBackend,launchBackend} from './backend.mjs';
 import {validateTransfer,TRANSFER_MAX_BYTES} from '../src/migration.mjs';
 import {repairReadonlyService} from './read-repair.mjs';
 import {ownedProcessCommand} from './owned-processes.mjs';
 import {BackendUpgrade} from './backend-upgrade.mjs';
 import {upgradeJournalCommand} from './upgrade-journal-client.mjs';
+import {interruptForUpgrade,resumeUpgradeHandoff,isUpgradeProbeUncertain} from './active-upgrade.mjs';
+import {readUpgradeHandoff,saveUpgradeHandoff,completeUpgradeHandoff} from './upgrade-handoff.mjs';
 
 const product='抖店折扣守护';
 // Integration tests use an explicitly isolated temporary runtime and a mock
 // loopback service. They never reuse the production profile or service port.
 const testMode=process.env.GUARDIAN_DESKTOP_TEST==='1';
 const testUpgrade=testMode&&process.env.GUARDIAN_DESKTOP_TEST_UPGRADE==='1';
+const testQuiet=testMode&&process.env.GUARDIAN_DESKTOP_TEST_QUIET==='1';
 const runtime=testMode?resolve(process.env.GUARDIAN_DESKTOP_TEST_RUNTIME||''):runtimeDirectory({fallback:join(process.env.LOCALAPPDATA,'DoudianDiscountGuardianV2'),installDirectory:app.isPackaged?dirname(app.getPath('exe')):null});
 const url=testMode?process.env.GUARDIAN_DESKTOP_TEST_URL:'http://127.0.0.1:19417';
 if(testMode&&(!runtime.startsWith(resolve(tmpdir())+'\\')||!/^http:\/\/127\.0\.0\.1:\d+$/.test(url)||url.endsWith(':19417')))throw Error('测试只能使用临时目录和独立本机端口');
@@ -37,13 +40,13 @@ const needsUpgrade=status=>expectedBuild&&status.sourceBuild!==expectedBuild&&co
 const updateFetch=createUpdateFetcher({systemFetch:createSystemUpdateFetcher({getSession:()=>session.fromPartition('guardian-update-network',{cache:false})})});
 const resources=app.isPackaged?process.resourcesPath:resolve(import.meta.dirname,'..','.desktop');
 const icon=join(import.meta.dirname,'assets','guardian.ico');
-const message=(text,detail='')=>dialog.showMessageBox(window,{type:'info',title:product,message:text,detail});
+const message=(text,detail='')=>testQuiet?Promise.resolve({response:1}):dialog.showMessageBox(window,{type:'info',title:product,message:text,detail});
 function update(value){updateState=value;window?.webContents.send('guardian-update-state',value);return value;}
 async function checkUpdate(){if(updateBusy)return updateState;updateBusy=true;update({state:'checking'});try{return update({...await checkForUpdates(app.getVersion(),{fetcher:updateFetch}),backendUpgrade:backendUpgradeState});}catch(e){return update({state:'error',message:e.message});}finally{updateBusy=false;}}
 async function installUpdate(){
  if(updateBusy||updateState.state!=='available')return updateState;
  if(!app.isPackaged||testMode)return update({state:'error',message:'开发与测试窗口不会安装正式更新'});
- const release=updateState.release,choice=await dialog.showMessageBox(window,{type:'info',title:'安装更新',message:'安装 '+release.version+' 并重新打开程序？',detail:'本机登录、折扣历史与任务记录会保留。后台会在当前任务结束后安全更新。',buttons:['安装并重启','稍后'],defaultId:0,cancelId:1});
+ const release=updateState.release,choice=await dialog.showMessageBox(window,{type:'info',title:'安装更新',message:'安装 '+release.version+' 并重新打开程序？',detail:'立即停止派发并保存未完成任务后重启。结果未确定的记录只回读核实，不重复提交。',buttons:['安装并重启','稍后'],defaultId:0,cancelId:1});
  if(choice.response!==0)return updateState;updateBusy=true;
  try{
   update({state:'downloading',release});const directory=join(runtime,'updates'),installer=await downloadUpdate(release,directory,{fetcher:updateFetch,onProgress:progress=>update({state:'downloading',release,progress})});
@@ -68,7 +71,12 @@ function backendUpdate(value){
 async function launchCurrentBackend({resumeOnLaunch=false}={}){
  if(testMode){if(testUpgrade)return;throw Error('测试不会启动正式后台');}
  const root=await prepareBackend({bundleRoot:join(resources,'service'),runtime});
- await launchBackend({root,runtime,shopId,resumeOnUpgrade:resumeOnLaunch});
+ const options={runtime,targetBuild:expectedBuild,targetVersion:app.getVersion()},handoff=await readUpgradeHandoff(options);
+ if(handoff&&handoff.phase!=='finalized')throw Error('新版启动已经发起或未完成离线核验，未重复启动');
+ if(handoff)await saveUpgradeHandoff({...handoff,phase:'launching',launchRequestedAt:Date.now()});
+ let pid;try{pid=await launchBackend({root,runtime,shopId,resumeOnUpgrade:handoff?.resumeOnLaunch??resumeOnLaunch});}
+ catch(error){if(handoff)await saveUpgradeHandoff({...handoff,phase:'finalized',launchError:error.message});throw error;}
+ if(handoff)await saveUpgradeHandoff({...handoff,phase:'launching',launchRequestedAt:Date.now(),newPid:pid});return pid;
 }
 async function takeOverBackend({original,shouldContinue}){
  if(testMode)throw Error('桌面测试不会维护正式进程');
@@ -77,30 +85,67 @@ async function takeOverBackend({original,shouldContinue}){
   inspect:expected=>ownedProcessCommand('inspect',expected),terminate:(expected,identity)=>ownedProcessCommand('terminate',expected,identity),
   journalCheck:(mode,backupId)=>upgradeJournalCommand({root,runtime,mode,backupId})});
 }
+async function interruptBackend({original,shouldContinue,resumeOnLaunch}){
+ if(testMode){
+  if(!testUpgrade)throw Error('桌面测试不会维护正式进程');
+  // The native desktop fixture owns a mock server and no production DB/PID.
+  // Financial persistence and owned-process exit are tested independently.
+  const ack=await postControl({url,shopId:original.shopId,expectedInstance:original.instance,path:'stop',args:{forUpgrade:true}});
+  if(!ack.ok||ack.running!==false)throw Error('测试旧实例未确认暂停');
+  await postControl({url,shopId:original.shopId,expectedInstance:original.instance,path:'shutdown',args:{resumeOnLaunch:false}});
+  const until=Date.now()+10000;while(Date.now()<until){let p;try{p=await probeService({url,shopId:original.shopId,timeoutMs:500});}catch(error){if(!isUpgradeProbeUncertain(error))throw error;}if(p?.state==='absent')return{ok:true,state:'stopped',recordsPreserved:true,tasksCheckpointed:true,oldProcessExited:true};await new Promise(r=>setTimeout(r,50));}throw Error('测试旧实例未退出');
+ }
+ const root=await prepareBackend({bundleRoot:join(resources,'service'),runtime});
+ return interruptForUpgrade({url,runtime,expectedInstance:original.instance,shouldContinue,resumeOnLaunch,targetBuild:expectedBuild,targetVersion:app.getVersion(),
+  inspect:expected=>ownedProcessCommand('inspect',expected),terminate:(expected,identity)=>ownedProcessCommand('terminate',expected,identity),
+  journalCheck:(mode,args)=>upgradeJournalCommand({root,runtime,mode,...args})});
+}
 async function switchBackend(){
  if(window.webContents.getURL()!==upgradePage)await window.loadURL(upgradePage);
  rendererNeedsReconnect=false;
  const result=await upgradeService({url,shopId,expectedBuild,expectedVersion:app.getVersion(),coordinator:backendUpgrade,
-  onState:backendUpdate,shouldContinue:()=>!exiting&&!stopping,start:launchCurrentBackend,takeover:takeOverBackend,
+  onState:backendUpdate,shouldContinue:()=>!exiting&&!stopping,start:launchCurrentBackend,takeover:takeOverBackend,interruption:interruptBackend,
   ...(testUpgrade?{timeoutMs:Number(process.env.GUARDIAN_TEST_UPGRADE_TIMEOUT||1000),stallMs:500,pollMs:50,readyTimeoutMs:5000}:{}),});
- if(['current','upgraded','newer-service'].includes(result.state)){await window.loadURL(url+'/');rendererNeedsReconnect=false;}
+ if(['current','upgraded','newer-service'].includes(result.state)){if(!testMode)await completeUpgradeHandoff({runtime,targetBuild:expectedBuild,targetVersion:app.getVersion()},result.status);await window.loadURL(url+'/');rendererNeedsReconnect=false;}
  else if(result.state==='absent')backendUpdate({...backendUpgradeState,phase:'blocked',message:'旧后台退出状态尚未完成核验，请查看更新记录；未重复启动进程',code:'UPGRADE_EXIT_UNCONFIRMED'});
  return result;
 }
 function show(){
  if(window&&!window.isDestroyed()){
-  if(window.isMinimized())window.restore();window.show();window.focus();
+  if(!testQuiet){if(window.isMinimized())window.restore();window.show();window.focus();}
   if(rendererNeedsReconnect||window.webContents.isCrashed()||!window.webContents.getURL()){
    void connect().catch(e=>log(e));
   }
  }
 }
+function recoveredBackendReady(status,pending){
+ backendUpdate({phase:'ready',message:pending.resumeOnLaunch&&!status.running?'新版后台已切换，正在连接原店铺并接续守护':status.running?'新版后台已运行，守护已恢复':'新版后台已运行，守护保持暂停',
+  expectedBuild,expectedVersion:app.getVersion(),actualBuild:status.sourceBuild,actualVersion:status.version,instance:status.instance,shopId:status.shopId,oldStopped:true,resumeOnLaunch:pending.resumeOnLaunch});
+}
 async function connect(){
  if(launchPromise)return launchPromise;
  launchPromise=(async()=>{
+  if(!testMode){
+   try{
+    const root=await prepareBackend({bundleRoot:join(resources,'service'),runtime}),options={runtime,targetBuild:expectedBuild,targetVersion:app.getVersion()};
+    let recovery=await resumeUpgradeHandoff({...options,journalCheck:(mode,args)=>upgradeJournalCommand({root,runtime,mode,...args})});
+    if(recovery?.state==='launching'){
+     const until=Date.now()+60000;while(Date.now()<until&&recovery.state==='launching'){await new Promise(r=>setTimeout(r,400));recovery=await resumeUpgradeHandoff({...options,journalCheck:(mode,args)=>upgradeJournalCommand({root,runtime,mode,...args})});}
+     if(recovery?.state==='launching')throw Error('新版启动结果尚未明确，已保留记录且没有重复启动');
+    }
+    if(recovery?.state==='current'){await completeUpgradeHandoff(options,recovery.status);recoveredBackendReady(recovery.status,recovery.pending);await window.loadURL(url+'/');rendererNeedsReconnect=false;return recovery;}
+    if(recovery?.state==='finalized'){
+     const result=await ensureService({url,shopId:recovery.pending.expected.shopId,launch:()=>launchCurrentBackend({resumeOnLaunch:recovery.pending.resumeOnLaunch})});
+     await completeUpgradeHandoff(options,result.status);recoveredBackendReady(result.status,recovery.pending);await window.loadURL(url+'/');rendererNeedsReconnect=false;return result;
+    }
+   }catch(error){
+    backendUpdate({phase:'blocked',code:'UPGRADE_RECOVERY_UNCONFIRMED',message:'更新记录尚未完成核验，未启动第二后台：'+error.message,expectedBuild,expectedVersion:app.getVersion()});await window.loadURL(upgradePage);return{state:'blocked'};
+   }
+  }
   if(backendUpgradeState.phase==='blocked'&&window.webContents.getURL()===upgradePage)return switchBackend();
   const result=await ensureService({url,shopId,launch:launchCurrentBackend});
   if(needsUpgrade(result.status)&&(!testMode||testUpgrade))return switchBackend();
+  if(!testMode&&result.status.sourceBuild===expectedBuild&&result.status.version===app.getVersion())recoveredBackendReady(result.status,{resumeOnLaunch:result.status.running===true});
   await window.loadURL(url+'/');rendererNeedsReconnect=false;return result;
  })();try{return await launchPromise;}finally{launchPromise=null;}
 }
@@ -205,5 +250,5 @@ if(!single){app.quit();}else{
  show();
  try{await connect();show();}catch(e){rendererNeedsReconnect=true;await log(e);show();await message('后台连接未完成',e.message+'\n程序会自动重连，也可再次点击桌面图标。');}
  refreshTimer=setInterval(()=>void refresh(),5000);await refresh();
- }).catch(async error=>{await log(error);dialog.showErrorBox(product+'启动失败',error.message);app.quit();});
+ }).catch(async error=>{await log(error);if(!testQuiet)dialog.showErrorBox(product+'启动失败',error.message);app.quit();});
 }

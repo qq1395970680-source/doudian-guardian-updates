@@ -8,7 +8,7 @@ function refused(error){
 }
 function identity(status,shopId){
  if(status?.build!=='isolated-headless-journal'||shopId!==undefined&&status.shopId!==shopId||!status.instance||!status.sourceBuild||status.shopId!==null&&!/^\d{3,25}$/.test(status.shopId))
-  throw Error('此端口不是所选店铺的折扣守护后台，未启动另一实例。');
+  throw Object.assign(Error('此端口不是所选店铺的折扣守护后台，未启动另一实例。'),{code:'GUARDIAN_PROBE_IDENTITY'});
  return status;
 }
 export function isAllowedNavigation(target,origin){
@@ -17,8 +17,8 @@ export function isAllowedNavigation(target,origin){
 export async function probeService({url,shopId,timeoutMs=3000}){
  let response;
  try{response=await fetch(url+'/api/status',{signal:AbortSignal.timeout(timeoutMs),redirect:'error'});}
- catch(e){if(refused(e))return{state:'absent'};throw Error('后台连接暂不确定，保留现有进程。'+e.message,{cause:e});}
- if(!response.ok)throw Error('后台正在维护或返回异常（'+response.status+'），未启动第二个实例。');
+ catch(e){if(refused(e))return{state:'absent'};throw Object.assign(Error('后台连接暂不确定，保留现有进程。'+e.message,{cause:e}),{code:'GUARDIAN_PROBE_TRANSPORT'});}
+ if(!response.ok)throw Object.assign(Error('后台正在维护或返回异常（'+response.status+'），未启动第二个实例。'),{code:'GUARDIAN_PROBE_HTTP',status:response.status});
  const status=identity(await response.json(),shopId);return{state:'ready',status};
 }
 export async function ensureService(options){

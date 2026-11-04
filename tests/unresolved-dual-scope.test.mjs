@@ -64,7 +64,7 @@ for(const mode of ['sku-error','warning','stale-draft','stale-export','incomplet
  if(mode==='incomplete-draft')trial.entry.observation.complete=false;
  if(mode==='changed-price'){trial.options.plan=structuredClone(f.plan);trial.options.plan.skus[0].saleFen--;}
  if(mode==='consumed-successor'){const read=f.journal.unresolvedRecovery.bind(f.journal);f.journal.unresolvedRecovery=id=>({...read(id),successor:{taskId:'already-submitted',submittedAt:f.now-1,task:{submitAttempts:1,riskAttempts:0}}});}
- const d=makeDualActivityDecision(trial.options);assert.equal(d.selectedType,null);assert.equal(d.approvalAllowed,false);assert.equal(d.schemes[0].classification,'pending');assert.equal(d.schemes[0].candidate,undefined);
+ const d=makeDualActivityDecision(trial.options);assert.equal(d.selectedType,null);assert.equal(d.approvalAllowed,false);if(mode==='sku-error'){assert.equal(d.schemes[0].classification,'reduction-required');assert.equal(d.schemes[0].candidateReady,false);assert.equal(d.schemes[0].candidate,null);assert.ok(d.schemes[0].necessaryReductionEvidence.rows.length>0);}else{assert.equal(d.schemes[0].classification,'pending');assert.equal(d.schemes[0].candidate,undefined);}
 });
 test('a limited current approved target switches to timed without changing prices and replays after the actual one-shot beginSubmit',t=>{
  const f=fixture(t,{recordDecision:false}),limited=dualProbePlan(f.plan,'限量抢购'),rows=limited.skus.map(s=>({id:s.id,name:s.name,baseFen:s.baseFen,historicalDiscount:s.discount,previousDiscount:s.discount,previousFen:s.saleFen,discount:s.discount,saleFen:s.saleFen,bounds:{},evidence:[]}));

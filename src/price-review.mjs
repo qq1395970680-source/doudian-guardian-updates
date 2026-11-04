@@ -3,6 +3,32 @@ import {combinePriceConstraints,selectClosestPriceStep} from './price-constraint
 import {validateRemovalPriceEvidence,selectRatioPrices,describeRatio} from './ratio-prices.mjs';
 export {parsePriceConstraint,combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
 
+// A necessary reduction is narrower than a complete feasible price proposal.
+// Keep explicit, bound SKU caps even when a separate grouped ratio is unclear.
+// No candidate or approval is produced by this proof.
+export function makeNecessaryReductionEvidence(task,probe,now=Date.now()){
+ requireThat(task?.plans?.length===1&&probe?.source==='live-platform-draft'&&probe.kind==='draft'&&probe.dialogs?.length===0&&
+  Number.isFinite(probe.observedAt)&&probe.observedAt>0&&probe.observedAt<=now&&now-probe.observedAt<=120000,
+  'PRICE_REVIEW_EVIDENCE','必要降价依据须来自本次完整且新鲜的独立草稿');
+ proveDraft(task,{...probe,warnings:[]},probe.observedAt);
+ const errors=new Set(probe.rows.flatMap(r=>r.errors||[]));
+ requireThat(errors.size>0&&(probe.warnings||[]).every(w=>errors.has(w)),'PRICE_RULE_UNKNOWN','不能将无法对应具体规格的提示作为必须降价证明');
+ const plan=task.plans[0],required=[];
+ for(const sku of plan.skus){
+  const row=probe.rows.find(r=>r.productId===plan.productId&&r.id===sku.id),statements=[...(row.errors||[])],bounds=combinePriceConstraints(statements);
+  selectClosestPriceStep(sku,bounds); // Reject contradictory or impossible caps.
+  if(bounds.maxFen==null&&bounds.maxDiscount==null)continue;
+  const prices=[];for(let d=10;d<=95;d++){const price=saleFen(sku.baseFen,d);
+   if(d>=(bounds.minDiscount??10)&&d<=(bounds.maxDiscount??95)&&price>0&&price>=(bounds.minFen??1)&&price<=(bounds.maxFen??Infinity))prices.push(price);}
+  const maximumExplicitPriceFen=Math.max(...prices);
+  if(maximumExplicitPriceFen<sku.saleFen)required.push({id:sku.id,name:normalizeName(sku.name),baseFen:sku.baseFen,guardedDiscount:sku.discount,guardedFen:sku.saleFen,
+   maximumExplicitPriceFen,minimumReductionFen:sku.saleFen-maximumExplicitPriceFen,bounds,statements});
+ }
+ if(!required.length)return null;
+ return {source:'live-platform-necessary-sku-reduction',shopId:plan.shopId,productId:plan.productId,activityType:plan.type,historicalFingerprint:plan.historicalFingerprint,
+  previousApprovalId:plan.priceApprovalId||null,taskId:task.id,observedAt:probe.observedAt,probeFingerprint:fingerprint(probe),allSkuIds:plan.skus.map(s=>s.id),rows:required};
+}
+
 export function makePriceReviews(task,probe,now=Date.now()) {
   requireThat(probe?.source==='live-platform-draft'&&probe.kind==='draft'&&probe.dialogs?.length===0,
     'PRICE_REVIEW_EVIDENCE','调价建议必须来自本次独立草稿的完整直接读取');
@@ -52,15 +78,16 @@ export function applyPriceTarget(original,review) {
     const row=review.rows.find(r=>r.id===sku.id);
     requireThat(row||review.kind!=='rounding-reconfirmation','PRICE_APPROVAL_CHANGED','此规格未包含在新的金额确认中，需要重新核对，不能回退到历史价格');
     if(!row)return sku;
-    requireThat(row.name===normalizeName(sku.name)&&row.baseFen===sku.baseFen&&row.historicalDiscount===sku.discount&&
+    const historicalDiscount=sku.originalDiscount??sku.discount;
+    requireThat(row.name===normalizeName(sku.name)&&row.baseFen===sku.baseFen&&row.historicalDiscount===historicalDiscount&&
       Number.isInteger(row.discount)&&row.discount>=10&&row.discount<=95&&row.saleFen===saleFen(sku.baseFen,row.discount),
       'PRICE_APPROVAL_CHANGED','已确认价格与当前规格或历史发生变化');
     changed=changed||row.discount!==sku.discount||review.kind==='rounding-reconfirmation';
-    return {...sku,originalDiscount:sku.discount,discount:row.discount,saleFen:row.saleFen};
+    return {...sku,originalDiscount:historicalDiscount,discount:row.discount,saleFen:row.saleFen};
   });
   // Retain the previous approval identity even when its changed SKU is absent.
   // Any further proposal must still be linked to the target the human saw.
-  const result={...base,skus,originalRiskAllowed:changed?false:original.originalRiskAllowed,approvedRiskAllowed:changed,priceApprovalId:review.id,priceApprovalKey:review.key};
+  const result={...base,skus,originalRiskAllowed:changed?false:original.originalRiskAllowed,approvedRiskAllowed:changed||original.approvedRiskAllowed===true,priceApprovalId:review.id,priceApprovalKey:review.key};
   return {...result,fingerprint:fingerprint(result)};
 }
 

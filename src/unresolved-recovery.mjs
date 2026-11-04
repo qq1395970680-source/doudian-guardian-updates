@@ -44,12 +44,12 @@ export function validateUnresolvedRecoveryConsent(consent,task,{runtimeId,now=Da
  const scope=consent.scopes.filter(s=>s.taskId===task.id);if(scope.length!==1||scope[0].originalTaskFingerprint!==unresolvedOriginalFingerprint(task)||fingerprint(scope[0].productIds)!==fingerprint(products(task))||fingerprint(scope[0].priceFloors)!==fingerprint(priceFloors(task)))return reject('UNRESOLVED_TASK_CHANGED','原任务、价格、规格、计数或证明已变化，不能沿用授权');
  return{allowed:true,scope:scope[0]};
 }
-function coverage(listing,task,query,context,now){
- const assessed=assessSubmissionQuery(listing,query,task,now);if(!assessed.complete)return reject('UNRESOLVED_QUERY_INCOMPLETE',assessed.reason);
+function coverage(listing,task,query,context,now,{maxAgeMs=120000,minObservedAt=null}={}){
+ const assessed=assessSubmissionQuery(listing,query,task,now,{maxAgeMs,minObservedAt});if(!assessed.complete)return reject('UNRESOLVED_QUERY_INCOMPLETE',assessed.code+'：'+assessed.reason);
  const range=task.draftProof.observation,from=Math.min(task.submittedAt,range.startAt),to=Math.max(now,range.endAt),d=assessed.dateCoverage;
  let dates=d.state==='unbounded-visible'||d.state==='bounded'&&d.startAt<=from&&d.endAt>=to;
  const supplied=context.coverageProofs?.find(p=>p.listingFingerprint===fingerprint(listing));
- const derived=officialQueryCoverage(listing,{referenceListings:context.coverageReferenceListings||[],now});
+ const derived=officialQueryCoverage(listing,{referenceListings:context.coverageReferenceListings||[],now,maxAgeMs,referenceMaxAgeMs:UNRESOLVED_INVESTIGATION_TIME_LIMIT_MS,minObservedAt});
  if(supplied&&(derived.complete!==true||!supplied.evidence||supplied.evidenceFingerprint!==fingerprint(supplied.evidence)||supplied.source!==derived.source||supplied.shopId!==derived.shopId||supplied.allDates!==derived.allDates||fingerprint(supplied.activityTypes)!==fingerprint(derived.activityTypes)))return reject('UNRESOLVED_QUERY_COVERAGE','外部范围证明无法从本次官方筛选面及实际跨统计日期活动重放核实');
  if(derived.complete===true)dates||=derived.allDates===true;
  if(!dates)return reject('UNRESOLVED_DATE_SCOPE','日期范围未覆盖原提交和潜在生效窗口；须补官方完整筛选面或响应范围证明');
@@ -59,19 +59,20 @@ function coverage(listing,task,query,context,now){
  if(!Array.isArray(types)||types.length!==2||!['限时抢购','限量抢购'].every(t=>types.includes(t)))return reject('UNRESOLVED_TYPE_SCOPE','尚未证明查询同时覆盖限时和限量活动');
  return{allowed:true};
 }
+const historicalFresh=(at,raw)=>Number.isSafeInteger(at)&&at>=raw.startedAt&&at<=raw.finishedAt+5000&&raw.finishedAt-at<=UNRESOLVED_INVESTIGATION_TIME_LIMIT_MS;
 function assessRaw(task,raw,context,now,{latest=false}={}){
  if(raw?.diagnosticOnly!==true||raw.authorizesSubmit!==false||raw.mode!=='complete-investigation'||!Number.isSafeInteger(raw.finishedAt)||raw.finishedAt>now+5000||now-raw.finishedAt>UNRESOLVED_INVESTIGATION_TIME_LIMIT_MS||!Number.isSafeInteger(raw.startedAt)||raw.startedAt>raw.finishedAt||now-raw.startedAt>UNRESOLVED_INVESTIGATION_TIME_LIMIT_MS||raw.candidateConflicts?.length)return reject('UNRESOLVED_INVESTIGATION','完整调查缺失、超过十分钟或候选身份发生变化');
  const readAt=raw.finishedAt,assessment=adjudicateSubmissionInvestigation(task,raw,{now:readAt});
- if(assessment.classification!=='not-found')return reject('UNRESOLVED_ORIGINAL_CANDIDATE','原任务仍有同名候选、读取错误或匹配歧义，须先处理该项事实');
+ if(assessment.classification!=='not-found')return reject('UNRESOLVED_ORIGINAL_CANDIDATE','原任务仍有同名候选、读取错误或匹配歧义，须先处理该项事实：'+assessment.reason);
  const coverageContext={...context,coverageReferenceListings:[raw.titleQuery?.listing,...(raw.productQueries||[]).map(q=>q.listing),...(raw.referenceQueries||[]).map(q=>q.listing)].filter(Boolean)};
- const title=coverage(raw.titleQuery?.listing,task,{productId:null,title:task.title,status:null},coverageContext,readAt);if(!title.allowed)return title;
+ const title=coverage(raw.titleQuery?.listing,task,{productId:null,title:task.title,status:null},coverageContext,readAt,{maxAgeMs:UNRESOLVED_INVESTIGATION_TIME_LIMIT_MS,minObservedAt:raw.startedAt});if(!title.allowed)return title;
  for(const plan of task.plans)for(const status of [null,'进行中','未开始']){
   const records=raw.productQueries?.filter(q=>q.productId===plan.productId&&q.status===status);if(records?.length!==1||records[0].error)return reject('UNRESOLVED_PRODUCT_QUERY','每件商品须有独立全状态、进行中及未开始的完整查询');
-  const record=records[0],checked=coverage(record.listing,task,{productId:plan.productId,title:null,status},coverageContext,readAt);if(!checked.allowed)return checked;
+  const record=records[0],checked=coverage(record.listing,task,{productId:plan.productId,title:null,status},coverageContext,readAt,{maxAgeMs:status===null?UNRESOLVED_INVESTIGATION_TIME_LIMIT_MS:120000,minObservedAt:raw.startedAt});if(!checked.allowed)return checked;
   if(latest&&status!==null&&!fresh(record.listing.observedAt,now))return reject('UNRESOLVED_CURRENT_STALE','最后当前及未开始商品查询超过两分钟，创建新生命周期前须重新读取');
   for(const c of record.listing.campaigns){
    const entries=raw.details?.filter(d=>d.campaignId===c.id),entry=entries?.[0],d=entry?.detail;
-   if(entries?.length!==1||entry.shopId!==task.shopId||entry.error||!d?.complete||!fresh(d.observedAt,readAt)||!Array.isArray(d.products)||new Set(d.products.map(p=>p.productId)).size!==d.products.length||entry.campaign&&fingerprint(entry.campaign)!==fingerprint(c))return reject('UNRESOLVED_CANDIDATE_DETAIL','候选活动详情、身份或时效尚未完整核实');
+   if(entries?.length!==1||entry.shopId!==task.shopId||entry.error||!d?.complete||!historicalFresh(d.observedAt,raw)||!Array.isArray(d.products)||new Set(d.products.map(p=>p.productId)).size!==d.products.length||entry.campaign&&fingerprint(entry.campaign)!==fingerprint(c))return reject('UNRESOLVED_CANDIDATE_DETAIL','候选活动详情、身份或本轮十分钟历史读取范围尚未完整核实');
    if(!['进行中','未开始','已失效','已结束','已作废'].includes(c.status))return reject('UNRESOLVED_PENDING_CREATION','候选包含未识别或可能仍在创建、审核、续期的状态');
    const member=d.products.find(p=>p.productId===plan.productId);
    if(member?.removalAmbiguous)return reject('UNRESOLVED_MEMBERSHIP','商品当前归属仍有歧义');
@@ -126,13 +127,15 @@ function quantityBounds(task,raw,context,now){
   if(!bound){
    if(!genuineLimited&&baseline.type==='限时抢购'&&plan.type==='限量抢购'){
     const required=[baseline.campaignId,...losses.map(e=>e.campaignId)];
-    if(!required.every(cid=>actual.some(e=>e.campaignId===cid&&e.campaign?.type==='限时抢购'&&fresh(e.detail.observedAt,raw.finishedAt))))return reject('UNRESOLVED_SOURCE_DETAIL','仅限时恢复仍须读取实际限时模板及原失效来源，不能把缺失来源当作无限量约束');
+    if(!required.every(cid=>actual.some(e=>e.campaignId===cid&&e.campaign?.type==='限时抢购'&&historicalFresh(e.detail.observedAt,raw))))return reject('UNRESOLVED_SOURCE_DETAIL','仅限时恢复仍须读取实际限时模板及原失效来源，不能把缺失来源当作无限量约束');
     restrictions.push({productId:plan.productId,allowedTypes:['限时抢购'],forbidNewLimitedQuota:true,sourceCampaignId:losses.at(-1)?.campaignId||baseline.campaignId,sourceHistoricalFingerprint:plan.historicalFingerprint,reason:'原实际来源为限时；旧未知限量计划无额度确证，本次禁止新建限量额度，仅可按有效价格授权核验限时'});continue;
    }
    return reject('UNRESOLVED_QUANTITY','限量来源、未售罄和额度依据不足；不能补量或改走限时绕过数量限制');
   }
+  allowedTypes=allowedTypes.filter(type=>type==='限量抢购');
+  if(!allowedTypes.length)return reject('UNRESOLVED_ACTIVITY_AUTHORITY','实际来源须保留限量上限，本次尚未明确允许限量恢复；不能改走限时绕过额度');
   bounds.push(bound);
-  restrictions.push({productId:plan.productId,allowedTypes,forbidNewLimitedQuota:false,sourceCampaignId:bound.sourceCampaignId,sourceHistoricalFingerprint:plan.historicalFingerprint,reason:'实际限量来源及未售罄额度已核实，后续计划仍须遵守该上限'});
+  restrictions.push({productId:plan.productId,allowedTypes,forbidNewLimitedQuota:false,preserveLimitedQuota:true,sourceCampaignId:bound.sourceCampaignId,sourceHistoricalFingerprint:plan.historicalFingerprint,reason:'实际限量来源及未售罄额度已核实，仅允许在该上限内恢复限量活动，不能改走限时绕过额度'});
  }
  return{allowed:true,bounds,sources,restrictions};
 }

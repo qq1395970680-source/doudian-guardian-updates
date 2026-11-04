@@ -80,3 +80,12 @@ test('official coverage requires fresh verified list identity and never trusts b
  f.target.observedAt=now;f.target.queryScope.verified=false;assert.equal(f.read().complete,false);
  assert.equal(officialQueryCoverage(null,{now}).complete,false);assert.equal(officialQueryCoverage({complete:true,allDates:true},{now}).complete,false);
 });
+test('a fresh final query may use only an explicitly bounded historical coverage witness without refreshing its timestamp',()=>{
+ const f=fixture();f.reference.observedAt=now-137960;const before=fingerprint(f.reference);
+ assert.equal(f.read().complete,false);
+ assert.equal(officialQueryCoverage(f.target,{referenceListings:[f.reference],now,referenceMaxAgeMs:600000,minObservedAt:now-144567}).complete,true);
+ assert.equal(fingerprint(f.reference),before);assert.equal(f.reference.observedAt,now-137960);
+ assert.equal(officialQueryCoverage(f.target,{referenceListings:[f.reference],now,referenceMaxAgeMs:600001}).complete,false);
+ assert.equal(officialQueryCoverage(f.target,{referenceListings:[f.reference],now,referenceMaxAgeMs:600000,minObservedAt:now-100000}).complete,false);
+ f.target.observedAt=now-120001;assert.equal(officialQueryCoverage(f.target,{referenceListings:[f.reference],now,referenceMaxAgeMs:600000}).complete,false,'historical witness tolerance never ages the current target query');
+});

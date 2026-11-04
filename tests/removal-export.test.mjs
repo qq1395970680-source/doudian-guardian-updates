@@ -9,11 +9,11 @@ export const removalWorkbook=(rows,headers=['商品ID','商品名','渠道id','�
  'xl/worksheets/sheet1.xml':'<?xml version="1.0"?><worksheet><sheetData>'+[headers,...rows].map((r,i)=>'<row r="'+(i+1)+'">'+r.map((v,j)=>'<c r="'+String.fromCharCode(65+j)+(i+1)+'" t="str"><v>'+escape(v)+'</v></c>').join('')+'</row>').join('')+'</sheetData></worksheet>'
 });
 test('platform removal workbook preserves long text identifiers and exact reasons without evaluating cells',()=>{
- const records=readRemovalWorkbook(removalWorkbook([['3848196081326358908','商品','--','--',reason]]));
- assert.deepEqual(records,[{productId:'3848196081326358908',name:'商品',reason}]);
+ const records=readRemovalWorkbook(removalWorkbook([['9900000000000000001','商品','--','--',reason]]));
+ assert.deepEqual(records,[{productId:'9900000000000000001',name:'商品',reason}]);
 });
 test('observed main-product channel is accepted while other channels remain unproven',()=>{
- const record=['3817223180347638046','商品','0','主品',reason];
+ const record=['9900000000000000002','商品','0','主品',reason];
  assert.equal(readRemovalWorkbook(removalWorkbook([record]))[0].productId,record[0]);
  for(const [channel,type] of [['1','主品'],['0','其他'],['--','主品'],['10001','渠道']]){
   assert.throws(()=>readRemovalWorkbook(removalWorkbook([[record[0],record[1],channel,type,reason]])));
@@ -24,7 +24,7 @@ test('removal workbook fails closed: '+mode,()=>{
  let bytes=removalWorkbook([['300001','商品','--','--',reason]]);
  if(mode==='wrong-header')bytes=removalWorkbook([['300001','商品','--','--',reason]],['其他ID','商品名','渠道id','渠道类型','失败原因']);
  if(mode==='duplicate')bytes=removalWorkbook([['300001','商品','--','--',reason],['300001','商品','--','--',reason]]);
- if(mode==='scientific-id')bytes=removalWorkbook([['3.848196081326358E+18','商品','--','--',reason]]);
+ if(mode==='scientific-id')bytes=removalWorkbook([['9.900000000000000E+18','商品','--','--',reason]]);
  if(mode==='empty-reason')bytes=removalWorkbook([['300001','商品','--','--','']]);
  if(mode==='formula')bytes=zip({'xl/worksheets/sheet1.xml':'<worksheet><sheetData><row><c r="A1"><f>HYPERLINK("bad")</f><v>商品ID</v></c></row></sheetData></worksheet>'});
  if(mode==='bad-crc')bytes[60]^=1;

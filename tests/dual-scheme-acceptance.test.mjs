@@ -99,7 +99,7 @@ test('non-decreasing means relative to the current approved target, never the ol
 test('a persisted decision expires and cannot bypass an unresolved submission or a changed target',()=>{
  const f=fixture();try{
   const decision=makeDualActivityDecision({plan:f.plan,probes:[cap(f.plan,timed,4800),cap(f.plan,limited,4500)],now:f.now});f.journal.recordDualActivityDecision(decision,f.now);
-  const expired=getDualActivityDecision(f.journal,'900001','300001',f.now+120001);assert.equal(expired.valid,false);assert.equal(expired.approvalAllowed,false);
+  const expired=getDualActivityDecision(f.journal,'900001','300001',f.now+120001);assert.equal(expired.valid,true);assert.equal(expired.requiresRevalidation,true);assert.equal(expired.approvalReady,false);assert.equal(expired.approvalAllowed,false);assert.equal(expired.selectedType,null);assert.ok(expired.schemes.every(s=>s.classification==='reduction-required'));
   const task=f.journal.enqueue('900001',[f.plan],{complete:true,observedAt:f.now,active:false,lossKey:'unknown-lock'},f.now),body=f.journal.db.prepare('SELECT body FROM tasks WHERE id=?').get(task.id);
   f.journal.db.prepare('UPDATE tasks SET phase=?,body=? WHERE id=?').run('unknown',JSON.stringify({...JSON.parse(body.body),submitAttempts:1,riskAttempts:0}),task.id);
   const locked=getDualActivityDecision(f.journal,'900001','300001',f.now);assert.equal(locked.valid,false);assert.equal(locked.approvalAllowed,false);assert.throws(()=>f.journal.approveDualActivityDecision('900001','300001',decision.pairKey,f.now));assert.equal(f.journal.get(task.id).submitAttempts,1);

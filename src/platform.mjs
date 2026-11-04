@@ -969,7 +969,7 @@ export class DoudianPlatform {
  }
  async investigateSubmission(task){
   requireThat(task?.shopId===this.policy.shopId&&task.plans?.length&&task.plans.every(p=>p.shopId===task.shopId),'SHOP_MISMATCH','只可调查当前店铺的完整任务');
-  const startedAt=Date.now(),details=[],productQueries=[],referenceQueries=[],candidateConflicts=[],candidates=new Map();let titleListing=null,titleError=null;
+  const startedAt=Date.now(),details=[],productQueries=[],referenceQueries=[],candidateConflicts=[],candidates=new Map();let titleListing=null,titleError=null,initialTitleQuery=null,initialProductQueries=null;
   const diagnosticError=error=>({code:error.code||'READ_ERROR',message:String(error.message).slice(0,1000)});
   const fatal=error=>['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH','ACCOUNT_UNKNOWN','READ_CLEANUP_BLOCKED','READ_CONTEXT_CANCELLED'].includes(error.code);
   const query=async options=>{try{return{listing:await this.list(options),error:null};}catch(error){if(fatal(error))throw error;return{listing:null,error:diagnosticError(error)};}};
@@ -1003,6 +1003,19 @@ export class DoudianPlatform {
      addCandidates(allReferenceListing.listing&&{...allReferenceListing.listing,campaigns:allReferenceListing.listing.campaigns.filter(c=>c.id===baseline.campaignId)});
     }
    }
+   // The actual removal source can differ from the price-template baseline
+   // and can disappear from product-filtered results after removal. Resolve
+   // only identities bound in this original task, never a later activity.
+   for(const plan of task.plans){
+    const sources=(task.lossEvidence?.priceRules||[]).map(r=>r.removalEvidence).filter(e=>e?.source==='live-platform-removal-export'&&e.shopId===task.shopId&&e.record?.productId===plan.productId&&['限时抢购','限量抢购'].includes(e.activityType));
+    for(const evidence of sources){
+     if(referenceQueries.some(r=>r.productId===plan.productId&&r.sourceCampaignId===evidence.campaignId))continue;
+     const source={productId:plan.productId,sourceCampaignId:evidence.campaignId,historicalFingerprint:plan.historicalFingerprint,referenceKind:'recorded-loss-source',hintOnly:true};
+     if(candidates.has(evidence.campaignId)){referenceQueries.push({...source,lookup:'present-in-product-query',matchedCampaignIds:[evidence.campaignId]});continue;}
+     allReferenceListing??=await query({});referenceQueries.push({...source,lookup:'exact-source-id-in-full-list',...allReferenceListing});
+     addCandidates(allReferenceListing.listing&&{...allReferenceListing.listing,campaigns:allReferenceListing.listing.campaigns.filter(c=>c.id===evidence.campaignId)});
+    }
+   }
    // Independent read pages may run together. Await every worker before
    // returning so an error cannot leave a browser reading after the caller.
    const pending=[...candidates.values()],results=new Array(pending.length);let cursor=0;
@@ -1015,10 +1028,28 @@ export class DoudianPlatform {
    });
    const settled=await Promise.allSettled(workers);details.push(...results.filter(Boolean));
    const failed=settled.find(r=>r.status==='rejected');if(failed)throw failed.reason;
-   const raw=makeSubmissionInvestigation(task,{startedAt,finishedAt:Date.now(),titleListing,titleError,details,productQueries,referenceQueries,candidateConflicts});
+   // Long historical reads cannot stand in for the current state. Preserve
+   // those observations, then close the investigation with actual new pages.
+   initialTitleQuery={listing:titleListing,error:titleError};initialProductQueries=structuredClone(productQueries);
+   for(const productId of new Set(task.plans.map(p=>p.productId)))for(const status of ['进行中','未开始']){
+    this.check();this.progress={stage:'末端重新核实当前活动',taskId:task.id,productId,status,at:Date.now()};
+    const result=await query({productId,status}),index=productQueries.findIndex(q=>q.productId===productId&&q.status===status);
+    const record={productId,status,...result};if(index<0)productQueries.push(record);else productQueries[index]=record;
+    addCandidates(result.listing);
+   }
+   ({listing:titleListing,error:titleError}=await query({title:task.title}));addCandidates(titleListing);
+   const sourceIds=new Set(referenceQueries.map(r=>r.sourceCampaignId));
+   for(const campaign of candidates.values()){
+    const index=details.findIndex(d=>d.campaignId===campaign.id),entry=details[index];
+    const needsFresh=active(campaign)&&(titleListing?.campaigns.some(c=>c.id===campaign.id)||index<0)||sourceIds.has(campaign.id)&&campaign.type==='限量抢购';
+    if(index>=0&&!needsFresh)continue;
+    try{const record={campaignId:campaign.id,shopId:task.shopId,campaign,detail:await this.detail(campaign)};if(index<0)details.push(record);else details[index]=record;}
+    catch(error){if(fatal(error))throw error;const record={campaignId:campaign.id,shopId:task.shopId,campaign,error:diagnosticError(error)};if(index<0)details.push(record);else details[index]=record;}
+   }
+   const raw=makeSubmissionInvestigation(task,{startedAt,finishedAt:Date.now(),titleListing,titleError,details,productQueries,referenceQueries,candidateConflicts,initialTitleQuery,initialProductQueries});
    return this.recordSubmissionInvestigation(task,raw);
   }catch(error){
-   const raw=makeSubmissionInvestigation(task,{startedAt,finishedAt:Date.now(),titleListing,titleError,details,productQueries,referenceQueries,candidateConflicts,error:diagnosticError(error)});
+   const raw=makeSubmissionInvestigation(task,{startedAt,finishedAt:Date.now(),titleListing,titleError,details,productQueries,referenceQueries,candidateConflicts,initialTitleQuery,initialProductQueries,error:diagnosticError(error)});
    try{this.recordSubmissionInvestigation(task,raw);}catch{}throw error;
   }
  }

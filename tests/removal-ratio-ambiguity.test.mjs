@@ -45,8 +45,10 @@ for(const explicitErrors of [false,true])test('a fresh draft does not silently e
  const j=new Journal(':memory:');try{
   const f=dualDecisionFixture(j,{now}),probes=['限时抢购','限量抢购'].map(type=>ambiguousProbe(f,type,{explicitErrors}));
   const decision=makeDualActivityDecision({plan:f.plan,probes,now});
-  assert.deepEqual(decision.schemes.map(s=>s.classification),['pending','pending']);
-  assert.ok(decision.schemes.every(s=>s.code==='REMOVAL_RULE_AMBIGUOUS'&&/逐规格/.test(s.reason)&&s.review===null&&!s.candidate));
+  assert.deepEqual(decision.schemes.map(s=>s.classification),explicitErrors?['reduction-required','reduction-required']:['pending','pending']);
+  assert.ok(decision.schemes.every(s=>s.code==='REMOVAL_RULE_AMBIGUOUS'&&s.review===null&&!s.candidate));
+  if(explicitErrors){assert.ok(decision.schemes.every(s=>s.candidateReady===false&&s.necessaryReductionEvidence.rows.length>0&&s.ambiguousRemovalEvidence.removal.reason===actualReason));}
+  else assert.ok(decision.schemes.every(s=>/逐规格/.test(s.reason)&&!s.necessaryReductionEvidence));
   assert.equal(decision.selectedType,null);assert.equal(decision.approvalAllowed,false);
   assert.equal(j.priceTarget(f.plan.shopId,f.plan.productId),null);assert.equal(j.list(f.plan.shopId).length,0);
  }finally{j.close();}

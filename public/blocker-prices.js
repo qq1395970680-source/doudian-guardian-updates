@@ -17,10 +17,16 @@ export function createPriceWorkspace({getState,post,toast,node,money,discount,ti
    const comparison=result.comparison?.length?result.comparison:result.review.activityComparison||[];
    const bothReducing=['限时抢购','限量抢购'].every(type=>comparison.filter(s=>s.type===type).length===1&&comparison.find(s=>s.type===type).classification==='reduction-required');
    const scopedTimed=comparison.length===2&&comparison.filter(s=>s.type==='限时抢购'&&s.classification==='reduction-required').length===1&&comparison.filter(s=>s.type==='限量抢购'&&s.classification==='unavailable'&&s.scopeExcluded===true&&s.scopeExclusion==='new-limited-quota-forbidden').length===1;
-   const approvalAllowed=result.approvalAllowed===true&&result.review.approvalAllowed===true&&(bothReducing||scopedTimed)&&!pending&&!record.history;
+   const scopedLimited=comparison.length===2&&comparison.filter(s=>s.type==='限量抢购'&&s.classification==='reduction-required'&&s.candidateReady!==false).length===1&&comparison.filter(s=>s.type==='限时抢购'&&s.classification==='unavailable'&&s.scopeExcluded===true&&s.scopeExclusion==='preserve-limited-quota').length===1;
+   const approvalAllowed=result.approvalAllowed===true&&result.review.approvalAllowed===true&&(bothReducing||scopedTimed||scopedLimited)&&!pending&&!record.history;
    let review={...result.review,activityComparison:comparison,approvalAllowed,approvalBlockedReason:result.approvalBlockedReason||(!approvalAllowed?'可用方案仍待完整核验，后台会继续处理。':null),history:record.history===true,readOnly:result.readOnly===true||!approvalAllowed||record.history===true,canRecalculate:!record.history&&result.review.canRecalculate===true};
    if(card?.source.key===review.key&&card.source.id===review.id){const manual=card.source.options?.find(o=>o.id==='manual-discount');if(manual&&review.manualTypes?.includes(manual.activityType)&&manual.basisKey===review.manualBasisKeys?.[manual.activityType])review={...review,options:[...review.options,manual]};}
    if(card?.signature!==JSON.stringify(review)){card=buildCard(review,card,true);body.replaceChildren(card.el);}const old=body.querySelector('[data-pending-price]');if(old)old.remove();if(pending){const note=node('p','status-note',pendingMessage);note.dataset.pendingPrice='true';body.prepend(note);}
+   body.querySelector('[data-cancel-price-confirmation]')?.remove();
+   if(result.pendingPriceApproval?.state==='pending'){
+    const cancel=node('button','button secondary','撤回本次价格确认');cancel.dataset.cancelPriceConfirmation='true';cancel.disabled=!getState().online;
+    cancel.onclick=async()=>{cancel.disabled=true;try{await post('price-reviews/cancel-confirmation',{shopId:shop,productId,intentId:result.pendingPriceApproval.id});notify('已撤回本次价格确认，继续保留原守护价。');}catch(error){notify(error.message);}finally{void refresh();}};body.append(cancel);
+   }
    const oldRecheck=body.querySelector('[data-current-recheck]');if(oldRecheck)oldRecheck.remove();
    if(result.canRecalculate&&result.recheckReview&&result.recheckReview.id!==review.id&&!pending&&!record.reviewId&&!record.history){
     const panel=node('div','price-review-foot'),button=node('button','button secondary','重新核对当前方案');panel.dataset.currentRecheck='true';panel.append(node('p','helper','当前建议需要重新取证；上方保留的是此前确认的价格。'),button);button.disabled=!getState().online||getState().state?.connection?.shopId!==shop;

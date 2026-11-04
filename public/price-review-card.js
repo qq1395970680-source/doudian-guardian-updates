@@ -28,7 +28,7 @@ export function createPriceReviewCards({getState,post,toast,node,money,discount,
   try{const args={shopId:r.shopId,reviewId:r.id,key:r.key,decision,...(r.dualPairKey?{dualPairKey:r.dualPairKey}:{})};
    if(decision==='approve')Object.assign(args,{acceptBlockedPriceChange:true,acceptPriceAndRisk:true,confirmedSkuIds:card.rows.map(row=>row.id),...(r.kind==='limited-rebuild'?{confirmRebuild:true}:{}),...(card.option?{optionId:card.option.id,optionKey:card.option.key}:{})});
    if(card.option?.id==='manual-discount')Object.assign(args,{manualDiscounts:card.option.discounts,manualActivityType:card.option.activityType});
-   const result=await post(endpoint,args);if(getState().state?.shopId!==r.shopId)return;onReview(result.review);toast(decision==='approve'?'价格已确认，后台将自动核验恢复。进度可在恢复工作台和恢复记录查看。':decision==='decline'?'已保留当前价格，暂不采用这份方案。':'已请求重新核对，取得有效依据后自动更新。');
+   const result=await post(endpoint,args);if(getState().state?.shopId!==r.shopId)return;if(result.queued){toast(result.message||'已收到确切价格确认，后台重新核验一致后继续恢复。');return;}onReview(result.review);toast(decision==='approve'?'价格已确认，后台将自动核验恢复。进度可在恢复工作台和恢复记录查看。':decision==='decline'?'已保留当前价格，暂不采用这份方案。':'已请求重新核对，取得有效依据后自动更新。');
   }catch(error){toast(error.message);}finally{onAction(null);onSettled();}
  }
  function buildCard(source,previous,first){

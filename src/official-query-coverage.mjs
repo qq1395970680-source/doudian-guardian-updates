@@ -1,7 +1,7 @@
 import {fingerprint} from './policy.mjs';
 
 const listPath='/ffa/marketing/tools/limitsales',types=['限时抢购','限量抢购'];
-const fresh=(at,now)=>Number.isSafeInteger(at)&&at>0&&at<=now+5000&&now-at<=120000;
+const fresh=(at,now,maxAgeMs,minObservedAt)=>Number.isSafeInteger(at)&&at>0&&at<=now+5000&&now-at<=maxAgeMs&&(!Number.isSafeInteger(minObservedAt)||at>=minObservedAt);
 
 // This function is self-contained so the dedicated read-only page can evaluate
 // it directly. A missing date field alone is never a coverage observation.
@@ -88,9 +88,10 @@ function statisticsRange(s){
  const parse=(value,end)=>{if(!/^\d{4}[/-]\d{2}[/-]\d{2}$/.test(value))return NaN;const civil=value.replaceAll('/','-');const at=Date.parse(civil+(end?'T23:59:59.999':'T00:00:00.000')+'+08:00');return new Date(at+8*3600000).toISOString().slice(0,10)===civil?at:NaN;};
  const start=parse(d.range[0],false),end=parse(d.range[1],true);return Number.isFinite(start)&&Number.isFinite(end)&&start<=end?{start,end}:null;
 }
-function checked(listing,now){
+function checked(listing,now,{maxAgeMs=120000,minObservedAt=null}={}){
  const scope=listing?.queryScope,q=listing?.query;
- if(listing?.complete!==true||!/^\d+$/.test(listing.shopId||'')||!fresh(listing.observedAt,now)||!q||scope?.source!=='live-platform-list-query-scope'||scope.shopId!==listing.shopId||scope.verified!==true||scope.unchanged!==true||!Number.isSafeInteger(scope.pages)||scope.pages<1||!Array.isArray(listing.campaigns))return 'LISTING_UNPROVEN';
+ if(!Number.isSafeInteger(maxAgeMs)||maxAgeMs<1||maxAgeMs>600000)return 'QUERY_TIME_POLICY_INVALID';
+ if(listing?.complete!==true||!/^\d+$/.test(listing.shopId||'')||!fresh(listing.observedAt,now,maxAgeMs,minObservedAt)||!q||scope?.source!=='live-platform-list-query-scope'||scope.shopId!==listing.shopId||scope.verified!==true||scope.unchanged!==true||!Number.isSafeInteger(scope.pages)||scope.pages<1||!Array.isArray(listing.campaigns))return 'LISTING_UNPROVEN';
  if(!scope.before||!scope.after||fingerprint(surface(scope.before))!==fingerprint(surface(scope.after)))return 'QUERY_SURFACE_CHANGED';
  return inspect(surface(scope.before),q)||inspect(surface(scope.after),q);
 }
@@ -98,16 +99,16 @@ function checked(listing,now){
 // A proof binds the complete listing and the DOM evidence. For a query form
 // without dates, a separate statistics region AND an actual complete listing
 // with older/outside-range activity are required, not mere absent controls.
-export function officialQueryCoverage(listing,{referenceListings=[],now=Date.now()}={}){
+export function officialQueryCoverage(listing,{referenceListings=[],now=Date.now(),maxAgeMs=120000,referenceMaxAgeMs=maxAgeMs,minObservedAt=null}={}){
  const reject=code=>({source:'live-platform-official-query-coverage',complete:false,code,reason:'官方活动查询范围证据尚不完整；保留未知，不据此允许再次提交。'});
  try{
-  const error=checked(listing,now);if(error)return reject(error);
+  const error=checked(listing,now,{maxAgeMs,minObservedAt});if(error)return reject(error);
   const s=surface(listing.queryScope.after),r=s.queryRegion;
   let witness=null;
   if(!r.dateControls.length){
    const range=statisticsRange(s);if(!range)return reject('STATISTICS_SCOPE_UNPROVEN');
    for(const candidate of [listing,...referenceListings]){
-    if(candidate.shopId!==listing.shopId||checked(candidate,now)||signature(surface(candidate.queryScope.after))!==signature(s))continue;
+    if(candidate.shopId!==listing.shopId||checked(candidate,now,{maxAgeMs:referenceMaxAgeMs,minObservedAt})||signature(surface(candidate.queryScope.after))!==signature(s))continue;
     const row=candidate.campaigns.find(c=>/^\d+$/.test(c.id||'')&&types.includes(c.type)&&Number.isFinite(c.startAt)&&Number.isFinite(c.endAt)&&c.endAt>c.startAt&&(c.endAt<range.start||c.startAt>range.end));
     if(row){witness={listingFingerprint:fingerprint(candidate),campaignId:row.id,startAt:row.startAt,endAt:row.endAt};break;}
    }

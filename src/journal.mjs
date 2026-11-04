@@ -21,6 +21,7 @@ import {makeHistoryReconfirmation,assertHistoryReconfirmation} from './history-r
 import {lastInactiveProductEvidence,explicitOnShelfState} from './catalog-visibility.mjs';
 import {activeDualActivityCareGrant,dualDecisionKey,dualDeclineKey,dualDecisionIntentKey,makeDualActivityDecision,getDualActivityDecision,validDualActivityApproval} from './dual-activity-recovery.mjs';
 import {initializeSubmissionArchives,getSubmissionArchive,listSubmissionArchives,retireUnresolvedSubmission,admitSubmissionSuccessor,bindSubmissionSuccessor,assertSubmissionSuccessorBoundary} from './submission-archive.mjs';
+import {assertDualPriceBasis} from './legacy-price-floor.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -280,8 +281,9 @@ export class Journal {
     return this.transaction(()=>{
       requireThat(activeDualActivityCareGrant(this,decision.shopId,now),'DUAL_ACTIVITY_CONSENT_REQUIRED','本店尚未明确授权双方案自动选择');
       requireThat(!this.list(decision.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===decision.productId)),'PENDING','已有未知或执行中的提交，只能独立回读');
-      requireThat(makeDualActivityDecision({plan:decision.plan,probes:decision.probes,now:decision.createdAt,...(decision.scopeRestriction?{scopeRestriction:decision.scopeRestriction,journal:this}:{})}).pairKey===decision.pairKey&&decision.expiresAt>now,'DUAL_PROBE_CHANGED','双方案证据已变化或过期');
-      this.assertPricePlans(decision.shopId,[decision.plan]);
+      const legacyPriceFloor=assertDualPriceBasis(this,decision.plan,now);
+      requireThat(fingerprint(decision.legacyPriceFloor||null)===fingerprint(legacyPriceFloor),'DUAL_PROBE_CHANGED','双方案的旧守护价格下限已变化');
+      requireThat(makeDualActivityDecision({plan:decision.plan,probes:decision.probes,now:decision.createdAt,...(decision.scopeRestriction?{scopeRestriction:decision.scopeRestriction,journal:this}:{}),...(legacyPriceFloor?{legacyPriceFloor,journal:this}:{})}).pairKey===decision.pairKey&&decision.expiresAt>now,'DUAL_PROBE_CHANGED','双方案证据已变化或过期');
       this.supersedePriceReviews(decision.shopId,decision.productId,'本次已分别核验两种活动方案',now,{transaction:false});
       const priorDecline=this.settings(dualDeclineKey(decision.shopId,decision.productId)),suppressed=decision.approvalAllowed&&priorDecline?.intentKey===dualDecisionIntentKey(decision),reviewIds={};
       for(const scheme of decision.schemes){if(!scheme.review)continue;
@@ -296,10 +298,11 @@ export class Journal {
     return this.transaction(()=>{
       const grant=activeDualActivityCareGrant(this,shopId,now),decision=getDualActivityDecision(this,shopId,productId,now);
       requireThat(grant&&decision?.valid&&decision.pairKey===pairKey,'DUAL_PROBE_CHANGED','本店双方案授权、当前守护价或独立依据已变化');
-      const scheme=decision.schemes.find(s=>s.type===decision.selectedType),r=this.priceReview(scheme?.reviewId);
+      const scheme=decision.schemes.find(s=>s.type===decision.selectedType),r=scheme?.reviewId?this.priceReview(scheme.reviewId):null;
       requireThat(scheme?.classification==='non-reducing'&&r?.status==='pending'&&r.dualPairKey===pairKey&&scheme.candidate?.rows.every(row=>row.saleFen>=row.previousFen),'DUAL_REDUCTION_REQUIRED','自动恢复不能采用任何低于当前守护价的规格');
       r.rows=structuredClone(scheme.candidate.rows);if(scheme.candidate.ratio)r.ratio=structuredClone(scheme.candidate.ratio);
-      r.status='approved';r.approvedAt=now;r.approvalKind='automatic-price-increase';r.dualSource={plan:structuredClone(decision.plan),probes:structuredClone(decision.probes),createdAt:decision.createdAt,pairKey:decision.pairKey,...(decision.scopeRestriction?{scopeRestriction:structuredClone(decision.scopeRestriction)}:{})};
+      r.status='approved';r.approvedAt=now;r.approvalKind='automatic-price-increase';r.dualSource={plan:structuredClone(decision.plan),probes:structuredClone(decision.probes),createdAt:decision.createdAt,pairKey:decision.pairKey,...(decision.scopeRestriction?{scopeRestriction:structuredClone(decision.scopeRestriction)}:{}),...(decision.legacyPriceFloor?{legacyPriceFloor:structuredClone(decision.legacyPriceFloor)}:{})};
+      if(decision.legacyPriceFloor)r.legacyPriceFloor=structuredClone(decision.legacyPriceFloor);
       r.selectedOption={id:'dual-balanced',key:scheme.candidate.key,label:'双方案守护：已独立核验的不降价方案',activityType:r.type};
       r.automaticConsent={dualGrantId:grant.id,targetsFingerprint:fingerprint(r.rows),sourceFingerprint:fingerprint(r.dualSource),continueGuardingExactPrices:true};
       requireThat(validDualActivityApproval(this,r),'DUAL_APPROVAL_CHANGED','双方案确切价格或来源无法完整重放核验');

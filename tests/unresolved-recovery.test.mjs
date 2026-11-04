@@ -4,6 +4,7 @@ import {fingerprint,planOriginalRestore,proveDraft} from '../src/policy.mjs';
 import {makeSubmissionInvestigation,submissionQueryScope,submissionTaskFingerprint} from '../src/submission-investigation.mjs';
 import {consentForTasks,validateUnresolvedRecoveryConsent,makeRetirement,successorLossKey,validateRetiredTask} from '../src/unresolved-recovery.mjs';
 import {dualProbePlan} from '../src/dual-activity-recovery.mjs';
+import {campaignChoice} from '../src/campaign-choice.mjs';
 
 function fixture({limited=false,age=16*3600000}={}){
  const now=1793754000000,at=now-age,shopId='900001',productId='300001',type=limited?'限量抢购':'限时抢购';
@@ -41,7 +42,7 @@ test('a scoped current recovery intent can retire a future-window historical unk
  const again=f.retire();assert.equal(again.closure.id,result.closure.id);assert.equal(again.newCycleKey,result.newCycleKey);assert.equal(successorLossKey(result.closure,'fresh-loss'),successorLossKey(again.closure,'fresh-loss'));assert.notEqual(successorLossKey(result.closure,'fresh-loss'),'old-loss');
 });
 test('exact inactive non-soldout limited source and actual quota proof survive in the non-success closure',()=>{
- const f=fixture({limited:true}),r=f.retire();assert.equal(r.allowed,true,JSON.stringify(r));assert.equal(r.closure.quantityBounds[0].sourceCampaignId,'400001');assert.equal(r.closure.quantityBounds[0].maxActivityLimit,1000);assert.equal(r.closure.noQuotaIncrease,true);assert.equal(f.task.riskAttempts,0);
+ const f=fixture({limited:true}),r=f.retire();assert.equal(r.allowed,true,JSON.stringify(r));assert.equal(r.closure.quantityBounds[0].sourceCampaignId,'400001');assert.equal(r.closure.quantityBounds[0].maxActivityLimit,1000);assert.deepEqual(r.closure.allowedTypes,['限量抢购']);assert.equal(r.closure.perProduct[0].preserveLimitedQuota,true);assert.equal(r.closure.noQuotaIncrease,true);assert.equal(f.task.riskAttempts,0);
 });
 for(const change of ['runtime','shop','other-task','expired','counter','risk-proof','draft-proof','price','omitted-ack'])test('incident consent cannot transfer authority or hide changed original material: '+change,()=>{
  const f=fixture();let c=f.consent,t=f.task,ctx={runtimeId:f.context.runtimeId,now:f.now};
@@ -163,4 +164,35 @@ test('ten-minute history tolerance never extends the latest current/upcoming 120
 });
 test('historical evidence older than the ten-minute bound remains blocked',()=>{
  const f=fixture();shiftReads(f.raws[0],-601000);f.context.actorExit.observedAt=f.now-610000;assert.equal(f.retire().code,'UNRESOLVED_INVESTIGATION');
+});
+test('two long investigations retain old all-status history and details but require genuinely refreshed final current queries',()=>{
+ const f=fixture();f.context.actorExit.observedAt=f.now-400000;
+ for(const [index,raw] of f.raws.entries()){
+  const finish=f.now-(index===0?170000:1000);raw.startedAt=finish-144567;raw.finishedAt=finish;
+  raw.titleQuery.listing.observedAt=finish-1000;
+  const all=raw.productQueries.find(p=>p.status===null);all.listing.observedAt=finish-130083;
+  const campaign={id:'400009',name:'实际历史结束活动',type:'限时抢购',status:'已结束',startAt:f.task.createdAt-100000,endAt:f.task.createdAt-1000};all.listing.campaigns=[campaign];
+  raw.details=[{campaignId:campaign.id,shopId:f.task.shopId,campaign,detail:{complete:true,observedAt:finish-125000,products:[{productId:'300001',removalConfirmed:true,removalAmbiguous:false}]}}];
+  for(const p of raw.productQueries.filter(p=>p.status!==null))p.listing.observedAt=finish-2000;
+ }
+ assert.equal(f.retire().allowed,true,JSON.stringify(f.retire()));
+ const current=f.raws[1].productQueries.find(p=>p.status==='进行中');current.listing.observedAt=f.now-120001;
+ assert.equal(f.retire().allowed,false,'history tolerance cannot substitute for fresh current ownership');
+});
+function timedIntentLimitedLoss(){
+ const f=fixture();f.task.riskAttempts=1;f.task.riskAttemptedAt=f.task.submittedAt+1;
+ const observation={...structuredClone(f.task.draftProof.observation),observedAt:f.task.riskAttemptedAt,dialogs:['1 个商品存在低价风险，请谨慎新建 ID：300001 预估最低到手价 仍要创建']};
+ f.task.riskProof={taskId:f.task.id,kind:'original-discount-risk',at:f.task.riskAttemptedAt,observation};
+ f.task.lossEvidence.priceRules=[{removalEvidence:{source:'live-platform-removal-export',campaignId:'400003',activityType:'限量抢购',record:{productId:'300001'}}}];
+ const grant={schema:1,id:'current-dual-consent',shopId:f.task.shopId,source:'human-app-dual-activity-consent',mode:'both-types-original-first-no-reductions',allowBothActivityTypes:true,allowMatchedRisk:true,choices:['限时抢购','限量抢购'].map(campaignChoice),at:f.now-1000};f.context.activityGrant={...grant,key:fingerprint(grant)};
+ f.consent=consentForTasks([f.task],f.options,f.now);f.context.actorExit.taskFingerprint=submissionTaskFingerprint(f.task);
+ for(const raw of f.raws){raw.taskFingerprint=submissionTaskFingerprint(f.task);const c={id:'400003',name:'当次实际限量失效来源',type:'限量抢购',status:'已失效',startAt:f.task.createdAt-7*86400000,endAt:f.task.createdAt-1000},detail={complete:true,observedAt:raw.finishedAt-1,rules:campaignChoice('限量抢购').rules,products:[{productId:'300001',activityLimit:1000,soldOut:false,removalConfirmed:true,removalAmbiguous:false,skus:f.task.plans[0].skus}]};raw.productQueries[0].listing.campaigns=[c];raw.details=[{campaignId:c.id,shopId:f.task.shopId,campaign:c,detail}];}
+ const entry=f.raws[1].details[0];f.context.quantityProofs=[{source:'live-platform-limited-quota',complete:true,shopId:f.task.shopId,productId:'300001',campaignId:'400003',historicalFingerprint:f.task.plans[0].historicalFingerprint,observedAt:entry.detail.observedAt,soldOut:false,activityLimit:1000,evidenceFingerprint:fingerprint({campaign:entry.campaign,detail:entry.detail})}];return f;
+}
+test('a timed unknown with risk already consumed and a different actual limited loss retains only bounded limited recovery',()=>{
+ const f=timedIntentLimitedLoss(),before=fingerprint(f.task),r=f.retire();assert.equal(r.allowed,true,JSON.stringify(r));assert.deepEqual(r.closure.allowedTypes,['限量抢购']);assert.deepEqual(r.closure.priceFloors[0].allowedTypes,['限量抢购']);assert.deepEqual(r.closure.perProduct[0].allowedTypes,['限量抢购']);assert.equal(r.closure.perProduct[0].preserveLimitedQuota,true);assert.equal(r.closure.perProduct[0].sourceCampaignId,'400003');assert.equal(r.closure.quantityBounds[0].maxActivityLimit,1000);assert.equal(r.closure.quantityBounds[0].sourceCampaignId,'400003');assert.equal(r.closure.sourceReferences.find(s=>s.kind==='price-template').type,'限时抢购');assert.equal(r.closure.sourceReferences.find(s=>s.kind==='recorded-loss').type,'限量抢购');assert.equal(fingerprint(f.task),before);assert.equal(f.task.riskAttempts,1);assert.equal(r.closure.historicalOutcome,'unknown');
+});
+for(const fault of ['no-dual-consent','sold-out','expired-quota','missing-quota'])test('an actual limited source cannot be bypassed by timed recovery when '+fault,()=>{
+ const f=timedIntentLimitedLoss();if(fault==='no-dual-consent')delete f.context.activityGrant;if(fault==='sold-out')f.raws[1].details[0].detail.products[0].soldOut=true;if(fault==='expired-quota')f.context.quantityProofs[0].observedAt=f.now-120001;if(fault==='missing-quota')f.context.quantityProofs=[];
+ const r=f.retire();assert.equal(r.allowed,false);assert.equal(r.code,fault==='no-dual-consent'?'UNRESOLVED_ACTIVITY_AUTHORITY':'UNRESOLVED_QUANTITY');
 });

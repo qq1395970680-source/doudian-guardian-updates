@@ -162,17 +162,17 @@
   {
     "path": "package-lock.json",
     "bytes": 128605,
-    "sha256": "5F732523435AA4EA5D4FA4479BC37298910DFCA9CA6790AE1FBBC3FB9558F51A"
+    "sha256": "BEBBFCE8948743E8570D1E00E5C9E93B51F96ECBA1FBA04C2D22AB3EE76A0C5C"
   },
   {
     "path": "package.json",
     "bytes": 898,
-    "sha256": "F428415AEDDB25AE2230FB4FE29D4F1510C8543ECAEED2FFFB6AABBB6BB570D0"
+    "sha256": "F1913D3BC6112B8BA2C507ABDFA2AA458AC2CD4A4E088A349E71FCBC55335386"
   },
   {
     "path": "public\\activity-prices.js",
-    "bytes": 3110,
-    "sha256": "FB1D257BFC12A7D48E12DDB07A8BCBDDEB46D6A59E0D6E8F1CEE491162E7378C"
+    "bytes": 3143,
+    "sha256": "6D51A1D7A3923364FCCDC016752335CA9B3D779D1B62CE42B59250A6FFE8F558"
   },
   {
     "path": "public\\app.css",
@@ -181,13 +181,13 @@
   },
   {
     "path": "public\\app.js",
-    "bytes": 38851,
-    "sha256": "72A4C320826D51C95E8D3060257D40CD72D93265B822D1E74EB6415EDBD9CD10"
+    "bytes": 39980,
+    "sha256": "EFFC517EF2F1BED2205101E632AAA142492159D6CDB2D0E4228C7394323EF5CD"
   },
   {
     "path": "public\\blocker-prices.js",
-    "bytes": 7681,
-    "sha256": "306000E806498C7A3FFCB4A289FAC91678ED27C5B49D8E3DCFC473B53F3B2AFC"
+    "bytes": 8635,
+    "sha256": "7A17F327A3A75E1D3F124A9278903DD92AB1BC082AB6E3051C943679DE9BF934"
   },
   {
     "path": "public\\guardian.png",
@@ -196,8 +196,8 @@
   },
   {
     "path": "public\\index.html",
-    "bytes": 28355,
-    "sha256": "00F3F0C410E0DF81098E006F4B13DAB453002063A00B9F72558C9FC5BB43F8A4"
+    "bytes": 28373,
+    "sha256": "F6BDAB4E74E1FF5791330E751B6717E6F9FD931A2E02A2D6F47E03F883F71772"
   },
   {
     "path": "public\\migration.js",
@@ -206,8 +206,8 @@
   },
   {
     "path": "public\\price-review-card.js",
-    "bytes": 15636,
-    "sha256": "180E42B4A635C685785B9EE362CDF60B07F1919455B871222B9865BCE36AFBDF"
+    "bytes": 15760,
+    "sha256": "49C7CA5FA05A01517B1187DB837F172BC16510B3B116EE0EF76C5B687F4402D5"
   },
   {
     "path": "public\\price-reviews.js",
@@ -410,6 +410,11 @@
     "sha256": "B0E54DE7347A0DB1938EB692C3370BE7F517356B89F8907A5A563BB4201D9707"
   },
   {
+    "path": "src\\catalog-attention.mjs",
+    "bytes": 5103,
+    "sha256": "897B2967B97B9C95BC5973E14B925549FA62D90C300705897386818D3C698935"
+  },
+  {
     "path": "src\\catalog-visibility.mjs",
     "bytes": 3123,
     "sha256": "C8590B5FDE668A2350C8B9B10FAC65C4EEA64A482055319FC5DF5BD0F2CAED3D"
@@ -456,8 +461,8 @@
   },
   {
     "path": "src\\dual-activity-recovery.mjs",
-    "bytes": 28964,
-    "sha256": "C54914F2DEB808C65EC5F332080A4588945A0D40375761AA1C3A29247696BB8F"
+    "bytes": 35450,
+    "sha256": "7ADBD844A46B0CF3E4293D25F7BCF30DE0B4A83BC9EC499DA905560223A0E392"
   },
   {
     "path": "src\\history-reconfirmation.mjs",
@@ -466,8 +471,13 @@
   },
   {
     "path": "src\\journal.mjs",
-    "bytes": 58757,
-    "sha256": "D7DCB97A2E5B6BB04FAEA407F4755C5353BF714D6266E0C6E23236E6B61DE027"
+    "bytes": 59268,
+    "sha256": "AFCF952ACA945346A670557507C5EE492D0F936AE15832E5036CA39225472992"
+  },
+  {
+    "path": "src\\legacy-price-floor.mjs",
+    "bytes": 10065,
+    "sha256": "676204F60B06164C08E94296B004859A0272B267F2508D1F80BA6CA582F54BB8"
   },
   {
     "path": "src\\limited-continuity.mjs",
@@ -491,8 +501,8 @@
   },
   {
     "path": "src\\official-query-coverage.mjs",
-    "bytes": 11580,
-    "sha256": "C62BAD83BC604C2BADE26DE5CA7ACCABF4B3E9D6F2D099303E08340A7110ED2B"
+    "bytes": 11958,
+    "sha256": "9E3BE7FF5A5F6458CB04867C1AE3983B3BE7E2F1ADE478EFD7635AAC0ACA42F4"
   },
   {
     "path": "src\\original-price-recovery-policy.mjs",
@@ -511,13 +521,18 @@
   },
   {
     "path": "src\\platform.mjs",
-    "bytes": 86462,
-    "sha256": "80049D120A3ECB33220E38559B432870B5D532B35E47DEF2FA15765C27544AE0"
+    "bytes": 89611,
+    "sha256": "3134D468363846E87F57E6EB57CC052695BB56638F0CE6B8D5631820CCE9B77A"
   },
   {
     "path": "src\\policy.mjs",
     "bytes": 15420,
     "sha256": "84235FB4CF9D920ECD3BE27E9A0561C850986F7D6726C9CEC82900C3D1EE25AE"
+  },
+  {
+    "path": "src\\price-approval-intent.mjs",
+    "bytes": 12788,
+    "sha256": "CBC5680FB3DAC85FE849B9427BD16453ED86150C817F4EDF95D18CD6E10352A4"
   },
   {
     "path": "src\\price-constraints.mjs",
@@ -541,8 +556,8 @@
   },
   {
     "path": "src\\price-review.mjs",
-    "bytes": 5109,
-    "sha256": "0DE73A2265FCF4201B8192FF3E9B1F097859C2679189F0055075506A9ED3CFB8"
+    "bytes": 7437,
+    "sha256": "1E45898378955F463BA4325F7AE5E9040D2767791A28A950C00AD08D9EF9EB46"
   },
   {
     "path": "src\\priority-watch.mjs",
@@ -611,8 +626,8 @@
   },
   {
     "path": "src\\recovery-workspace.mjs",
-    "bytes": 5403,
-    "sha256": "55BB0E3F01A515A1CA3CBED1464D74E7D5414B56C5E67AD401E162B99FF4C5E5"
+    "bytes": 5773,
+    "sha256": "96C65609741FA99ADA2F90F18E4461FC2572DFA31D02C266328770680B3665EE"
   },
   {
     "path": "src\\removal-export.mjs",
@@ -626,13 +641,13 @@
   },
   {
     "path": "src\\server.mjs",
-    "bytes": 39909,
-    "sha256": "8E1514E504E21A6CE661DBD7A8C31F867D88CC427877EA400E3A63B138A165B4"
+    "bytes": 41818,
+    "sha256": "B9BED733992137E88F531A2198100F8293E02442AC96FF90F82E2DBBFD9E1437"
   },
   {
     "path": "src\\service.mjs",
-    "bytes": 78958,
-    "sha256": "EDA6700CF6E4EFAE0786A5538724AA89950C49CA3FF3FFF7D5C9D9F871283F02"
+    "bytes": 87545,
+    "sha256": "1FAC90E03D33A61044DA0CA06794F850B2CF3F0A85CB9A5A35A81B088C5CE47D"
   },
   {
     "path": "src\\submission-archive.mjs",
@@ -641,8 +656,8 @@
   },
   {
     "path": "src\\submission-investigation.mjs",
-    "bytes": 12386,
-    "sha256": "134A9793E6C8DA82707E169F8E185E376D74039684BEFC2C7EC38C2384C6C308"
+    "bytes": 15049,
+    "sha256": "B78E76ABAC5E2C98AFF7C74A0A6CFD13000D5D7DC79E55633F1FEC3B9CBFCF75"
   },
   {
     "path": "src\\timed-removal.mjs",
@@ -651,8 +666,8 @@
   },
   {
     "path": "src\\unresolved-recovery.mjs",
-    "bytes": 23854,
-    "sha256": "040D914B15357C6E9C5639B1ABEEFD72CBB2C8EF2FE21C3CA6D21A2A468BCC1F"
+    "bytes": 24726,
+    "sha256": "502A50C23AE6B5A6C48C6B60EEFBCD4EE100A6471C9EB6F7CF63CC88FB49F93B"
   },
   {
     "path": "src\\updates.mjs",
@@ -672,7 +687,7 @@
   {
     "path": "src\\workspace-ownership.mjs",
     "bytes": 4394,
-    "sha256": "210CACDB33FDDE033E55FCE55ECE11EED67B79FD8BB7212BB3042FEB6D0C675D"
+    "sha256": "761F76765FF94D026A776AECC78C1C697872EF5531CDC3FE65B0CBC937538773"
   },
   {
     "path": "Start.ps1",
@@ -850,6 +865,11 @@
     "sha256": "BE12B1A7B3504C494F4B6EBEEA0941530642DA9516269C20DB143BF458F0C375"
   },
   {
+    "path": "tests\\browser\\catalog-attention-api-ui.test.mjs",
+    "bytes": 9673,
+    "sha256": "4BCBF5F1C9D6456EAEAF366290641844B3B855A607231523BFF6DC457AD45F02"
+  },
+  {
     "path": "tests\\browser\\catalog-freshness.test.mjs",
     "bytes": 2110,
     "sha256": "6D9FF0C761B638BA215080497505BF6634A02E8479FFCA50B1C9A52F32C7E4D3"
@@ -908,6 +928,11 @@
     "path": "tests\\browser\\empty-alert.test.mjs",
     "bytes": 2782,
     "sha256": "3B1B75871BD8174D29D4E5281A88D60D6A548F8D3BDA5B14C8C6AA4624B9C2FA"
+  },
+  {
+    "path": "tests\\browser\\ero-confirmation-api-ui.test.mjs",
+    "bytes": 10901,
+    "sha256": "FF8ECDDDC4BDE5FA0A92F5019CBED35CF848A84C56A6B5ECDE7BEA518F739F87"
   },
   {
     "path": "tests\\browser\\exact-duration.test.mjs",
@@ -1180,6 +1205,11 @@
     "sha256": "ABF51FB5FCB443ABA6DDEE4C645A3BC314379005DCA45A035C69F4239A92AE09"
   },
   {
+    "path": "tests\\browser\\submission-terminal-refresh.test.mjs",
+    "bytes": 12111,
+    "sha256": "2CA180448E61DD5A1342A696BF9B4C6AA6DC450895A0F87498DACFA74FC29B11"
+  },
+  {
     "path": "tests\\browser\\submit-label.test.mjs",
     "bytes": 2478,
     "sha256": "2D3C374B3D8682A113D0BCE1ADA57F8114D53E8C8B553F0C32189706C6344626"
@@ -1243,6 +1273,11 @@
     "path": "tests\\care-recovery.test.mjs",
     "bytes": 10393,
     "sha256": "BE45EA14936444DCAD39B2AE0DB3E10C23FF9BDED7D997B47425BF1BAB17B7C8"
+  },
+  {
+    "path": "tests\\catalog-attention.test.mjs",
+    "bytes": 12770,
+    "sha256": "07251714A5727FD79CA19FDDAEB1F9EC3797EE99F4448A26F251D584995B8348"
   },
   {
     "path": "tests\\catalog.test.mjs",
@@ -1336,8 +1371,8 @@
   },
   {
     "path": "tests\\dual-scheme-acceptance.test.mjs",
-    "bytes": 11298,
-    "sha256": "0B82C8909F6464FE649B0AF34C7736AEF43C6A37C8F2E9BC41820AC59AF8F471"
+    "bytes": 11504,
+    "sha256": "362DB859B70DC53A2A2FA1BED0E679B8CD50BAD10C04755FE5262E57AFE26A72"
   },
   {
     "path": "tests\\durability.test.mjs",
@@ -1348,6 +1383,11 @@
     "path": "tests\\duration-policy.test.mjs",
     "bytes": 3535,
     "sha256": "9522C4540E472936DAA7702D647445A4879316647DC7CD4BC160A2EF14FA5337"
+  },
+  {
+    "path": "tests\\ero-dual-proposal.test.mjs",
+    "bytes": 10348,
+    "sha256": "8B6931BC938F2C31D5DE224081389915FC5AD734EE7B7F2C97B9D00A3EC742A2"
   },
   {
     "path": "tests\\expired-price-display.test.mjs",
@@ -1405,9 +1445,19 @@
     "sha256": "9E69231792B1F0A85C32A04F94DAAE510F262E0A1DE2C665235FB2F71A0B5ACD"
   },
   {
+    "path": "tests\\helpers\\ero-dual-proposal-fixture.mjs",
+    "bytes": 4037,
+    "sha256": "1719189DB82E3145A6AF1AC361F097788105C1DD4652D2B1891FF0B917B7A1FD"
+  },
+  {
     "path": "tests\\helpers\\large-price-queue-fixture.mjs",
     "bytes": 749,
     "sha256": "ED942984ED7DCAA323EEA503EDB5F3B79B5F29CE39160BF990F4E800AB39460A"
+  },
+  {
+    "path": "tests\\helpers\\legacy-price-floor-fixture.mjs",
+    "bytes": 5197,
+    "sha256": "D686E8E40B6C51E1E23A53AE1E989E64AEA555FAACBCC60EBA391E5E61FE5EB4"
   },
   {
     "path": "tests\\helpers\\price-review-fixture.mjs",
@@ -1436,8 +1486,8 @@
   },
   {
     "path": "tests\\helpers\\unresolved-dual-fixture.mjs",
-    "bytes": 5587,
-    "sha256": "C113B07BA5F0A6BA2D6FE6BCEB8EB69821EA64E87DEC080870BD13AA4B098F73"
+    "bytes": 7263,
+    "sha256": "0826B0F87FD59FE3BD496785CC1E194F0CB72B36EE75B9AC59787412A737F0DB"
   },
   {
     "path": "tests\\helpers\\workspace-queue-catalog-fixture.mjs",
@@ -1500,6 +1550,16 @@
     "sha256": "79FD13A9D027C8743C556DA0A44511537AF1D47810CC7E57CC74281DB632E9B4"
   },
   {
+    "path": "tests\\legacy-price-floor-journal.test.mjs",
+    "bytes": 10026,
+    "sha256": "463EA7FD7ACE509E8F19CE30BC356BABBBD8211202268330D8CFD85D147277B0"
+  },
+  {
+    "path": "tests\\legacy-price-floor.test.mjs",
+    "bytes": 5375,
+    "sha256": "DA0F7155E090ECC7C54A8D24C4434030B1E152876550D2C810D61A8F210D82E1"
+  },
+  {
     "path": "tests\\lifecycle.test.mjs",
     "bytes": 3275,
     "sha256": "5A24F49783436212C863C5FDE0C887AA71148C23EF1A765136F6DEF6399FBC86"
@@ -1556,8 +1616,8 @@
   },
   {
     "path": "tests\\official-query-coverage.test.mjs",
-    "bytes": 8198,
-    "sha256": "4A34ACE3C94F9CF92E3000C67B8BF8B6EC10EE9155D6430B340ABB8D9C622851"
+    "bytes": 9210,
+    "sha256": "06E5572272C17E5EDC06658F33DD3F51DC5767C3DA585787ACD002901243440C"
   },
   {
     "path": "tests\\onboarding.test.mjs",
@@ -1610,9 +1670,24 @@
     "sha256": "48BC358FC3AF3DAE4FAD8DD4E14C95610294C9BD271AFD1564A415F92524583E"
   },
   {
+    "path": "tests\\preserved-limited-dual.test.mjs",
+    "bytes": 10395,
+    "sha256": "FA52E12AEB757381D62A2947F0FD4CA36B9EC0EA47F1A24E9C13A3D402303899"
+  },
+  {
     "path": "tests\\preview.test.mjs",
     "bytes": 3003,
     "sha256": "17EA184818A79E57417E49042F4F43D507A40E44DA5940210EEE0A023E745E89"
+  },
+  {
+    "path": "tests\\price-approval-intent.test.mjs",
+    "bytes": 10616,
+    "sha256": "107A6493A178AE8B2BAF83EE5FFE1045A751720FA30C86A25C27A9F9543BBEDF"
+  },
+  {
+    "path": "tests\\price-approval-revalidation-service.test.mjs",
+    "bytes": 12885,
+    "sha256": "D7F44B2DDAA3F131051FD6D8A9924F237F0A152C09726DCE90B0C2704B814D75"
   },
   {
     "path": "tests\\price-constraints.test.mjs",
@@ -1761,18 +1836,18 @@
   },
   {
     "path": "tests\\recovery-workspace-api.test.mjs",
-    "bytes": 7196,
-    "sha256": "911F568F156C42B3E085F82E24E7EE2BEF7A14DEA6DDBD04ABDC53A04E89CA1E"
+    "bytes": 7692,
+    "sha256": "C29C25ABE1E867865C75B0B1EE4F32A91A031531E26D6BD7EAB859C006551556"
   },
   {
     "path": "tests\\removal-export.test.mjs",
     "bytes": 3446,
-    "sha256": "9310364A2A8502264EC5327FB600EECFA230171279D7B76DEB7507CE4A34F45D"
+    "sha256": "B798D5B41B01345B6539ADDA88482A1057F90FE0E6D9B21E2DC1C07FBF008D6A"
   },
   {
     "path": "tests\\removal-ratio-ambiguity.test.mjs",
-    "bytes": 4626,
-    "sha256": "D07143CE8D35156F0297C908B5B0C982084A01B46F6CD3364F4A07096F34DD2F"
+    "bytes": 4949,
+    "sha256": "7185C334A5C49C71BFF0FD297B34833767601FEACC01983F0CA56B15602F9385"
   },
   {
     "path": "tests\\restart-unsubmitted.test.mjs",
@@ -1821,8 +1896,8 @@
   },
   {
     "path": "tests\\submission-investigation.test.mjs",
-    "bytes": 14317,
-    "sha256": "15254E0982EF933C00705C4CB750F764C78EDAD8672D5C0E4B88291009FF45D2"
+    "bytes": 17868,
+    "sha256": "BC5C064A0443AD489A6590692D26ED393AF1DB8E9A77B014EAAE46AB2C66F50B"
   },
   {
     "path": "tests\\timed-cached-loss-refresh.test.mjs",
@@ -1836,13 +1911,13 @@
   },
   {
     "path": "tests\\unresolved-dual-scope.test.mjs",
-    "bytes": 11028,
-    "sha256": "A1569301E7D9A174E62CA13D7C6E95BCC6FA6594AF577073AF69144D9C66A0F9"
+    "bytes": 11276,
+    "sha256": "0CECA4A1CB91C5DEA579A217BD8C8C4DB2833E03B63013D7A26625642BF1DAAA"
   },
   {
     "path": "tests\\unresolved-recovery.test.mjs",
-    "bytes": 21093,
-    "sha256": "0218A56E7E33A2239E894BA8F4F65A47B179212A8910B28A83BA470CB8A9B983"
+    "bytes": 26265,
+    "sha256": "0DBB031E4F908168F557F9F04EB662DDB9B479F426A08A734D0ECAFC6DBD2B89"
   },
   {
     "path": "tests\\unresolved-service.test.mjs",

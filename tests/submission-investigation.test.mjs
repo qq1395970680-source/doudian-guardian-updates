@@ -120,3 +120,30 @@ run('explicit all-types and ordinary pagination size remain compatible with the 
  const query={productId:null,title:f.task.title,status:null},l=f.listing(query);
  for(const s of [l.queryScope.before,l.queryScope.after])s.selections.push('全部活动类型','10 条/页');assert.equal(assessSubmissionQuery(l,query,f.task,f.now).complete,true);
 });
+run('a real 145-second historical investigation diagnoses the actual expired current query instead of rejecting its valid title scope',f=>{
+ const raw=f.raw();raw.startedAt=f.now-144567;raw.titleQuery.listing.observedAt=f.now-137960;
+ raw.productQueries[0].listing.observedAt=f.now-122917;raw.productQueries[1].listing.observedAt=f.now-116536;
+ const before=JSON.stringify(raw),result=adjudicateSubmissionInvestigation(f.task,raw,{now:f.now});
+ assert.equal(result.classification,'not-found');assert.equal(result.titleScope.complete,true);assert.equal(result.titleScope.maxAgeMs,600000);
+ assert.equal(result.currentQueriesComplete,false);assert.equal(result.products[0].statuses[0].code,'QUERY_EXPIRED');assert.equal(result.products[0].statuses[1].complete,true);
+ assert.match(result.reason,/123 秒.*120 秒/);assert.equal(result.authorizesSubmit,false);assert.equal(result.mayCloseUnknown,false);assert.equal(JSON.stringify(raw),before);
+});
+run('canonical fresh final queries can complete a long diagnostic while initial observations remain audit-only',f=>{
+ const raw=f.raw(),initialTitleQuery=structuredClone(raw.titleQuery),initialProductQueries=structuredClone(raw.productQueries);
+ initialTitleQuery.listing.observedAt=f.now-137960;initialProductQueries.forEach(p=>p.listing.observedAt=f.now-122917);
+ const read=makeSubmissionInvestigation(f.task,{startedAt:f.now-144567,finishedAt:f.now,titleListing:raw.titleQuery.listing,productQueries:raw.productQueries,initialTitleQuery,initialProductQueries});
+ const result=adjudicateSubmissionInvestigation(f.task,read,{now:f.now});assert.equal(result.currentQueriesComplete,true);assert.equal(result.classification,'not-found');assert.equal(result.mayCloseUnknown,false);
+ assert.equal(read.initialTitleQuery.listing.observedAt,f.now-137960);assert.equal(read.initialProductQueries[0].listing.observedAt,f.now-122917);
+ read.productQueries=[];assert.equal(adjudicateSubmissionInvestigation(f.task,read,{now:f.now}).currentQueriesComplete,false,'audit-only arrays cannot supply missing canonical reads');
+});
+run('ten-minute diagnostic history never makes an old active title a successful current readback',f=>{
+ const raw=f.raw([f.campaign],[{campaignId:f.campaign.id,shopId:f.shopId,detail:f.detail}]);raw.startedAt=f.now-144567;raw.titleQuery.listing.observedAt=f.now-137960;
+ const result=adjudicateSubmissionInvestigation(f.task,raw,{now:f.now});assert.equal(result.classification,'unproven');assert.equal(result.titleScope.complete,true);assert.equal(result.currentTitle.code,'QUERY_EXPIRED');assert.equal(result.receipt,undefined);
+});
+for(const fault of ['shop','filter','time','before-frame','excessive-policy'])run('query diagnostics identify the actual failed boundary: '+fault,f=>{
+ const query={productId:null,title:f.task.title,status:null},listing=f.listing(query),options={};
+ if(fault==='shop')listing.shopId='900002';if(fault==='filter')listing.queryScope.after.selectedFilters=[{kind:'checkbox',label:'仅我创建'}];
+ if(fault==='time')listing.observedAt=f.now-120001;if(fault==='before-frame')options.minObservedAt=f.now+1;if(fault==='excessive-policy')options.maxAgeMs=600001;
+ const result=assessSubmissionQuery(listing,query,f.task,f.now,options),expected={shop:'QUERY_SHOP_MISMATCH',filter:'QUERY_FILTER_UNPROVEN',time:'QUERY_EXPIRED','before-frame':'QUERY_OUTSIDE_INVESTIGATION','excessive-policy':'QUERY_TIME_POLICY_INVALID'};
+ assert.equal(result.complete,false);assert.equal(result.code,expected[fault]);assert.ok(result.issues.some(i=>i.code===expected[fault]));
+});

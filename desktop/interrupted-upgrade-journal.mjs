@@ -9,9 +9,11 @@ import {probeService} from './service-controller.mjs';
 const observation=/^(campaign:|campaign-attempt:|catalog-view:|priority-watch:|patrol-display:|preview:)/;
 const open=path=>new DatabaseSync(path,{readOnly:true,timeout:3000});
 const rows=(db,table)=>db.prepare('SELECT * FROM '+table+' ORDER BY rowid').all();
+const optionalRows=(db,table)=>db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)?rows(db,table):[];
 function snapshot(db){
  requireThat(db.prepare('PRAGMA quick_check').get().quick_check==='ok','UPGRADE_DATABASE_INVALID','数据库完整性检查未通过');
- const tasks=rows(db,'tasks'),protectedTables=['price_reviews','price_targets','baselines','product_checks'].map(table=>({table,rows:rows(db,table)}));
+ const tasks=rows(db,'tasks'),protectedTables=[...['price_reviews','price_targets','baselines','product_checks'].map(table=>({table,rows:rows(db,table)})),
+  ...['submission_archives','submission_successors'].map(table=>({table,rows:optionalRows(db,table)}))];
  const settings=rows(db,'settings').filter(r=>!observation.test(r.shop));
  return{tasks,protectedFingerprint:fingerprint({protectedTables,settings}),application:JSON.parse(settings.find(r=>r.shop==='application')?.body||'{}')};
 }

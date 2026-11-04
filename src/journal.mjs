@@ -20,6 +20,7 @@ import {activeOriginalPriceRecoveryGrant,validOriginalPriceApproval} from './ori
 import {makeHistoryReconfirmation,assertHistoryReconfirmation} from './history-reconfirmation.mjs';
 import {lastInactiveProductEvidence,explicitOnShelfState} from './catalog-visibility.mjs';
 import {activeDualActivityCareGrant,dualDecisionKey,dualDeclineKey,dualDecisionIntentKey,makeDualActivityDecision,getDualActivityDecision,validDualActivityApproval} from './dual-activity-recovery.mjs';
+import {initializeSubmissionArchives,getSubmissionArchive,listSubmissionArchives,retireUnresolvedSubmission,admitSubmissionSuccessor,bindSubmissionSuccessor,assertSubmissionSuccessorBoundary} from './submission-archive.mjs';
 
 const transitions = {
   queued: ['prepared', 'blocked'], prepared: ['submitting', 'blocked'],
@@ -45,6 +46,7 @@ export class Journal {
     this.db.exec(`CREATE TABLE IF NOT EXISTS price_reviews(id TEXT PRIMARY KEY, shop TEXT NOT NULL, product TEXT NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL, updated INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS price_targets(shop TEXT NOT NULL, product TEXT NOT NULL, review TEXT NOT NULL, PRIMARY KEY(shop,product));
       CREATE INDEX IF NOT EXISTS price_reviews_shop_state_updated ON price_reviews(shop,state,updated DESC);`);
+    initializeSubmissionArchives(this.db);
   }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -65,23 +67,29 @@ export class Journal {
     return row ? { id: row.id, shopId: row.shop, phase: row.phase, updatedAt: row.updated, ...JSON.parse(row.body) } : null;
   }
   list(shopId) { return this.db.prepare('SELECT id FROM tasks WHERE shop=? ORDER BY updated DESC').all(shopId).map(row => this.get(row.id)); }
+  retireUnresolved(taskId,retirement,now=Date.now()){return retireUnresolvedSubmission(this,taskId,retirement,now);}
+  unresolvedRecovery(taskId){return getSubmissionArchive(this,taskId);}
+  unresolvedRecoveries(shopId){return listSubmissionArchives(this,shopId);}
   enqueue(shopId, plans, lossEvidence, now = Date.now()) {
     requireThat(plans.length && plans.every(p => p.shopId === shopId), 'SHOP_MISMATCH', '任务不能跨店');
     assertRecoveryCapacity(plans);
     requireThat(lossEvidence?.complete === true && lossEvidence.observedAt > 0 && now-lossEvidence.observedAt<=120000 && lossEvidence.observedAt<=now+5000 &&
       typeof lossEvidence.lossKey==='string' && lossEvidence.lossKey.length>0, 'LOSS_UNPROVEN', '缺少当前活动失效证明');
-    const dedupe = fingerprint({ shopId, plans: plans.map(p => [p.productId, p.historicalFingerprint, p.skus,
-      ...(p.type==='限量抢购'?[p.type,p.rules,p.activityLimit,p.durationMs,p.campaignPolicyFingerprint||null]:p.durationMs!=null?[p.type,p.rules,p.durationMs,p.campaignPolicyFingerprint||null]:[])]), loss: lossEvidence.lossKey });
     return this.transaction(() => {
+      const admission=admitSubmissionSuccessor(this,shopId,plans,lossEvidence,now),effectiveLoss=admission?.lossEvidence||lossEvidence;
+      if(admission?.prior)return admission.prior;
+      const dedupe = fingerprint({ shopId, plans: plans.map(p => [p.productId, p.historicalFingerprint, p.skus,
+        ...(p.type==='限量抢购'?[p.type,p.rules,p.activityLimit,p.durationMs,p.campaignPolicyFingerprint||null]:p.durationMs!=null?[p.type,p.rules,p.durationMs,p.campaignPolicyFingerprint||null]:[])]), loss: effectiveLoss.lossKey });
       const prior = this.db.prepare('SELECT id FROM tasks WHERE dedupe=?').get(dedupe);
-      if (prior) return this.get(prior.id);
+      if (prior){requireThat(!admission,'UNRESOLVED_SUCCESSOR_EXISTS','新恢复的去重记录缺少完整一次任务绑定');return this.get(prior.id);}
       const pending = this.list(shopId).filter(t => !['verified', 'blocked'].includes(t.phase));
       requireThat(!pending.some(t => t.plans.some(p => plans.some(q => q.productId === p.productId))), 'PENDING', '商品已有未完成任务');
       const taskId = randomUUID(), discounts=[...new Set(plans.flatMap(p=>p.skus.map(s=>s.discount)))].sort((a,b)=>a-b);
       const label=plans.every(p=>p.type==='限量抢购')?(discounts.length===1?String(discounts[0]/10)+'折':'多折扣')+'-':'';
       const title = '守护2-' + label + taskId.replaceAll('-', '').slice(0, label?12:18);
-      const body = { title, plans, lossEvidence, createdAt: now, submitAttempts: 0, riskAttempts: 0 };
+      const body = { title, plans, lossEvidence:effectiveLoss, createdAt: now, submitAttempts: 0, riskAttempts: 0 };
       this.db.prepare('INSERT INTO tasks VALUES(?,?,?,?,?,?)').run(taskId, shopId, dedupe, 'queued', JSON.stringify(body), now);
+      bindSubmissionSuccessor(this,admission,taskId,now);
       this.event(taskId, 'queued', { products: plans.map(p => p.productId) }, now);
       return this.get(taskId);
     });
@@ -90,7 +98,9 @@ export class Journal {
     return this.transaction(() => {
       const task = this.get(taskId);
       requireThat(task && task.phase === expected && transitions[expected]?.includes(phase), 'JOURNAL_TRANSITION', '任务状态已变化或不允许该操作');
+      requireThat(!getSubmissionArchive(this,taskId),'UNRESOLVED_ORIGINAL_RETIRED','旧意图已归档且历史结果仍未知，禁止重排或重发原任务');
       if(expected==='blocked')requireThat(knownUnsubmitted(task)&&task.retryAfter>0&&task.retryAfter<=now,'RETRY_FORBIDDEN','只能重试主提交和风险确认均明确为零且已到重试时间的任务');
+      if(phase==='submitting')assertSubmissionSuccessorBoundary(this,task,{consume:true,now});
       const { id, shopId, phase: oldPhase, updatedAt, ...body } = task;
       Object.assign(body, patch);
       this.db.prepare('UPDATE tasks SET phase=?,body=?,updated=? WHERE id=? AND phase=?').run(phase, JSON.stringify(body), now, taskId, expected);
@@ -98,7 +108,7 @@ export class Journal {
     });
   }
   requestFreshUnsubmittedRecheck(taskId,requestedAt,now=Date.now()) {
-    const task=this.get(taskId);if(task?.phase!=='blocked'||!knownUnsubmitted(task)||!Number.isFinite(requestedAt)||requestedAt<=task.updatedAt||requestedAt>now)return false;
+    const task=this.get(taskId);if(getSubmissionArchive(this,taskId)||task?.phase!=='blocked'||!knownUnsubmitted(task)||!Number.isFinite(requestedAt)||requestedAt<=task.updatedAt||requestedAt>now)return false;
     return this.transaction(()=>{const current=this.get(taskId);requireThat(current.phase==='blocked'&&knownUnsubmitted(current),'RETRY_FORBIDDEN','任务提交边界已变化，先回读核实');
       const {id,shopId,phase,updatedAt,...body}=current;body.retryAfter=now;this.db.prepare('UPDATE tasks SET body=?,updated=? WHERE id=?').run(JSON.stringify(body),now,taskId);
       this.event(taskId,'fresh-unsubmitted-recheck-requested',{shopId,requestedAt,submitAttempts:0,riskAttempts:0},now);return true;});
@@ -116,6 +126,7 @@ export class Journal {
   beginRiskConfirmation(taskId, proof, now = Date.now()) {
     return this.transaction(() => {
       const task = this.get(taskId);
+      if(task)assertSubmissionSuccessorBoundary(this,task,{now});
       if(task)assertOriginalRebuildConsent(this,task,now);
       if(task)assertRecoveryCapacity(task.plans);
       requireThat(task && ['submitting', 'unknown', 'verifying'].includes(task.phase) && task.riskAttempts === 0 &&
@@ -269,7 +280,7 @@ export class Journal {
     return this.transaction(()=>{
       requireThat(activeDualActivityCareGrant(this,decision.shopId,now),'DUAL_ACTIVITY_CONSENT_REQUIRED','本店尚未明确授权双方案自动选择');
       requireThat(!this.list(decision.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===decision.productId)),'PENDING','已有未知或执行中的提交，只能独立回读');
-      requireThat(makeDualActivityDecision({plan:decision.plan,probes:decision.probes,now:decision.createdAt}).pairKey===decision.pairKey&&decision.expiresAt>now,'DUAL_PROBE_CHANGED','双方案证据已变化或过期');
+      requireThat(makeDualActivityDecision({plan:decision.plan,probes:decision.probes,now:decision.createdAt,...(decision.scopeRestriction?{scopeRestriction:decision.scopeRestriction,journal:this}:{})}).pairKey===decision.pairKey&&decision.expiresAt>now,'DUAL_PROBE_CHANGED','双方案证据已变化或过期');
       this.assertPricePlans(decision.shopId,[decision.plan]);
       this.supersedePriceReviews(decision.shopId,decision.productId,'本次已分别核验两种活动方案',now,{transaction:false});
       const priorDecline=this.settings(dualDeclineKey(decision.shopId,decision.productId)),suppressed=decision.approvalAllowed&&priorDecline?.intentKey===dualDecisionIntentKey(decision),reviewIds={};
@@ -288,7 +299,7 @@ export class Journal {
       const scheme=decision.schemes.find(s=>s.type===decision.selectedType),r=this.priceReview(scheme?.reviewId);
       requireThat(scheme?.classification==='non-reducing'&&r?.status==='pending'&&r.dualPairKey===pairKey&&scheme.candidate?.rows.every(row=>row.saleFen>=row.previousFen),'DUAL_REDUCTION_REQUIRED','自动恢复不能采用任何低于当前守护价的规格');
       r.rows=structuredClone(scheme.candidate.rows);if(scheme.candidate.ratio)r.ratio=structuredClone(scheme.candidate.ratio);
-      r.status='approved';r.approvedAt=now;r.approvalKind='automatic-price-increase';r.dualSource={plan:structuredClone(decision.plan),probes:structuredClone(decision.probes),createdAt:decision.createdAt,pairKey:decision.pairKey};
+      r.status='approved';r.approvedAt=now;r.approvalKind='automatic-price-increase';r.dualSource={plan:structuredClone(decision.plan),probes:structuredClone(decision.probes),createdAt:decision.createdAt,pairKey:decision.pairKey,...(decision.scopeRestriction?{scopeRestriction:structuredClone(decision.scopeRestriction)}:{})};
       r.selectedOption={id:'dual-balanced',key:scheme.candidate.key,label:'双方案守护：已独立核验的不降价方案',activityType:r.type};
       r.automaticConsent={dualGrantId:grant.id,targetsFingerprint:fingerprint(r.rows),sourceFingerprint:fingerprint(r.dualSource),continueGuardingExactPrices:true};
       requireThat(validDualActivityApproval(this,r),'DUAL_APPROVAL_CHANGED','双方案确切价格或来源无法完整重放核验');

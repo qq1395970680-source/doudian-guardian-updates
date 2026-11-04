@@ -20,7 +20,7 @@ test('fresh install auto-identifies two accounts, discovers current discounts wi
  const serviceFactory=({policy})=>({running:false,busy:false,status:()=>({tasks:[],unknown:0}),start(){writes++;assert.equal(policy.originalRiskAllowed,true);this.running=true;},stop(){this.running=false;}});
  const app=await createApp({port:0,runtime,dependencies:{journal,browser,platformFactory,serviceFactory}});
  try{
-  const html=await(await fetch(app.url)).text();assert.doesNotMatch(html,/旧版|旧扩展|接管|交接|275897201/);assert.equal(app.snapshot().shopId,null);
+  const html=await(await fetch(app.url)).text();assert.doesNotMatch(html,/旧版|旧扩展|接管|交接|900002/);assert.equal(app.snapshot().shopId,null);
   const token=html.match(/script nonce="([a-f0-9]+)"/)[1];const post=(p,args={})=>fetch(app.url+'/api/'+p,{method:'POST',headers:{Origin:app.url,'Content-Type':'application/json','X-Guardian-Token':token},body:JSON.stringify(args)});
   const idle=async()=>{while(app.snapshot().action)await new Promise(r=>setTimeout(r,5));assert.notEqual(app.snapshot().lastAction?.ok,false,app.snapshot().lastAction?.message);};
   await post('login');await idle();await post('finish-login');await idle();assert.equal(reads,1);assert.equal(writes,0);assert.equal(app.snapshot().shopId,'900001');

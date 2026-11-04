@@ -80,7 +80,10 @@ export function parseRemovalPriceRatio(reason){
   ratios.push({numerator,denominator});
  }
  requireThat(ratios.length,'REMOVAL_RULE_UNKNOWN','平台剔除原因未完整读取');
- return ratios.reduce((a,b)=>a.numerator*b.denominator<=b.numerator*a.denominator?a:b);
+ const ratio=ratios[0];
+ requireThat(ratios.every(value=>value.numerator*ratio.denominator===ratio.numerator*value.denominator),
+  'REMOVAL_RULE_AMBIGUOUS','平台返回多种规格价差倍数，尚未明确各倍率对应的规格分组，不能合并为全商品限制；等待平台逐规格价格限制核验');
+ return ratio;
 }
 
 export function checkRemovalPrices(plan,removal){

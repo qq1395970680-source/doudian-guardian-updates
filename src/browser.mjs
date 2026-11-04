@@ -49,12 +49,21 @@ export class DedicatedBrowser {
     if(this.sessionSaving)return this.sessionSaving;
     const context=this.context,profile=this.profilePath;if(!context||!profile)return;
     const run=(async()=>{
+      const startedAt=Date.now();let stage='read';
       try{
-        const cookies=await bounded(context.cookies(),3000,Error('登录会话读取超时'));
+        const cookies=await bounded(context.cookies(),3000,Object.assign(Error('登录会话读取超时'),{code:'SESSION_COOKIE_READ_TIMEOUT'}));
         if(this.context!==context)return;
+        stage='vault';
         await saveProfileSession(profile,cookies);
+        if(this.context!==context)return;
         this.sessionPersistence={state:'saved',available:true,at:Date.now()};
-      }catch{this.sessionPersistence={state:'unavailable',available:false,at:Date.now(),message:'登录会话保存失败，原资料保留；请检查本机存储与权限'};}
+      }catch(error){
+        if(this.context!==context)return;
+        const safeCodes=['SESSION_COOKIE_READ_TIMEOUT','PROFILE_VAULT_UNAVAILABLE','PROFILE_SESSION_LIMIT','EACCES','EPERM','ENOENT','ENOSPC','EBUSY','EIO','EEXIST','EMFILE','ENFILE','EROFS','EPIPE'];
+        const code=safeCodes.includes(error?.code)?error.code:stage==='read'?'SESSION_COOKIE_READ_FAILED':'SESSION_SAVE_FAILED';
+        const message=code==='SESSION_COOKIE_READ_TIMEOUT'?'登录会话读取超时，原资料保留；程序会自动重试':stage==='read'?'登录会话暂时无法读取，原资料保留；程序会自动重试':'登录会话暂未保存，原资料保留；程序会自动重试';
+        this.sessionPersistence={state:'unavailable',available:false,at:Date.now(),code,stage,elapsedMs:Date.now()-startedAt,message};
+      }
     })();
     this.sessionSaving=run;try{await run;}finally{if(this.sessionSaving===run)this.sessionSaving=null;}
   }

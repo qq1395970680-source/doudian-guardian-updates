@@ -30,3 +30,15 @@ test('post-exit data changed since the final snapshot is rejected rather than re
  const f=await fixture(t),checkpoint=await interruptedUpgradeJournal({runtime:f.runtime,expected:f.expected,mode:'interrupt-checkpoint'},f.deps);await interruptedUpgradeJournal({runtime:f.runtime,expected:f.expected,cutoverId:checkpoint.cutoverId,mode:'interrupt-finalize'},f.deps);f.j.putSettings('campaign-conversion:900001',{status:'cancel-unknown',cancelAttempts:1,confirmAttempts:1});
  await assert.rejects(interruptedUpgradeJournal({runtime:f.runtime,expected:f.expected,cutoverId:checkpoint.cutoverId,mode:'interrupt-finalize'},f.deps),/授权或任务集合变化/);assert.equal(f.j.settings('campaign-conversion:900001').confirmAttempts,1);
 });
+
+test('restart preserves historical-unknown archives and the once-only successor boundary',async t=>{
+ const f=await fixture(t);
+ f.j.db.prepare('INSERT INTO submission_archives VALUES(?,?,?,?,?,?,?,?)').run('archive-proof','900002','unknown','{"originalSql":"immutable"}','original-fingerprint','{"historicalOutcome":"unknown","success":false}','cycle-key',f.at-1);
+ f.j.db.prepare('INSERT INTO submission_successors VALUES(?,?,?,?,?)').run('archive-proof','submitting','plans-fingerprint',f.at-1,f.at-1);
+ const before=JSON.stringify({archives:f.j.db.prepare('SELECT * FROM submission_archives').all(),successors:f.j.db.prepare('SELECT * FROM submission_successors').all()});
+ const checkpoint=await interruptedUpgradeJournal({runtime:f.runtime,expected:f.expected,mode:'interrupt-checkpoint'},f.deps);
+ await interruptedUpgradeJournal({runtime:f.runtime,expected:f.expected,cutoverId:checkpoint.cutoverId,mode:'interrupt-finalize'},f.deps);
+ assert.equal(JSON.stringify({archives:f.j.db.prepare('SELECT * FROM submission_archives').all(),successors:f.j.db.prepare('SELECT * FROM submission_successors').all()}),before);
+ f.j.db.prepare('UPDATE submission_successors SET submitted_at=? WHERE closure=?').run(f.at,'archive-proof');
+ await assert.rejects(interruptedUpgradeJournal({runtime:f.runtime,expected:f.expected,cutoverId:checkpoint.cutoverId,mode:'interrupt-finalize'},f.deps),{code:'UPGRADE_DATA_CHANGED'});
+});

@@ -3,7 +3,7 @@ export function createRecoveryWorkspace({getState,post,toast,node,time,openPrici
  const $=id=>document.getElementById(id);
  let shop,scope='confirm',page=0,pages=1,loading=false,generation=0,signature='',searchTimer;
  const copy={
-  confirm:['待确认降价','两种活动都已核验且都需要降价。核对确切价格后，由你决定。','当前没有需要你确认的降价','有一种方案可不降价恢复时，后台会优先处理；尚未核验完的放在自动核验。'],
+  confirm:['待确认降价','可用方案已核实需要降价。查看各方案的原因和确切价格后，由你决定。','当前没有需要你确认的降价','有一种方案可不降价恢复时，后台会优先处理；尚未核验完的放在自动核验。'],
   automatic:['自动核验','后台继续核验两种活动。提交结果未明确时只做回读，不重复提交。','当前没有正在核验的恢复事项','后续需要核验的商品会显示在这里。'],
   history:['已处理','查看本次恢复事项的处理记录。历史价格仅供查看，当前活动以最新回读为准。','暂无处理记录','已确认或暂不调整的事项会保留在这里。']
  };

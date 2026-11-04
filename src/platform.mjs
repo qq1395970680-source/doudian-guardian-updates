@@ -19,6 +19,7 @@ import {authorizedOriginalContinuity} from './original-rebuild-policy.mjs';
 import {activeMembershipProofBatches} from './active-membership.mjs';
 import {computerReadBudget,normalizeReadBudget} from './scan-load.mjs';
 import {assertDualProbeAllowed} from './dual-activity-recovery.mjs';
+import {submissionListFilterSnapshot,submissionQueryScope,submissionInvestigationKey,makeSubmissionInvestigation,adjudicateSubmissionInvestigation,submissionReadbackObservation,officialQuerySurfaceSnapshot} from './submission-investigation.mjs';
 
 export const PLATFORM='https://fxg.jinritemai.com';
 export const LIST='/ffa/marketing/tools/limitsales';
@@ -40,7 +41,7 @@ export class DoudianPlatform {
    if(kind==='read-operation-failed')return this.browser.failure(null,detail.campaignId||'inventory',detail.kind,
     Object.assign(new Error(detail.message),{code:detail.code}),{shopId:this.policy.shopId,readOperation:detail}).catch(()=>{});
   }});
-  for(const [name,kind,budgetMs] of [['list','list',180000],['detail','detail',300000],['readRenewal','renewal',90000],['probe','identity',60000],['closeMonitorPages','close-monitors',30000],['precheck','precheck',300000],['precheckBatch','batch-precheck',600000]]){
+  for(const [name,kind,budgetMs] of [['list','list',180000],['detail','detail',300000],['readRenewal','renewal',90000],['probe','identity',60000],['closeMonitorPages','close-monitors',30000],['precheck','precheck',300000],['precheckBatch','batch-precheck',600000],['investigateSubmission','submission-investigation',600000]]){
    const original=this[name].bind(this);
    this[name]=(...args)=>this.readOperations.run({kind,campaignId:args[0]?.id||null,budgetMs},()=>original(...args));
   }
@@ -112,6 +113,7 @@ export class DoudianPlatform {
     await until(async()=>(await statusSelect.locator('.ecom-mcenter-select-selection-item').innerText()).trim()===status,'活动状态尚未选中');
    }
    if(productId||title||status){await button(page,'查询').click();await delay(1000);}
+   const query={productId,title,status},filterBefore=await page.evaluate(submissionListFilterSnapshot,{querySurface:await page.evaluate(officialQuerySurfaceSnapshot)});
    const campaigns=[],seen=new Set();
    for(let n=1;n<=100;n++){
     this.check();await this.ready(page);
@@ -125,11 +127,13 @@ export class DoudianPlatform {
      seen.add(r.ids[0]);campaigns.push({...r,id:r.ids[0],startAt:parseDate(r.times[0]),endAt:parseDate(r.times[1])});
     }
     this.progress={stage:'读取全店活动列表',campaigns:campaigns.length,page:n,at:Date.now()};
-    if(pager.disabled||!rows.length&&pager.nextCount===0){await this.identity(page);
+    if(pager.disabled||!rows.length&&pager.nextCount===0){const account=await this.identity(page);
      requireThat((await page.locator('input[placeholder="请输入商品ID"]').inputValue()).trim()===(productId||''),'QUERY_CHANGED','列表查询条件变化');
      requireThat((await page.locator('input[placeholder="请输入活动名称"]').inputValue()).trim()===(title||''),'QUERY_CHANGED','活动名称筛选变化');
      requireThat(await statusSelect.count()===1&&(await statusSelect.locator('.ecom-mcenter-select-selection-item').innerText()).trim()===(status||'全部'),'QUERY_CHANGED','活动状态筛选变化');
-     return {complete:true,campaigns,observedAt:Date.now(),query:{productId,title,status}};}
+     const filterAfter=await page.evaluate(submissionListFilterSnapshot,{querySurface:await page.evaluate(officialQuerySurfaceSnapshot)});
+     return {complete:true,shopId:account.shopId,campaigns,observedAt:Date.now(),query,
+      queryScope:submissionQueryScope({shopId:account.shopId,query,before:filterBefore,after:filterAfter,pages:n})};}
     requireThat(pager.nextCount===1&&rows.length,'LIST_PAGING','未取得活动列表完整性证明');
     const before=fingerprint(rows);await page.locator('li[title="下一页"] button:visible').click();
     await until(async()=>fingerprint(await page.evaluate(listSlice))!==before,'活动列表翻页停滞');
@@ -954,15 +958,85 @@ export class DoudianPlatform {
   // from diagnostics and no main-submit click is repeated after an unknown result.
   await this.confirmOriginalRisk(task,page,beforeRisk);return true;
  }
+ recordSubmissionInvestigation(task,raw){
+  requireThat(task?.shopId===this.policy.shopId&&raw?.shopId===task.shopId&&raw.taskId===task.id,'SHOP_MISMATCH','提交调查不能跨店或跨任务保存');
+  const assessment=adjudicateSubmissionInvestigation(task,raw),record={...raw,assessment};
+  // The diagnostic key is never loaded by planning, enqueue or approvals.
+  this.journal?.putSettings?.(submissionInvestigationKey(task.shopId,task.id),record);
+  this.journal?.event?.(task.id,'submission-investigation',{shopId:task.shopId,mode:raw.mode,classification:assessment.classification,
+   message:assessment.reason,matchedCampaignIds:assessment.matchedCampaignIds||[],observedAt:raw.finishedAt});
+  return record;
+ }
+ async investigateSubmission(task){
+  requireThat(task?.shopId===this.policy.shopId&&task.plans?.length&&task.plans.every(p=>p.shopId===task.shopId),'SHOP_MISMATCH','只可调查当前店铺的完整任务');
+  const startedAt=Date.now(),details=[],productQueries=[],referenceQueries=[],candidateConflicts=[],candidates=new Map();let titleListing=null,titleError=null;
+  const diagnosticError=error=>({code:error.code||'READ_ERROR',message:String(error.message).slice(0,1000)});
+  const fatal=error=>['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH','ACCOUNT_UNKNOWN','READ_CLEANUP_BLOCKED','READ_CONTEXT_CANCELLED'].includes(error.code);
+  const query=async options=>{try{return{listing:await this.list(options),error:null};}catch(error){if(fatal(error))throw error;return{listing:null,error:diagnosticError(error)};}};
+  const addCandidates=listing=>{for(const campaign of listing?.campaigns||[]){const previous=candidates.get(campaign.id);
+   if(previous&&fingerprint(previous)!==fingerprint(campaign))candidateConflicts.push({campaignId:campaign.id,before:previous,after:campaign});
+   else candidates.set(campaign.id,campaign);}};
+  try{
+   this.progress={stage:'只读调查原提交活动',taskId:task.id,at:Date.now()};
+   ({listing:titleListing,error:titleError}=await query({title:task.title}));
+   addCandidates(titleListing);
+   for(const productId of new Set(task.plans.map(p=>p.productId)))for(const status of [null,'进行中','未开始']){
+    this.check();this.progress={stage:'只读核对商品当前活动归属',taskId:task.id,productId,status,at:Date.now()};
+    const result=await query({productId,status});productQueries.push({productId,status,...result});addCandidates(result.listing);
+   }
+   // A removed product may disappear from product-filtered results. Resolve
+   // only the baseline fingerprint in this original plan. An older successful
+   // task is not allowed to silently replace that actual source.
+   const histories=this.journal?.histories?.(task.shopId)||[],pastTasks=this.journal?.list?.(task.shopId)||[];let allReferenceListing=null;
+   for(const plan of task.plans){
+    const baseline=histories.find(b=>b.shopId===task.shopId&&b.productId===plan.productId&&fingerprint(b)===plan.historicalFingerprint);
+    if(!baseline){referenceQueries.push({productId:plan.productId,historicalFingerprint:plan.historicalFingerprint,hintOnly:true,error:{code:'INVESTIGATION_SOURCE_UNKNOWN',message:'未找到原计划指向的完整历史来源，未回退到更早活动。'}});continue;}
+    const source={productId:plan.productId,sourceCampaignId:baseline.campaignId,historicalFingerprint:plan.historicalFingerprint,hintOnly:true};
+    if(candidates.has(baseline.campaignId)){referenceQueries.push({...source,lookup:'present-in-product-query',matchedCampaignIds:[baseline.campaignId]});continue;}
+    const previous=pastTasks.filter(t=>t.phase==='verified'&&t.receipt?.campaignId===baseline.campaignId&&t.updatedAt<=(task.createdAt||task.submittedAt||0)&&t.plans.some(p=>p.productId===plan.productId)).sort((a,b)=>b.updatedAt-a.updatedAt)[0];
+    if(previous){
+     const result=await query({title:previous.title});referenceQueries.push({...source,sourceTaskId:previous.id,lookup:'exact-source-title',...result});
+     addCandidates(result.listing&&{...result.listing,campaigns:result.listing.campaigns.filter(c=>c.id===baseline.campaignId)});
+    }
+    if(!candidates.has(baseline.campaignId)){
+     allReferenceListing??=await query({});referenceQueries.push({...source,lookup:'exact-source-id-in-full-list',...allReferenceListing});
+     addCandidates(allReferenceListing.listing&&{...allReferenceListing.listing,campaigns:allReferenceListing.listing.campaigns.filter(c=>c.id===baseline.campaignId)});
+    }
+   }
+   // Independent read pages may run together. Await every worker before
+   // returning so an error cannot leave a browser reading after the caller.
+   const pending=[...candidates.values()],results=new Array(pending.length);let cursor=0;
+   const workers=Array.from({length:Math.min(3,pending.length)},async()=>{
+    while(cursor<pending.length){const index=cursor++,campaign=pending[index];
+     this.check();this.progress={stage:'只读核对候选活动完整详情',taskId:task.id,campaignId:campaign.id,at:Date.now()};
+     try{results[index]={campaignId:campaign.id,shopId:task.shopId,campaign,detail:await this.detail(campaign)};}
+     catch(error){results[index]={campaignId:campaign.id,shopId:task.shopId,campaign,error:diagnosticError(error)};if(fatal(error))throw error;}
+    }
+   });
+   const settled=await Promise.allSettled(workers);details.push(...results.filter(Boolean));
+   const failed=settled.find(r=>r.status==='rejected');if(failed)throw failed.reason;
+   const raw=makeSubmissionInvestigation(task,{startedAt,finishedAt:Date.now(),titleListing,titleError,details,productQueries,referenceQueries,candidateConflicts});
+   return this.recordSubmissionInvestigation(task,raw);
+  }catch(error){
+   const raw=makeSubmissionInvestigation(task,{startedAt,finishedAt:Date.now(),titleListing,titleError,details,productQueries,referenceQueries,candidateConflicts,error:diagnosticError(error)});
+   try{this.recordSubmissionInvestigation(task,raw);}catch{}throw error;
+  }
+ }
  async readback(task){
+  requireThat(task?.shopId===this.policy.shopId&&task.plans?.length&&task.plans.every(p=>p.shopId===task.shopId),'SHOP_MISMATCH','只可回读当前店铺的完整任务');
   this.progress={stage:'独立页面逐规格回读',taskId:task.id,at:Date.now()};
-  const listing=await this.list({title:task.title}),matches=listing.campaigns.filter(c=>c.name===task.title);
-  requireThat(matches.length<=1,'DUPLICATE_CAMPAIGN','同任务出现多个活动，保留记录并停止自动处理');if(!matches.length)return null;
-  const campaign=matches[0];if(!active(campaign))return null;const d=await this.detail(campaign);
-  requireThat(d.products.every(p=>!p.removalConfirmed&&!p.removalAmbiguous),'READBACK_REMOVED','新活动已有商品或规格退出，不能记为恢复成功');
-  return {complete:d.complete,shopId:this.policy.shopId,title:campaign.name,campaignId:campaign.id,status:campaign.status,
-   observedAt:d.observedAt,type:campaign.type,rules:d.rules,rows:d.products.flatMap(p=>p.skus.map(s=>({...s,productId:p.productId}))),startAt:campaign.startAt,endAt:campaign.endAt,
-   ...(isLimited(campaign)?{productLimits:d.products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
+  const startedAt=Date.now(),details=[];let titleListing=null;
+  const record=error=>this.recordSubmissionInvestigation(task,makeSubmissionInvestigation(task,{mode:'title-readback',startedAt,finishedAt:Date.now(),titleListing,details,
+   ...(error?{error:{code:error.code||'READ_ERROR',message:String(error.message).slice(0,1000)}}:{})}));
+  try{
+   titleListing=await this.list({title:task.title});const matches=titleListing.campaigns.filter(c=>c.name===task.title);
+   requireThat(matches.length<=1,'DUPLICATE_CAMPAIGN','同任务出现多个活动，保留记录并停止自动处理');
+   if(!matches.length){record();return null;}
+   const campaign=matches[0];if(!active(campaign)){record();return null;}
+   const d=await this.detail(campaign);details.push({campaignId:campaign.id,shopId:task.shopId,detail:d});
+   requireThat(d.products.every(p=>!p.removalConfirmed&&!p.removalAmbiguous),'READBACK_REMOVED','新活动已有商品或规格退出，不能记为恢复成功');
+   return submissionReadbackObservation(task,campaign,d);
+  }catch(error){try{record(error);}catch{}throw error;}
  }
  async auditVerifiedTask(task){
   requireThat(task?.phase==='verified'&&task.shopId===this.policy.shopId&&task.receipt?.campaignId&&task.receipt.verifiedAt>0,

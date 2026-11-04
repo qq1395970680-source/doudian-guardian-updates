@@ -5,6 +5,27 @@ import {makePriceReviews} from './price-review.mjs';
 import {priceOptions} from './price-options.mjs';
 import {makeRemovalPriceReview} from './ratio-prices.mjs';
 import {assertPriceReconfirmation} from './price-reconfirmation.mjs';
+import {getSubmissionArchive} from './submission-archive.mjs';
+
+const verifiedScope=Symbol('journal-verified-recovery-scope');
+function readScopeRestriction(journal,scope,plan,at){
+ requireThat(journal&&scope?.source==='current-unresolved-recovery-retirement'&&scope.key===fingerprint({...scope,key:undefined})&&scope.shopId===plan.shopId&&scope.historicalOutcome==='unknown'&&scope.success===false&&scope.grantsNewPriceAuthority===false&&scope.noQuotaIncrease===true,'DUAL_SCOPE_INVALID','恢复活动范围必须来自已保存且未改动的非成功归档');
+ const record=typeof journal.unresolvedRecovery==='function'?journal.unresolvedRecovery(scope.taskId):getSubmissionArchive(journal,scope.taskId);
+ requireThat(record?.id===scope.id&&record.shopId===plan.shopId&&record.taskId===scope.taskId&&fingerprint(record.closure)===fingerprint(scope)&&scope.originalTaskFingerprint===fingerprint(record.original)&&record.retiredAt<=at+5000&&Number.isSafeInteger(scope.consentExpiresAt)&&scope.consentExpiresAt>at,'DUAL_SCOPE_INVALID','本次活动限制与真实归档、原材料或授权期限不一致');
+ const rows=scope.perProduct?.filter(r=>r.productId===plan.productId),row=rows?.[0],floor=scope.priceFloors?.find(p=>p.productId===plan.productId);
+ requireThat(rows?.length===1&&row.sourceHistoricalFingerprint===plan.historicalFingerprint&&floor?.historicalFingerprint===plan.historicalFingerprint&&Array.isArray(row.allowedTypes)&&row.allowedTypes.length>0&&new Set(row.allowedTypes).size===row.allowedTypes.length&&row.allowedTypes.every(t=>dualActivityTypes.includes(t))&&fingerprint(floor.allowedTypes)===fingerprint(row.allowedTypes)&&fingerprint(scope.allowedActivityTypesByProduct)===fingerprint(scope.perProduct),'DUAL_SCOPE_INVALID','本次商品、历史或允许活动范围不完整');
+ const quantityExclusion=row.forbidNewLimitedQuota===true&&fingerprint(row.allowedTypes)===fingerprint(['限时抢购'])&&scope.sourceReferences?.some(s=>s.productId===plan.productId&&s.kind==='price-template'&&s.type==='限时抢购')&&scope.sourceReferences.filter(s=>s.productId===plan.productId).every(s=>s.type==='限时抢购');
+ const excluded=dualActivityTypes.filter(t=>!row.allowedTypes.includes(t));
+ return{row,allowedTypes:row.allowedTypes,excluded,quantityExclusion,closureKey:scope.key,record,floor};
+}
+const brandScope=(value,scope)=>{if(scope)Object.defineProperty(value,verifiedScope,{value:{pairKey:value.pairKey,closureKey:scope.closureKey}});return value;};
+export function dualPriceApprovalReady(decision){
+ if(decision?.valid!==true||decision.approvalAllowed!==true||!Array.isArray(decision.schemes)||decision.schemes.length!==2||!dualActivityTypes.every(t=>decision.schemes.filter(s=>s.type===t).length===1))return false;
+ const proof=decision[verifiedScope];if(decision.scopeRestriction&&(!proof||proof.pairKey!==decision.pairKey||proof.closureKey!==decision.scopeRestriction.key))return false;
+ if(decision.schemes.every(s=>s.classification==='reduction-required'))return true;
+ if(!proof||proof.pairKey!==decision.pairKey||proof.closureKey!==decision.scopeRestriction?.key)return false;
+ return decision.schemes.some(s=>s.classification==='reduction-required')&&decision.schemes.every(s=>s.classification==='reduction-required'||s.classification==='unavailable'&&s.scopeExcluded===true&&s.scopeExclusion==='new-limited-quota-forbidden'&&s.type==='限量抢购');
+}
 
 export const dualActivityTypes=['限时抢购','限量抢购'];
 const policyKey=shop=>'dual-activity-care-policy:'+id(shop),grantKey=(shop,grant)=>'dual-activity-care-grant:'+id(shop)+':'+grant;
@@ -49,7 +70,24 @@ function assertGuardedPlan(journal,plan){
   requireThat(!seen.has(sku.id)&&old&&normalizeName(old.name)===sku.name&&old.baseFen===sku.baseFen&&(sku.originalDiscount??sku.discount)===old.discount&&sku.discount===(approved?.discount??old.discount)&&sku.saleFen===(approved?.saleFen??saleFen(old.baseFen,old.discount)),'PRICE_REVIEW_CHANGED','本次全部规格必须与当前已批准的确切守护价一致');seen.add(sku.id);
  }journal.assertPricePlans(plan.shopId,[plan]);
 }
-function classifyProbe(plan,entry,now){
+function assertOriginalPriceAttempt(journal,scope,plan,guardedPlan,now){
+ const closure=scope?.record?.closure,successor=scope?.record?.successor;
+ requireThat(closure?.requiresFreshLossAndPriceProofs===true&&closure.noAutomaticReductions===true&&closure.maxSubmittedSuccessors===1&&scope.allowedTypes.includes(plan.type),'UNRESOLVED_ORIGINAL_PRICE_SCOPE','原价试恢复须绑定本次有效且仅一次的新恢复意图');
+ // Historical approved evidence must remain replayable after its one submit.
+ // A current new decision at/after consumption is still blocked by the live
+ // pending-task guard and the Journal's atomic successor-consumption gate.
+ const baseline=journal.histories(plan.shopId).find(b=>b.productId===plan.productId&&fingerprint(b)===plan.historicalFingerprint),target=journal.priceTarget(plan.shopId,plan.productId),prior=plan.priceApprovalId?journal.priceReview(plan.priceApprovalId):null;
+ const ownApprovedReplay=target?.dualSource?.createdAt===now&&fingerprint(target.dualSource.plan)===fingerprint(guardedPlan);
+ const historicalSubmitReplay=ownApprovedReplay&&Number.isSafeInteger(successor?.submittedAt)&&successor.submittedAt>=now&&target.approvedAt<=successor.submittedAt&&successor.task?.submitAttempts===1&&successor.task.submittedAt===successor.submittedAt;
+ requireThat(!successor||successor.submittedAt==null&&successor.task?.submitAttempts===0&&successor.task?.riskAttempts===0||historicalSubmitReplay,'UNRESOLVED_SUCCESSOR_SUBMITTED','本次原价新恢复已使用提交资格，只能继续回读');
+ requireThat((plan.priceApprovalId?prior?.status==='approved'&&prior.historicalFingerprint===plan.historicalFingerprint&&prior.rows?.length===plan.skus.length:!prior)&&((target?.id||null)===(plan.priceApprovalId||null)||ownApprovedReplay)&&baseline&&scope.floor.skus.length===plan.skus.length&&baseline.skus.length===plan.skus.length&&!plan.skippedSkuIds?.length,'UNRESOLVED_ORIGINAL_PRICE_CHANGED','本次完整当前批准价格或原守护规格发生变化');
+ const seen=new Set();for(const sku of plan.skus){const old=scope.floor.skus.find(s=>s.id===sku.id),base=baseline.skus.find(s=>s.id===sku.id),expected=prior?.rows.find(s=>s.id===sku.id);
+  requireThat(!seen.has(sku.id)&&old&&base&&(!prior||expected)&&base.baseFen===sku.baseFen&&old.baseFen===sku.baseFen&&normalizeName(base.name)===normalizeName(sku.name)&&sku.saleFen>=old.saleFen&&sku.discount===(expected?.discount??base.discount)&&sku.saleFen===(expected?.saleFen??saleFen(base.baseFen,base.discount))&&sku.saleFen===saleFen(sku.baseFen,sku.discount),'UNRESOLVED_ORIGINAL_PRICE_CHANGED','原价试恢复必须保留全部规格的当前批准金额，且不能低于原守护价');seen.add(sku.id);
+ }
+ if(scope.row.forbidNewLimitedQuota)requireThat(plan.type==='限时抢购','UNRESOLVED_QUANTITY','本次没有新限量额度授权');
+ if(plan.type==='限量抢购'){const bound=closure.quantityBounds?.find(b=>b.productId===plan.productId);requireThat(bound?.soldOut===false&&Number.isSafeInteger(plan.activityLimit)&&plan.activityLimit>0&&plan.activityLimit<=bound.maxActivityLimit,'UNRESOLVED_QUANTITY','原价试恢复不能新增或突破已确认的限量额度');}
+}
+function classifyProbe(plan,entry,now,{scope=null,journal=null}={}){
  const type=entry.type;
  if(entry.error)return pending(type,'本方案核验尚未完成：'+String(entry.error.message||entry.error.code||'读取失败').slice(0,800),{code:entry.error.code||'READ_FAILED'});
  try{
@@ -60,40 +98,45 @@ function classifyProbe(plan,entry,now){
   proveDraft(task,{...probe,warnings:[]},probe.observedAt);
   const errors=new Set(probe.rows.flatMap(row=>row.errors||[]));
   requireThat((probe.warnings||[]).every(w=>errors.has(w)),'PRICE_RULE_UNKNOWN','本方案存在无法对应具体规格的提示');
-  let review;
+  let review,originalPriceAttemptOnly=false,ambiguousRemovalEvidence=null;
   if(errors.size)review=makePriceReviews(task,probe,probe.observedAt)[0];
   else{
    const losses=(task.lossEvidence?.priceRules||[]).filter(l=>l.removal?.productId===plan.productId&&l.removalEvidence?.activityType===type);
    requireThat(losses.length<=1,'PRICE_REVIEW_EVIDENCE','本类型的剔除价格依据重复');
-   if(losses.length)try{review=makeRemovalPriceReview(expected,losses[0],probe.observedAt);}catch(error){if(error.code!=='PRICE_REVIEW_UNNEEDED')throw error;}
+   if(losses.length)try{review=makeRemovalPriceReview(expected,losses[0],probe.observedAt);}catch(error){if(error.code==='REMOVAL_RULE_AMBIGUOUS'&&scope){assertOriginalPriceAttempt(journal,scope,expected,plan,now);requireThat(Array.isArray(probe.warnings)&&probe.warnings.length===0&&probe.dialogs?.length===0&&probe.rows.every(row=>Array.isArray(row.errors)&&row.errors.length===0),'PRICE_RULE_UNKNOWN','原价试恢复须完整读取且没有任何规格错误、警告或待处理提示');originalPriceAttemptOnly=true;ambiguousRemovalEvidence=structuredClone(losses[0]);}else if(error.code!=='PRICE_REVIEW_UNNEEDED')throw error;}
    review||={shopId:plan.shopId,productId:plan.productId,name:plan.name,historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,type,rules:structuredClone(expected.rules),...(expected.campaignTarget?{campaignTarget:structuredClone(expected.campaignTarget)}:{}),skippedSkuIds:[],rows:rowsFor(plan),source:'live-platform-draft',createdAt:probe.observedAt,expiresAt:probe.observedAt+120000,status:'pending'};
   }
+  if(originalPriceAttemptOnly){review.originalPriceAttemptOnly=true;review.originalPriceAttemptReason='原价草稿通过，允许本次一次提交验证，尚未恢复成功；多倍率剔除原因未被合并或用于调价。';review.ambiguousRemovalEvidence=ambiguousRemovalEvidence;}
   requireThat(review&&review.rows.length===plan.skus.length&&!plan.skippedSkuIds?.length,'DUAL_SKUS_INCOMPLETE','双方案必须核对全部历史规格');
   review.expiresAt=probe.observedAt+120000;if(expected.campaignTarget)review.campaignTarget=structuredClone(expected.campaignTarget);else delete review.campaignTarget;
   if(expected.durationMs!=null)review.durationMs=expected.durationMs;if(expected.activityLimit!=null)review.activityLimit=expected.activityLimit;
   review.key=fingerprint({...review,key:undefined,taskId:undefined,createdAt:undefined,expiresAt:undefined,status:undefined});
   const options=priceOptions(review).filter(o=>o.activityType===type),balanced=options.find(o=>o.id==='balanced'&&o.available),original=options.find(o=>o.id==='original'&&o.available);
-  if(balanced&&balanced.rows.every(row=>row.saleFen>=row.previousFen))return{type,classification:'non-reducing',reason:balanced.rows.every(row=>row.saleFen===row.previousFen)?'本方案独立草稿已接受当前守护价，无须降价。':'本方案有全部规格不降价且符合本类型明确限制的候选。',evidenceAt:probe.observedAt,review,candidate:balanced,unchanged:balanced.rows.every(row=>row.saleFen===row.previousFen)};
+  if(originalPriceAttemptOnly)requireThat(balanced&&balanced.rows.every(row=>row.saleFen===row.previousFen&&row.discount===row.previousDiscount),'UNRESOLVED_ORIGINAL_PRICE_CHANGED','本次试恢复不得产生任何价格调整');
+  if(balanced&&balanced.rows.every(row=>row.saleFen>=row.previousFen))return{type,classification:'non-reducing',reason:originalPriceAttemptOnly?review.originalPriceAttemptReason:balanced.rows.every(row=>row.saleFen===row.previousFen)?'本方案独立草稿已接受当前守护价，无须降价。':'本方案有全部规格不降价且符合本类型明确限制的候选。',evidenceAt:probe.observedAt,review,candidate:balanced,unchanged:balanced.rows.every(row=>row.saleFen===row.previousFen),...(originalPriceAttemptOnly?{originalPriceAttemptOnly:true,ambiguousRemovalEvidence}:{} )};
   if(original?.rows.some(row=>row.saleFen<row.previousFen))return{type,classification:'reduction-required',reason:'本方案已读明确价格限制；合法折扣档位内不存在全部规格不降价的组合，至少一个规格必须低于当前守护价。',evidenceAt:probe.observedAt,review,candidate:original};
   return{type,classification:'unavailable',reason:'本方案在已读限制和合法折扣档位内没有可用价格组合，不能认定为必须降价。',evidenceAt:probe.observedAt,review:null};
  }catch(error){return error.code==='NO_FEASIBLE_PRICE'?{type,classification:'unavailable',reason:'本方案没有满足已读限制的合法价格组合：'+error.message,evidenceAt:entry.observation?.observedAt||null,review:null}:pending(type,'本方案证据尚不完整：'+error.message,{code:error.code||'DUAL_PROBE_INVALID'});}
 }
-export function makeDualActivityDecision({plan,probes=[],now=Date.now()}={}){
+export function makeDualActivityDecision({plan,probes=[],now=Date.now(),scopeRestriction=null,journal=null}={}){
  requireThat(plan?.skus?.length&&dualActivityTypes.includes(plan.type),'DUAL_PLAN_INVALID','缺少本次完整恢复计划');
- const schemes=dualActivityTypes.map(type=>{const entries=probes.filter(p=>p.type===type);return entries.length===1?classifyProbe(plan,entries[0],now):pending(type,'本方案尚未完成独立核验');});
+ const scope=scopeRestriction?readScopeRestriction(journal,scopeRestriction,plan,now):null;
+ const schemes=dualActivityTypes.map(type=>{if(scope&&!scope.allowedTypes.includes(type))return{type,classification:'unavailable',reason:scope.quantityExclusion?'本次未确认新限量额度，禁止新建限量活动；仅可采用合法限时方案，需降价仍由本人确认。':'本次明确恢复意图未授权该活动类型。',evidenceAt:null,review:null,scopeExcluded:true,scopeExclusion:scope.quantityExclusion?'new-limited-quota-forbidden':'activity-not-authorized',scopeClosureKey:scope.closureKey};const entries=probes.filter(p=>p.type===type);return entries.length===1?classifyProbe(plan,entries[0],now,{scope,journal}):pending(type,'本方案尚未完成独立核验');});
  const candidates=schemes.filter(s=>s.classification==='non-reducing').sort((a,b)=>Number(!a.unchanged)-Number(!b.unchanged)||Number(a.type!==plan.type)-Number(b.type!==plan.type));
+ const allowed=schemes.filter(s=>!s.scopeExcluded),approvalAllowed=allowed.length>0&&allowed.every(s=>s.classification==='reduction-required')&&schemes.filter(s=>s.scopeExcluded).every(s=>scope?.quantityExclusion&&s.scopeExclusion==='new-limited-quota-forbidden');
  const body={schema:1,source:'independent-dual-activity-drafts',shopId:plan.shopId,productId:plan.productId,historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,currentContext:dualPriceContext(plan),plan:structuredClone(plan),probes:structuredClone(probes),schemes,createdAt:now,
-  expiresAt:Math.min(...schemes.map(s=>s.evidenceAt?s.evidenceAt+120000:now+120000)),approvalAllowed:schemes.every(s=>s.classification==='reduction-required'),selectedType:candidates[0]?.type||null};
+  expiresAt:Math.min(...schemes.map(s=>s.evidenceAt?s.evidenceAt+120000:now+120000)),approvalAllowed,selectedType:candidates[0]?.type||null,...(scopeRestriction?{scopeRestriction:structuredClone(scopeRestriction)}:{}),...(schemes.some(s=>s.originalPriceAttemptOnly)?{originalPriceAttemptOnly:true}: {})};
  return {...body,pairKey:fingerprint(body)};
 }
 export const dualDecisionIntentKey=decision=>fingerprint({currentContext:decision.currentContext,schemes:decision.schemes.map(s=>({type:s.type,classification:s.classification,
- rows:s.candidate?.rows.map(r=>({id:r.id,name:r.name,baseFen:r.baseFen,previousFen:r.previousFen,discount:r.discount,saleFen:r.saleFen}))||[]}))});
+ rows:s.candidate?.rows.map(r=>({id:r.id,name:r.name,baseFen:r.baseFen,previousFen:r.previousFen,discount:r.discount,saleFen:r.saleFen}))||[]})),...(decision.scopeRestriction?{scopeClosureKey:decision.scopeRestriction.key}:{})});
 export function getDualActivityDecision(journal,shop,product,now=Date.now()){
  const record=journal.settings(dualDecisionKey(shop,product));
  if(!record||record.shopId!==shop||record.productId!==product)return null;
  const invalid=reason=>({...record,approvalAllowed:false,selectedType:null,valid:false,blockedReason:reason,schemes:dualActivityTypes.map(type=>pending(type,reason))});
  if(record.recheckRequestedAt)return invalid('已请求重新核验两种活动，旧建议不能继续批准');
  if(record.pairKey!==fingerprint({...record,pairKey:undefined,reviewIds:undefined,declineSuppression:undefined,resolution:undefined}))return invalid('双方案记录校验变化，等待重新核验');
+ let scope=null;try{if(record.scopeRestriction)scope=readScopeRestriction(journal,record.scopeRestriction,record.plan,now);}catch{return invalid('本次恢复范围、原意图归档或授权期限已变化，不能扩大活动类型');}
  const target=journal.priceTarget(shop,product),expected=record.previousApprovalId||null;
  if(expected!==(target?.historicalFingerprint===record.historicalFingerprint?target.id:null))return invalid('当前守护目标已变化，必须按新目标重新核验两种活动');
  const baseline=journal.histories(shop).find(b=>b.productId===product&&fingerprint(b)===record.historicalFingerprint);
@@ -109,11 +152,11 @@ export function getDualActivityDecision(journal,shop,product,now=Date.now()){
  if(reviews.length&&reviews.every(r=>r.status==='superseded'&&/有效活动/.test(r.supersededReason||'')))return {...record,valid:true,resolved:true,approvalAllowed:false,selectedType:null,selectedReviewId:null,blockedReason:'已通过独立当前活动回读收尾，无须再次确认或创建。',schemes:record.schemes.map(s=>({...s,reviewId:record.reviewIds?.[s.type]||null}))};
  if(reviews.some(r=>!['pending','declined'].includes(r.status)))return invalid('部分价格记录已处理，等待按当前状态重新核验');
  if(record.expiresAt<=now)return invalid('双方案独立价格证据已过期，正在重新核验');
- const replay=makeDualActivityDecision({plan:record.plan,probes:record.probes,now:record.createdAt});
+ const replay=makeDualActivityDecision({plan:record.plan,probes:record.probes,now:record.createdAt,...(record.scopeRestriction?{scopeRestriction:record.scopeRestriction,journal}:{})});
  if(replay.pairKey!==record.pairKey)return invalid('双方案完整规格或价格依据无法重放核验');
  const declined=record.approvalAllowed&&journal.settings(dualDeclineKey(shop,product))?.intentKey===dualDecisionIntentKey(record);
  if(!declined&&reviews.some(r=>r.status==='declined'))return invalid('已有暂不调整的决策，先重新核验完整双方案');
- return {...record,valid:true,...(declined?{declined:true,approvalAllowed:false,blockedReason:'已选择暂不调整；相同守护目标和确切价格不会重复催办，仍会继续寻找不降价方案。'}:{}),schemes:record.schemes.map(s=>({...s,reviewId:record.reviewIds?.[s.type]||null})),selectedReviewId:record.reviewIds?.[record.selectedType]||null};
+ return brandScope({...record,valid:true,...(declined?{declined:true,approvalAllowed:false,blockedReason:'已选择暂不调整；相同守护目标和确切价格不会重复催办，仍会继续寻找不降价方案。'}:{}),schemes:record.schemes.map(s=>({...s,reviewId:record.reviewIds?.[s.type]||null})),selectedReviewId:record.reviewIds?.[record.selectedType]||null},scope);
 }
 export function assertDualProbeAllowed(journal,task,now=Date.now()){
  const grant=activeDualActivityCareGrant(journal,task?.shopId,now),original=task?.dualProbe?.plan;
@@ -135,7 +178,7 @@ export function validDualActivityApproval(journal,review){
   }
   const source=review.dualSource;if(!source||c.sourceFingerprint!==fingerprint(source))return false;
   if(source.probes.some(entry=>entry.task&&(entry.task.dualProbe?.grantId!==grant.id||fingerprint(entry.task.dualProbe?.choices)!==fingerprint(grant.choices))))return false;
-  const decision=makeDualActivityDecision({plan:source.plan,probes:source.probes,now:source.createdAt}),scheme=decision.schemes.find(s=>s.type===review.type);
+  const decision=makeDualActivityDecision({plan:source.plan,probes:source.probes,now:source.createdAt,...(source.scopeRestriction?{scopeRestriction:source.scopeRestriction,journal}:{})}),scheme=decision.schemes.find(s=>s.type===review.type);
   if(decision.expiresAt<=review.approvedAt)return false;
   if(decision.pairKey!==source.pairKey||scheme?.classification!=='non-reducing'||!scheme.candidate)return false;
   const basis=scheme.review;

@@ -24,7 +24,7 @@ test('timed risk exits produce exact reviews, isolate healthy recovery, then ver
  const origin=fixture.state.campaigns[0];
  Object.assign(origin,{name:'限时原活动',type:'限时抢购',status:'已失效',risk:true,startAt:now-60000,endAt:now+172740000,
   products:products.slice(0,2),removals:products.slice(0,2).map(p=>({productId:p.productId,name:p.name,
-   reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。\n该商品各SKU售卖价，最高价需在最低价的5.3倍以内，请修改后再提交。'}))});
+   reason:'该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。\n该商品各SKU售卖价，最高价需在最低价的3.5倍以内，请修改后再提交。'}))});
  const ended={id:'410001',name:'正常到期活动',type:'限时抢购',status:'已结束',risk:false,startAt:now-3*86400000,endAt:now-86400000,products:[products[2]]};
  fixture.state.campaigns.push(ended);
  products.forEach((p,i)=>journal.remember({source:'verified-platform-history',complete:true,shopId:policy.shopId,...p,

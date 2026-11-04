@@ -14,6 +14,7 @@ import {recoveryRequests,requestRecovery,updateRecoveryRequest,pauseRecoveryRequ
 import {priceRemovalAfterActiveHint} from './active-hint-removal.mjs';
 import {activeOriginalPriceRecoveryGrant} from './original-price-recovery-policy.mjs';
 import {activeDualActivityCareGrant,dualActivityTypes,dualProbePlan,makeDualActivityDecision,getDualActivityDecision} from './dual-activity-recovery.mjs';
+import {submissionInvestigationKey} from './submission-investigation.mjs';
 
 const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.startedAt)&&Number.isFinite(run.finishedAt)&&run.startedAt>0&&run.finishedAt>=run.startedAt&&run.finishedAt<=now+5000?
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
@@ -56,7 +57,11 @@ export class GuardianService {
       blocked:tasks.filter(t=>t.phase==='blocked').length,
       immediateRecovery:direct?{pending:direct.items.filter(r=>r.state==='pending').length,deferred:direct.items.filter(r=>r.state==='deferred').length,paused:direct.paused}:null,
       readHealth:this.platform.readHealth?.()||null,verificationSchedule:verificationSummary(this.journal,this.policy.shopId),
-      tasks:tasks.slice(0,100).map(t=>({id:t.id,title:t.title,phase:t.phase,products:t.plans.map(p=>p.productId),updatedAt:t.updatedAt,reason:t.reason||null,receipt:t.receipt||null}))};
+      tasks:tasks.slice(0,100).map(t=>{
+        const investigation=this.journal.settings('submission-full-investigation:'+t.shopId+':'+t.id)||this.journal.settings(submissionInvestigationKey(t.shopId,t.id));
+        return{id:t.id,title:t.title,phase:t.phase,products:t.plans.map(p=>p.productId),updatedAt:t.updatedAt,reason:t.reason||null,receipt:t.receipt||null,
+          ...(['unknown','submitting','verifying'].includes(t.phase)&&investigation?{investigation:{classification:investigation.assessment?.classification,reason:investigation.assessment?.reason,at:investigation.finishedAt}}:{})};
+      })};
   }
   recordRun(run){
     this.lastRun=run;if(run.ok)this.lastSuccessfulRun=run;
@@ -69,6 +74,22 @@ export class GuardianService {
     const latest=new Map(),histories=this.journal.histories(this.policy.shopId).sort((a,b)=>Number(!!a.generatedByGuardian)-Number(!!b.generatedByGuardian)||(b.historyAt||0)-(a.historyAt||0));
     for(const baseline of histories)if(!latest.has(baseline.productId))latest.set(baseline.productId,baseline);
     return preferCampaignBaselines(this.journal,this.policy.shopId,latest);
+  }
+  unresolvedRecoveryFor(productId,historicalFingerprint){
+    const entries=this.journal.unresolvedRecoveries?.(this.policy.shopId)||[];
+    return entries.find(entry=>{
+      const c=entry.closure;if(!c?.productIds?.includes(productId)||!c.sourceReferences?.some(r=>r.productId===productId&&r.historicalFingerprint===historicalFingerprint))return false;
+      const successorId=entry.successor?.taskId||entry.successor?.id;
+      return !successorId||this.journal.get(successorId)?.phase!=='verified';
+    })||null;
+  }
+  enqueueRecovery(shopId,plans,lossEvidence,now=this.now()){
+    const scoped=plans.map(p=>this.unresolvedRecoveryFor(p.productId,p.historicalFingerprint)).filter(Boolean);
+    if(scoped.length){
+      requireThat(plans.length===1&&scoped.length===1,'UNRESOLVED_BATCH_SCOPE','旧意图归档后的新恢复须逐商品核验');
+      lossEvidence={...lossEvidence,unresolvedRecoveryClosureId:scoped[0].closure.id};
+    }
+    return this.journal.enqueue(shopId,plans,lossEvidence,now);
   }
   restorePlan(baseline,current) {
     if(baseline.shopId===this.policy.shopId)this.journal.clearInactiveDisplayAfterPrecheck(this.policy.shopId,baseline.productId,current,this.now());
@@ -113,16 +134,18 @@ export class GuardianService {
     requireThat(loss?.complete===true&&loss.active===false&&!loss.ambiguous&&loss.lossKey&&loss.observedAt>0&&loss.observedAt<=this.now()&&this.now()-loss.observedAt<=120000,'LOSS_UNPROVEN','双方案恢复前必须独立证明商品当前没有有效活动');
     requireThat(!this.journal.list(plan.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===plan.productId)),'PENDING','已有未完成或未知结果，只独立回读，不重新提交');
     requireThat(this.platform.priceCheck,'DUAL_CHECK_UNAVAILABLE','当前平台适配器尚未提供两种活动的独立干净草稿核验');
-    const probes=[];
+    const probes=[],scopeRestriction=this.unresolvedRecoveryFor(plan.productId,plan.historicalFingerprint)?.closure||null;
     for(const type of [plan.type,...dualActivityTypes.filter(t=>t!==plan.type)]){
+      const bounds=scopeRestriction?.allowedActivityTypesByProduct?.find(p=>p.productId===plan.productId);
+      if(bounds&&!bounds.allowedTypes.includes(type))continue;
       requireThat(!this.stopRequested,'STOPPED','后台双方案核验已暂停');
       const task={id:randomUUID(),shopId:plan.shopId,title:'守护双方案核验-'+randomUUID().slice(0,12),phase:'queued',plans:[dualProbePlan(plan,type,grant.choices)],lossEvidence:lossEvidenceFor([loss]),submitAttempts:0,riskAttempts:0,dualProbe:{grantId:grant.id,choices:structuredClone(grant.choices),plan:structuredClone(plan)}};
       try{probes.push({type,task,observation:await this.platform.priceCheck(task)});}
       catch(error){if(['STOPPED','LOGIN_REQUIRED','SHOP_MISMATCH','READ_CLEANUP_BLOCKED'].includes(error.code))throw error;probes.push({type,error:{code:error.code||'READ_FAILED',message:String(error.message).slice(0,1000)}});}
     }
-    const decision=this.journal.recordDualActivityDecision(makeDualActivityDecision({plan,probes,now:this.now()}),this.now());
+    const decision=this.journal.recordDualActivityDecision(makeDualActivityDecision({plan,probes,journal:this.journal,...(scopeRestriction?{scopeRestriction}:{}),now:this.now()}),this.now());
     requireThat(decision?.valid,'DUAL_CHECK_PENDING',decision?.blockedReason||'两种活动的独立核验尚未完成');
-    if(!decision.selectedType)throw Object.assign(new Error(decision.approvalAllowed?'两种活动均已证明至少一个规格需要降价，等待逐规格明确确认。':'两种活动尚未都证明必须降价；继续自动核验，不要求确认未经证明的价格。'),{code:decision.approvalAllowed?'DUAL_REDUCTION_REQUIRED':'DUAL_CHECK_PENDING',detail:{dualPairKey:decision.pairKey}});
+    if(!decision.selectedType)throw Object.assign(new Error(decision.approvalAllowed?(scopeRestriction?.forbidNewLimitedQuota?'本次允许的限时方案需降价，限量额度依据不足；等待逐规格明确确认。':'两种活动均已证明至少一个规格需要降价，等待逐规格明确确认。'):'可用方案尚未完成价格核实；继续自动核验，不要求确认未经证明的价格。'),{code:decision.approvalAllowed?'DUAL_REDUCTION_REQUIRED':'DUAL_CHECK_PENDING',detail:{dualPairKey:decision.pairKey}});
     const scheme=decision.schemes.find(s=>s.type===decision.selectedType);
     if(scheme.type===plan.type&&scheme.unchanged)return plan;
     const target=this.journal.approveDualActivityDecision(plan.shopId,plan.productId,decision.pairKey,this.now());
@@ -305,7 +328,15 @@ export class GuardianService {
       if(current.phase==='unknown')this.journal.transition(task.id,'unknown','verifying',{},this.now());
       observed=await this.platform.readback(this.journal.get(task.id));
     }
-    if(!observed)return false;
+    if(!observed){
+      // Missing titles do not prove failed requests. Escalate old submissions
+      // to a diagnostic-only investigation without granting another submit.
+      const key='submission-full-investigation:'+task.shopId+':'+task.id,prior=this.journal.settings(key);
+      if(this.platform.investigateSubmission&&this.now()-(task.submittedAt||task.createdAt)>=3600000&&(!prior||this.now()-prior.finishedAt>=15*60000)){
+        this.journal.putSettings(key,await this.platform.investigateSubmission(task));
+      }
+      return false;
+    }
     const receipt=proveReadback(task.plans,observed,{title:task.title,now:this.now(),
       expectedRange:task.plans.some(p=>p.durationMs!=null)?task.draftProof?.observation:null});
     const current=this.journal.get(task.id);
@@ -405,7 +436,7 @@ export class GuardianService {
         const current=await this.platform.precheck(baseline),plan=await this.checkPriceRules(this.restorePlan(baseline,current),loss);
         const proof=lossEvidenceFor([loss]);
         requireThat(loss.lossKey,'LOSS_UNPROVEN','自动提价缺少当前失效证明');
-        let next=this.journal.enqueue(this.policy.shopId,[plan],proof,this.now());
+        let next=this.enqueueRecovery(this.policy.shopId,[plan],proof,this.now());
         if(next.phase==='blocked'&&next.submitAttempts===0&&next.retryAfter<=this.now())next=this.journal.transition(next.id,'blocked','queued',{plans:[plan],lossEvidence:proof,reason:null},this.now());
         if(next.phase==='queued')await this.execute(next);
         const outcome=this.journal.get(next.id);submitted=submitted||outcome.submitAttempts>0;
@@ -463,7 +494,7 @@ export class GuardianService {
     }
     // A price target or permitted missing SKU subset can change the final
     // discount group. Each final group gets new absence evidence at execution.
-    for(const group of recoveryBatches(ready,{key:m=>activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now())?m.baseline.productId:restorationGroupKey(m.plan)})){
+    for(const group of recoveryBatches(ready,{key:m=>activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now())||this.unresolvedRecoveryFor(m.plan.productId,m.plan.historicalFingerprint)?m.baseline.productId:restorationGroupKey(m.plan)})){
       if(this.stopRequested)break;
       let losses;
       try{
@@ -526,7 +557,7 @@ export class GuardianService {
       }
       if(!plans.length)continue;
       const lossEvidence=lossEvidenceFor(proofs);
-      let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
+      let task=this.enqueueRecovery(this.policy.shopId,plans,lossEvidence,this.now());
       if(task.phase==='blocked'&&eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId)).every(m=>m.request?.requestedAt>task.updatedAt)){
         if(this.journal.requestFreshUnsubmittedRecheck(task.id,Math.min(...eligible.filter(m=>plans.some(p=>p.productId===m.baseline.productId)).map(m=>m.request.requestedAt)),this.now()))task=this.journal.get(task.id);
       }
@@ -666,7 +697,7 @@ export class GuardianService {
       try{
         requireThat(members.every(m=>this.now()-m.plan.observedAt<=120000&&this.now()-m.loss.observedAt<=120000),'PROOF_EXPIRED','优先恢复的逐商品证据已过期');
         const plans=members.map(m=>m.plan),lossEvidence=lossEvidenceFor(members.map(m=>m.loss));
-        let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
+        let task=this.enqueueRecovery(this.policy.shopId,plans,lossEvidence,this.now());
         if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
         if(task.phase==='queued')await this.execute(task);
         task=this.journal.get(task.id);changed=changed||task.submitAttempts>0;
@@ -844,7 +875,7 @@ export class GuardianService {
         if(!plans.length)continue;
         requireThat(plans.every(p=>this.now()-p.observedAt<=120000),'PROOF_EXPIRED','本批预查已过期');
         const lossEvidence=lossEvidenceFor(losses);
-        let task=this.journal.enqueue(this.policy.shopId,plans,lossEvidence,this.now());
+        let task=this.enqueueRecovery(this.policy.shopId,plans,lossEvidence,this.now());
         if(task.phase==='blocked'&&task.submitAttempts===0&&task.retryAfter<=this.now())task=this.journal.transition(task.id,'blocked','queued',{plans,lossEvidence,reason:null},this.now());
         if(task.phase==='queued')await this.execute(task);
       }

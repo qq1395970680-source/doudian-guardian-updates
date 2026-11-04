@@ -28,7 +28,7 @@ import {authenticationView,markAuthenticationRequired,markAuthenticated} from '.
 import {activeOriginalRebuildGrant,setOriginalRebuildPolicy} from './original-rebuild-policy.mjs';
 import {buildRecoveryIssues} from './recovery-issues.mjs';
 import {activeOriginalPriceRecoveryGrant,setOriginalPriceRecoveryPolicy} from './original-price-recovery-policy.mjs';
-import {activeDualActivityCareGrant,setDualActivityCarePolicy,getDualActivityDecision} from './dual-activity-recovery.mjs';
+import {activeDualActivityCareGrant,setDualActivityCarePolicy,getDualActivityDecision,dualPriceApprovalReady} from './dual-activity-recovery.mjs';
 import {buildRecoveryWorkspace,workspaceSchemes} from './recovery-workspace.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
@@ -79,7 +79,8 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    for(const productId of new Set([...catalog.products.map(p=>p.productId),...reviews.map(r=>r.productId)]))dualDecisions.set(productId,getDualActivityDecision(reader,shopId,productId));
   }
   const ownership=workspaceOwnership({shopId,products:catalog.products,reviews,tasks,checks,requests:queue.items,hiddenProductIds:hidden,careEnabled:!!activeCareRecoveryGrant(journal,shopId),dualEnabled,dualDecisions});
-  return{catalog,hiddenProductIds:hidden,reviews,tasks,checks,requests:queue.items,requestsPaused:queue.paused,ownership,dualEnabled,dualDecisions};
+  const investigationsByTask=new Map(tasks.filter(t=>['unknown','submitting','verifying'].includes(t.phase)).map(t=>[t.id,journal.settings('submission-full-investigation:'+shopId+':'+t.id)||journal.settings('submission-investigation:'+shopId+':'+t.id)]));
+  return{catalog,hiddenProductIds:hidden,reviews,tasks,checks,requests:queue.items,requestsPaused:queue.paused,ownership,dualEnabled,dualDecisions,investigationsByTask};
  };
  const originalPricesOnly=()=>!!activeOriginalPriceRecoveryGrant(journal,shopId);
  const blockerView=(options={},context=displayContext())=>buildRecoveryBlockers({shopId,catalog:context.catalog,
@@ -160,14 +161,16 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     if(selectedId)requireThat(selected?.shopId===shopId&&selected.productId===productId&&['pending','approved','declined'].includes(selected.status)&&(!['pending','declined'].includes(selected.status)||selected.expiresAt>Date.now()),'PRICE_REVIEW_CHANGED','价格记录已变化或过期，请刷新列表');
     const assignment=view.ownership.byProduct.get(productId),dualDecision=view.dualDecisions.get(productId),paired=assignment?.reviewId?journal.priceReview(assignment.reviewId):null;
     const review=selectedId?selected:paired?.status==='pending'&&paired.expiresAt>Date.now()?paired:latest?.expiresAt>Date.now()?latest:journal.priceTarget(shopId,productId);
-    const approvalAllowed=!!(!selectedId&&view.dualEnabled&&dualDecision?.valid&&dualDecision.approvalAllowed&&dualDecision.schemes?.length===2&&dualDecision.schemes.every(s=>s.classification==='reduction-required')&&review?.status==='pending'&&review.dualPairKey===dualDecision.pairKey&&dualDecision.schemes.some(s=>s.reviewId===review.id));
+    const approvalAllowed=!!(!selectedId&&view.dualEnabled&&dualPriceApprovalReady(dualDecision)&&review?.status==='pending'&&review.dualPairKey===dualDecision.pairKey&&dualDecision.schemes.some(s=>s.reviewId===review.id));
     const readOnly=!!review&&(review.status!=='pending'||!!selectedId||view.dualEnabled&&!approvalAllowed);
     requireThat(record||review||view.catalog.products.some(p=>p.productId===productId),'PRICE_REVIEW_CHANGED','商品不在本店可展示列表');
     const pending=view.tasks.some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===productId))||assignment?.carePending===true;
     const canRecalculate=!selectedId&&!pending&&!!latest&&['pending','declined'].includes(latest.status);
-    const context={reviews:view.reviews,tasks:view.tasks,now:Date.now(),dualDecision},options=review?.status==='pending'&&!readOnly?blockerPriceOptions(review,context):[];
-    const dualSchemes=workspaceSchemes(!selectedId?dualDecision:null),comparison=buildActivityPriceComparison({review,reviews:context.reviews,tasks:context.tasks,shopId,productId,options,schemes:record?.schemes||{},now:context.now}).map(item=>{const s=dualSchemes.find(s=>s.type===item.type);return{...item,classification:s.classification,evidenceAt:s.evidenceAt,...(!selectedId&&view.dualEnabled?{reason:s.reason}:{}),...(s.classification==='reduction-required'?{rejectionState:'rejected'}:{})};});
-    const manualBasisKeys={};const manualTypes=review&&!readOnly&&manualPriceEditable(review)?['限时抢购','限量抢购'].filter(type=>{try{const basis=activityPriceBasis(review,type,context);manualBasisKeys[type]=basis.activityBasisKey||null;return true;}catch{return false;}}):[];
+    const context={reviews:view.reviews,tasks:view.tasks,now:Date.now(),dualDecision};
+    const excludedScheme=type=>!selectedId&&dualDecision?.scopeRestriction&&dualDecision.schemes?.find(s=>s.type===type&&s.scopeExcluded===true);
+    const options=review?.status==='pending'&&!readOnly?blockerPriceOptions(review,context).map(option=>{const excluded=excludedScheme(option.activityType);return excluded?{...option,available:false,reason:excluded.reason,unavailableReason:excluded.reason}:option;}):[];
+    const dualSchemes=workspaceSchemes(!selectedId?dualDecision:null),comparison=buildActivityPriceComparison({review,reviews:context.reviews,tasks:context.tasks,shopId,productId,options,schemes:record?.schemes||{},now:context.now}).map(item=>{const s=dualSchemes.find(s=>s.type===item.type);return{...item,classification:s.classification,evidenceAt:s.evidenceAt,...(!selectedId&&view.dualEnabled?{reason:s.reason}:{}),...(s.scopeExcluded?{scopeExcluded:true,scopeExclusion:s.scopeExclusion}:{}),...(s.classification==='reduction-required'?{rejectionState:'rejected'}:{})};});
+    const manualBasisKeys={};const manualTypes=review&&!readOnly&&manualPriceEditable(review)?['限时抢购','限量抢购'].filter(type=>{if(excludedScheme(type))return false;try{const basis=activityPriceBasis(review,type,context);manualBasisKeys[type]=basis.activityBasisKey||null;return true;}catch{return false;}}):[];
     const approvalBlockedReason=selectedId?'历史记录只读。':!view.dualEnabled?'请先启用双方案省心守护，让后台分别核验两种活动。':pending?assignment?.blockedReason||'后台正在处理或回读本商品。':dualDecision?.blockedReason||'尚未证明两种方案都必须降价，后台继续核验。';
     json(200,{shopId,productId,blocked:pending,blockedReason:assignment?.blockedReason||null,approvalAllowed,approvalBlockedReason:approvalAllowed?null:approvalBlockedReason,canRecalculate,readOnly,comparison,recheckReview:!selectedId&&latest?{id:latest.id,key:latest.key}:null,review:review?{...review,dualPairKey:dualDecision?.pairKey||review.dualPairKey||null,approvalAllowed,approvalBlockedReason:approvalAllowed?null:approvalBlockedReason,canRecalculate:canRecalculate&&review.id===latest?.id,options:review.status==='pending'&&!readOnly?options:undefined,activityComparison:comparison,manualTypes,manualBasisKeys,manualEditable:review.status==='pending'&&!readOnly&&manualPriceEditable(review)}:null});return;
    }
@@ -282,7 +285,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     const review=journal.priceReview(args.reviewId),context=displayContext();
     requireThat(review?.shopId===shopId&&review.key===args.key&&!context.hiddenProductIds.includes(review.productId),'PRICE_REVIEW_CHANGED','商品或建议已变化，请刷新列表');
     const dualDecision=context.dualDecisions.get(review.productId);
-    if(context.dualEnabled&&(path.endsWith('/preview')||args.decision==='approve'))requireThat(dualDecision?.valid&&dualDecision.approvalAllowed&&dualDecision.schemes?.length===2&&dualDecision.schemes.every(s=>s.classification==='reduction-required')&&args.dualPairKey===dualDecision.pairKey&&review.dualPairKey===dualDecision.pairKey&&dualDecision.schemes.some(s=>s.reviewId===review.id),'DUAL_ACTIVITY_RECHECK_REQUIRED','尚未证明两种方案都必须降价，或核验已更新；请等待后台重新核验。');
+    if(context.dualEnabled&&(path.endsWith('/preview')||args.decision==='approve'))requireThat(dualPriceApprovalReady(dualDecision)&&args.dualPairKey===dualDecision.pairKey&&review.dualPairKey===dualDecision.pairKey&&dualDecision.schemes.some(s=>s.reviewId===review.id),'DUAL_ACTIVITY_RECHECK_REQUIRED','可用方案尚未证明必须降价，或核验已更新；请等待后台重新核验。');
     if(path.endsWith('/preview')){service.assertBlockedPriceReview(review);const basis=activityPriceBasis(review,args.activityType||review.type,{reviews:journal.priceReviews(shopId),tasks:journal.list(shopId),dualDecision});json(200,{ok:true,option:manualPriceOption(basis,args.discounts)});return;}
     requireThat(args.decision!=='approve'||args.acceptBlockedPriceChange===true,'PRICE_CONSENT_REQUIRED','须明确确认只调整本商品的确切价格');
     const result=service.decidePriceReview({...args,approvalContext:'recovery-blockers'});json(200,{ok:true,review:result});return;

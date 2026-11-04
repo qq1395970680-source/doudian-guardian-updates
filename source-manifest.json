@@ -37,12 +37,12 @@
   {
     "path": "desktop\\assets\\GuardianOwnedProcesses.exe",
     "bytes": 13312,
-    "sha256": "C9E9803ADBE4207B23DCA301FB3794CAB00D46611571933057CC1407A50C33D0"
+    "sha256": "17DB5E4C12C38FD284C044AADF0A72CAC54FC835A41A1403757A535853971E52"
   },
   {
     "path": "desktop\\assets\\GuardianProfileVault.exe",
     "bytes": 4608,
-    "sha256": "B1537C85CF5E82365090001A4DC88041D5B507136450658828CF0FBFBD272F5D"
+    "sha256": "DC766B80A45CA4BFA7772691E9B65EA2C304C295482A149CD347D721DED55860"
   },
   {
     "path": "desktop\\backend-upgrade.mjs",
@@ -61,8 +61,8 @@
   },
   {
     "path": "desktop\\interrupted-upgrade-journal.mjs",
-    "bytes": 8843,
-    "sha256": "CC44580C71A4AC0876E3A2C321B73B53A6B3334E025D7A9AEEC147268F1E4D6C"
+    "bytes": 9085,
+    "sha256": "6F00E55D01D4EC9E087106F934E926DE8E9FA2D21E118EE18A34F25A4E07EB12"
   },
   {
     "path": "desktop\\main.mjs",
@@ -162,17 +162,17 @@
   {
     "path": "package-lock.json",
     "bytes": 128605,
-    "sha256": "AB74A6A134E8185E9B825796BA794CAFC557545A9FC8A75C5EC81A2526F21A8B"
+    "sha256": "5F732523435AA4EA5D4FA4479BC37298910DFCA9CA6790AE1FBBC3FB9558F51A"
   },
   {
     "path": "package.json",
     "bytes": 898,
-    "sha256": "563D3C3B7A79AF6205D2370FF847111A1813640D85C41B7D3B88048FDC925083"
+    "sha256": "F428415AEDDB25AE2230FB4FE29D4F1510C8543ECAEED2FFFB6AABBB6BB570D0"
   },
   {
     "path": "public\\activity-prices.js",
-    "bytes": 3060,
-    "sha256": "8C7DE7B797F5190B8544EC41582FF70CE04FE59AC79F2E576ACE0D24E053C465"
+    "bytes": 3110,
+    "sha256": "FB1D257BFC12A7D48E12DDB07A8BCBDDEB46D6A59E0D6E8F1CEE491162E7378C"
   },
   {
     "path": "public\\app.css",
@@ -186,8 +186,8 @@
   },
   {
     "path": "public\\blocker-prices.js",
-    "bytes": 7336,
-    "sha256": "C73D4E85233C0CDC89604A29BBCAA38F26920F6B9EC882235766D4E01C248DC7"
+    "bytes": 7681,
+    "sha256": "306000E806498C7A3FFCB4A289FAC91678ED27C5B49D8E3DCFC473B53F3B2AFC"
   },
   {
     "path": "public\\guardian.png",
@@ -226,8 +226,8 @@
   },
   {
     "path": "public\\recovery-workspace.js",
-    "bytes": 7561,
-    "sha256": "B790729622587680225EFDB7B9C03C82B571C1DD569EE26C8E84D2428FBFAFA5"
+    "bytes": 7573,
+    "sha256": "5CDC10FAC747CDD58C86C0F088851881C2885D289CA65B6897E3899AFDBB1AEA"
   },
   {
     "path": "README.md",
@@ -381,8 +381,8 @@
   },
   {
     "path": "src\\browser.mjs",
-    "bytes": 7460,
-    "sha256": "C65E666DC2706889FB4F02775F39D85F617F1A6A61324954A966F780EBEE7C8E"
+    "bytes": 8275,
+    "sha256": "FDE34FC90FAF3C2D349AC44323E7C7EA010212D907A7EC134B90F14B79E16479"
   },
   {
     "path": "src\\build.mjs",
@@ -456,8 +456,8 @@
   },
   {
     "path": "src\\dual-activity-recovery.mjs",
-    "bytes": 19647,
-    "sha256": "541C68CF6E59B8156CB2FD655001369F6F66496028033422714E241FE2137B4D"
+    "bytes": 28964,
+    "sha256": "C54914F2DEB808C65EC5F332080A4588945A0D40375761AA1C3A29247696BB8F"
   },
   {
     "path": "src\\history-reconfirmation.mjs",
@@ -466,8 +466,8 @@
   },
   {
     "path": "src\\journal.mjs",
-    "bytes": 57302,
-    "sha256": "63D0B40AE2AD62BBEAC47CDD4FA7A8D7FBB743D33CA35F0C8C811467C70B67B7"
+    "bytes": 58757,
+    "sha256": "D7DCB97A2E5B6BB04FAEA407F4755C5353BF714D6266E0C6E23236E6B61DE027"
   },
   {
     "path": "src\\limited-continuity.mjs",
@@ -490,6 +490,11 @@
     "sha256": "3C75A8D54E440A14438657E73FE8035A9EC6089B0ACA29DAD63F8365386AC844"
   },
   {
+    "path": "src\\official-query-coverage.mjs",
+    "bytes": 11580,
+    "sha256": "C62BAD83BC604C2BADE26DE5CA7ACCABF4B3E9D6F2D099303E08340A7110ED2B"
+  },
+  {
     "path": "src\\original-price-recovery-policy.mjs",
     "bytes": 3765,
     "sha256": "532CD4F6D4AD2F718A461AF9617190CFA4E44600A91C50BACADC2A9ABF9CE6CA"
@@ -506,8 +511,8 @@
   },
   {
     "path": "src\\platform.mjs",
-    "bytes": 79449,
-    "sha256": "00D893A5719237E1E54A8125EC0FD34618D95824639A022AD4948701FAF941EE"
+    "bytes": 86462,
+    "sha256": "80049D120A3ECB33220E38559B432870B5D532B35E47DEF2FA15765C27544AE0"
   },
   {
     "path": "src\\policy.mjs",
@@ -606,13 +611,13 @@
   },
   {
     "path": "src\\recovery-workspace.mjs",
-    "bytes": 4938,
-    "sha256": "12D4D02A30B34334106CC0CECB836CBA305DF4E0D34AFCAB4B8BFC21518771E0"
+    "bytes": 5403,
+    "sha256": "55BB0E3F01A515A1CA3CBED1464D74E7D5414B56C5E67AD401E162B99FF4C5E5"
   },
   {
     "path": "src\\removal-export.mjs",
-    "bytes": 7412,
-    "sha256": "660015ABEA7CEB65AEFEBAFAC05D687BF471616241F0BC4C8C9C32D1E4EFA922"
+    "bytes": 7656,
+    "sha256": "C415E5403F30D6FAECB007FCD1B4521FA7884BEC31356B49294D1BAF2CD9EAD0"
   },
   {
     "path": "src\\scan-load.mjs",
@@ -621,18 +626,33 @@
   },
   {
     "path": "src\\server.mjs",
-    "bytes": 39404,
-    "sha256": "D8B8371233B92F0B354F45E029B71F70A0951FD11D4994DF31F42EC8EA1927A9"
+    "bytes": 39909,
+    "sha256": "8E1514E504E21A6CE661DBD7A8C31F867D88CC427877EA400E3A63B138A165B4"
   },
   {
     "path": "src\\service.mjs",
-    "bytes": 76376,
-    "sha256": "E05E0B301B6E11052B4FCBD5047B653F4437EF64393463D9019851FB56B85A32"
+    "bytes": 78958,
+    "sha256": "EDA6700CF6E4EFAE0786A5538724AA89950C49CA3FF3FFF7D5C9D9F871283F02"
+  },
+  {
+    "path": "src\\submission-archive.mjs",
+    "bytes": 16866,
+    "sha256": "936845E40058863C84C274B57FD5FCF0D35EF2D5F8BA2E781C498BB00D520A6A"
+  },
+  {
+    "path": "src\\submission-investigation.mjs",
+    "bytes": 12386,
+    "sha256": "134A9793E6C8DA82707E169F8E185E376D74039684BEFC2C7EC38C2384C6C308"
   },
   {
     "path": "src\\timed-removal.mjs",
     "bytes": 2305,
     "sha256": "B0C3AFFA0C561AA0208DFD9D719EB11E64D25885A5DA0ACA1D62EC1FDFE1BF3F"
+  },
+  {
+    "path": "src\\unresolved-recovery.mjs",
+    "bytes": 23854,
+    "sha256": "040D914B15357C6E9C5639B1ABEEFD72CBB2C8EF2FE21C3CA6D21A2A468BCC1F"
   },
   {
     "path": "src\\updates.mjs",
@@ -651,8 +671,8 @@
   },
   {
     "path": "src\\workspace-ownership.mjs",
-    "bytes": 4420,
-    "sha256": "4582E9C150C28FD14C0E7DED782754F59D2293F407DEE42CDEBC12B292662EF7"
+    "bytes": 4394,
+    "sha256": "210CACDB33FDDE033E55FCE55ECE11EED67B79FD8BB7212BB3042FEB6D0C675D"
   },
   {
     "path": "Start.ps1",
@@ -970,6 +990,11 @@
     "sha256": "95F659329363BC74A558F11E30E4A96D9E98F3CB43C1962EB84AE097A424016B"
   },
   {
+    "path": "tests\\browser\\official-query-coverage.test.mjs",
+    "bytes": 7659,
+    "sha256": "18836EB1D0A0985C80F187133E6A39BD9258C67C4AC8937C8EF04D2378C47FED"
+  },
+  {
     "path": "tests\\browser\\onboarding-flow.test.mjs",
     "bytes": 7178,
     "sha256": "56FD86779AC2500328477A7B6F7EE4C57CF50C01635BCD6138310260E56C8923"
@@ -1150,6 +1175,11 @@
     "sha256": "B24F18A92599C7120130F9D92CBD13B0581036C134A790D8DB3B67D988BBB48A"
   },
   {
+    "path": "tests\\browser\\submission-investigation.test.mjs",
+    "bytes": 8774,
+    "sha256": "ABF51FB5FCB443ABA6DDEE4C645A3BC314379005DCA45A035C69F4239A92AE09"
+  },
+  {
     "path": "tests\\browser\\submit-label.test.mjs",
     "bytes": 2478,
     "sha256": "2D3C374B3D8682A113D0BCE1ADA57F8114D53E8C8B553F0C32189706C6344626"
@@ -1157,7 +1187,7 @@
   {
     "path": "tests\\browser\\timed-removal-recovery.test.mjs",
     "bytes": 5692,
-    "sha256": "582038E9C6222FF8356A80B56B1FBED7FBB219EE4FBF02AB162354583222F7FD"
+    "sha256": "18AF6CD323EA5F4776EAEC65A29AFA508FA9249839E3981788E8F6CE49EFEAEB"
   },
   {
     "path": "tests\\browser\\workbench-design.test.mjs",
@@ -1405,6 +1435,11 @@
     "sha256": "F686AF7E345986FF941E99E635D130ADDFA111B5ACCB30C20B85E0C01E90304D"
   },
   {
+    "path": "tests\\helpers\\unresolved-dual-fixture.mjs",
+    "bytes": 5587,
+    "sha256": "C113B07BA5F0A6BA2D6FE6BCEB8EB69821EA64E87DEC080870BD13AA4B098F73"
+  },
+  {
     "path": "tests\\helpers\\workspace-queue-catalog-fixture.mjs",
     "bytes": 648,
     "sha256": "133738B48DEB28A687118944D910289923140A1EEE60FEE4E91C1B65AD710CB7"
@@ -1446,8 +1481,8 @@
   },
   {
     "path": "tests\\interrupted-upgrade-journal.test.mjs",
-    "bytes": 5938,
-    "sha256": "DF2562A3F14BD4754B4241468BF9EB76B4073B62CCAF938586270BA6F59FF9D7"
+    "bytes": 7360,
+    "sha256": "C8D6E5D85F05D90C24162DA67FE3CF18E2DA6C25235CF9F03071E5536A1366CB"
   },
   {
     "path": "tests\\inventory.test.mjs",
@@ -1520,9 +1555,14 @@
     "sha256": "A69D46DAFE04BD283153E56266C04D045F5D7F2D9FAA4AFEFB81E7CE49A15C5C"
   },
   {
+    "path": "tests\\official-query-coverage.test.mjs",
+    "bytes": 8198,
+    "sha256": "4A34ACE3C94F9CF92E3000C67B8BF8B6EC10EE9155D6430B340ABB8D9C622851"
+  },
+  {
     "path": "tests\\onboarding.test.mjs",
-    "bytes": 4036,
-    "sha256": "D3775B543C61C00AB89B44F9C0475BAB81CD47B3B0D601CF7E2EEDFD28D426A7"
+    "bytes": 4033,
+    "sha256": "3D2680F19D88B7C54282100BC2184565CA4D805F4B8ECD45AE3CDB7410244B07"
   },
   {
     "path": "tests\\original-price-recovery.test.mjs",
@@ -1730,6 +1770,11 @@
     "sha256": "9310364A2A8502264EC5327FB600EECFA230171279D7B76DEB7507CE4A34F45D"
   },
   {
+    "path": "tests\\removal-ratio-ambiguity.test.mjs",
+    "bytes": 4626,
+    "sha256": "D07143CE8D35156F0297C908B5B0C982084A01B46F6CD3364F4A07096F34DD2F"
+  },
+  {
     "path": "tests\\restart-unsubmitted.test.mjs",
     "bytes": 5792,
     "sha256": "749AA013233CB3751399102A76C4689137091F5146057EBCB86A054636E30728"
@@ -1760,9 +1805,24 @@
     "sha256": "A0473A72784FCC28E912C07F4974A825525657A40C05A4FDD1A4C2C31BF413E4"
   },
   {
+    "path": "tests\\session-checkpoint-diagnostic.test.mjs",
+    "bytes": 2408,
+    "sha256": "3E44690BB24CB9A1FA3DBE61F0FB88E397FBFD48C8E436D0BD76FBFEADB46C8D"
+  },
+  {
     "path": "tests\\small-batch-throughput.test.mjs",
     "bytes": 2158,
     "sha256": "ABC99012C308E71EA79C05F543228FCB042928727A12AA9D81C578BE28810DA0"
+  },
+  {
+    "path": "tests\\submission-archive.test.mjs",
+    "bytes": 18201,
+    "sha256": "F15689D9C74C7E5971DFA3EE3460B83509C5F32CAFE8920BC1C77C2B4DC1F761"
+  },
+  {
+    "path": "tests\\submission-investigation.test.mjs",
+    "bytes": 14317,
+    "sha256": "15254E0982EF933C00705C4CB750F764C78EDAD8672D5C0E4B88291009FF45D2"
   },
   {
     "path": "tests\\timed-cached-loss-refresh.test.mjs",
@@ -1773,6 +1833,26 @@
     "path": "tests\\timed-removal-loss.test.mjs",
     "bytes": 5153,
     "sha256": "F8D0045A12BC5A9CC29E1A3C78555F0E33DE9183EC46A385B21A0E571D73CDBE"
+  },
+  {
+    "path": "tests\\unresolved-dual-scope.test.mjs",
+    "bytes": 11028,
+    "sha256": "A1569301E7D9A174E62CA13D7C6E95BCC6FA6594AF577073AF69144D9C66A0F9"
+  },
+  {
+    "path": "tests\\unresolved-recovery.test.mjs",
+    "bytes": 21093,
+    "sha256": "0218A56E7E33A2239E894BA8F4F65A47B179212A8910B28A83BA470CB8A9B983"
+  },
+  {
+    "path": "tests\\unresolved-service.test.mjs",
+    "bytes": 3661,
+    "sha256": "3E77535ED6429F2E0816F3C677F181061EC875833DA5A87A5CB4C3BBA65EE58F"
+  },
+  {
+    "path": "tests\\unresolved-workspace.test.mjs",
+    "bytes": 10711,
+    "sha256": "39BBD83AFE13E53ACDF1ACF2ADFB7D21158D4563C30BF643C00D6640BE2BC152"
   },
   {
     "path": "tests\\update-network.test.mjs",

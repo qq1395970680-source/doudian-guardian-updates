@@ -160,10 +160,10 @@ function render(s){
  text('patrol-status',working?'同步中':s.running?'自动巡检':'待机');text('unknown-count',s.unknown||0);text('verified',s.verified||0);text('blocked',s.blocked||0);text('nav-count',s.unknown||0);$('nav-count').hidden=true;
  const reads=s.readHealth?.active||[],blockedCleanup=s.readHealth?.quarantined===true;
  if(reads.length){
-  const op=reads.reduce((a,b)=>a.startedAt<b.startedAt?a:b),remaining=Math.max(0,Math.ceil((op.deadline-Date.now())/1000));
-  text('progress',[s.action,p.stage,op.kind+(op.campaignId?' · 活动 '+op.campaignId:''),'步骤 '+op.lastStep,'读取期限剩余 '+remaining+' 秒'].filter(Boolean).join(' · '));
+   const op=reads.reduce((a,b)=>a.startedAt<b.startedAt?a:b),stage=String(p.stage||s.action||'');
+   text('progress',/规格/.test(stage)?'正在读取当前规格':/回读|结果/.test(stage)?'正在核实恢复结果':/店铺|登录/.test(stage)?'正在核对店铺连接':'正在核对商品活动');
   const age=Math.max(0,Math.floor((Date.now()-(p.at||s.patrolStartedAt||op.startedAt))/1000));
-  text('schedule','本轮开始：'+time(s.patrolStartedAt||op.startedAt)+'　业务进度已等待 '+age+' 秒　上次成功：'+time(s.lastSuccessfulRun?.finishedAt));
+   text('schedule','本轮进行中 · 开始：'+time(s.patrolStartedAt||op.startedAt)+' · 上次成功：'+time(s.lastSuccessfulRun?.finishedAt||(s.lastRun?.ok?s.lastRun.finishedAt:null)));
   if(age>=120){text('patrol-status','读取较慢');text('run-pill','正在等待平台读取');}
  }
  if(blockedCleanup){text('progress','读取已中止，专用浏览器关闭尚未确认。请使用程序工具中的“修复只读后台”。');text('patrol-status','清理待核实');text('run-pill','守护已暂停');}

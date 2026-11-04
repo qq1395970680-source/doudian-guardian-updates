@@ -37,12 +37,12 @@
   {
     "path": "desktop\\assets\\GuardianOwnedProcesses.exe",
     "bytes": 13312,
-    "sha256": "BE4BC27E6A73C5915B78C3697ED51A6A8EE35632735C1C19721BE38A237FFF55"
+    "sha256": "C9E9803ADBE4207B23DCA301FB3794CAB00D46611571933057CC1407A50C33D0"
   },
   {
     "path": "desktop\\assets\\GuardianProfileVault.exe",
     "bytes": 4608,
-    "sha256": "0BF472668FA28C143ACCAF4B4D424F2A25E1B60191F0DDFEF4B48AFD880BEA82"
+    "sha256": "B1537C85CF5E82365090001A4DC88041D5B507136450658828CF0FBFBD272F5D"
   },
   {
     "path": "desktop\\backend-upgrade.mjs",
@@ -181,8 +181,8 @@
   },
   {
     "path": "public\\app.js",
-    "bytes": 38833,
-    "sha256": "3F12692E396F9512869BC5DA59B1A52043C516EF2A329A7F547AA145AE032264"
+    "bytes": 38851,
+    "sha256": "72A4C320826D51C95E8D3060257D40CD72D93265B822D1E74EB6415EDBD9CD10"
   },
   {
     "path": "public\\blocker-prices.js",
@@ -1081,8 +1081,8 @@
   },
   {
     "path": "tests\\browser\\read-health-ui.test.mjs",
-    "bytes": 2691,
-    "sha256": "FC609A3634759FEB88131934371DDF128292B9A011C2B84A84C24F68B0FAA730"
+    "bytes": 3833,
+    "sha256": "4B6550E039756486EEEF821B7B79696FDC97C54D611C843DE19FE10F66CB82AC"
   },
   {
     "path": "tests\\browser\\read-resilience.test.mjs",

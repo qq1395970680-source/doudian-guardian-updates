@@ -2,7 +2,7 @@ import {GuardError,requireThat,id,fingerprint,saleFen,validateHistorical,proveDr
 import {priceMode,priceModeFields,validateFixedPrice} from './price-mode.mjs';
 import {waitForAuthenticatedAccount} from './login-state.mjs';
 import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice,scrollForm,formStructureSnapshot} from './platform-snapshot.mjs';
-import {until,delay,parseDate,collectForm,bindFormProducts,assertPrecheckMembership,moveFormPage,fitFormPage} from './collector.mjs';
+import {until,delay,parseDate,collectForm,warmFormMeasurement,bindFormProducts,assertPrecheckMembership,moveFormPage,fitFormPage} from './collector.mjs';
 import {makeWorkbook,assertFixedPriceTemplate} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
@@ -270,7 +270,14 @@ export class DoudianPlatform {
   const page=await this.open(LIST+`/edit?refer=edit&id=${campaign.id}&operate_use_mode=0`);
   try{
    await this.ready(page);await page.locator('#title').waitFor();await this.expand(page);
-   const {snapshot,products:formProducts}=await collectForm(page,{check:()=>this.check()});
+   // Native paging remounts this grid and can discard row measurements.
+   // Prefer a verified display-only page capacity before measuring the rows;
+   // the original complete collection still proves every SKU afterwards.
+   await fitFormPage(page,products.length,{check:()=>this.check()});
+   this.progress={stage:'读取一口价规格',campaignId:campaign.id,at:Date.now()};
+   const measurement=await warmFormMeasurement(page,products.length,{check:()=>this.check(),onProgress:value=>{this.progress={stage:'读取一口价规格',campaignId:campaign.id,at:Date.now(),...value};}});
+   this.progress={stage:'核对一口价金额',campaignId:campaign.id,at:Date.now()};
+   const {snapshot,products:formProducts,traversal}=await collectForm(page,{check:()=>this.check()});
    const dates=snapshot.dates.map(parseDate);
    requireThat(snapshot.priceModes?.length===1&&snapshot.priceModes[0].value==='一口价'&&snapshot.priceMode==='fixed'&&!snapshot.byDiscount&&
     snapshot.title===campaign.name&&snapshot.type===campaign.type&&dates.length===2&&dates[0]===campaign.startAt&&dates[1]===campaign.endAt&&
@@ -287,7 +294,7 @@ export class DoudianPlatform {
      Object.assign(sku,{discount:null,saleFen:row.saleFen,saleSource:'observed'});
     }
    }
-   await this.identity(page);
+   await this.identity(page);return{measurement,verification:{materialAttempts:traversal.materialAttempts,layoutRestarts:traversal.layoutRestarts,completePages:traversal.completePages,cellCount:traversal.cellCount,productCount:formProducts.length,skuCount:formProducts.reduce((n,p)=>n+p.skus.length,0)}};
   }finally{await page.close();}
  }
  async readRemovalExport(page,campaign){

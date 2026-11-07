@@ -88,6 +88,61 @@ export async function fitFormPage(page,count,{check=()=>{}}={}){
  await until(async()=>{check();const s=await page.evaluate(formSlice);return !s.busy&&s.pagination?.scopeConfirmed&&s.pagination.page===1&&s.pagination.pageSize===target.size&&fingerprint(s.counts)===fingerprint(before.counts);},'商品页容量变更未核对');
  return true;
 }
+// ReactVirtualized measures rows only after mounting them. Let it mount the
+// long list without treating estimates as a completed read. No SKU/price data
+// from this phase is returned or reused as authority: collectForm still needs
+// its original two equal, gap-free full content passes afterwards.
+export async function warmFormMeasurement(page,count,{check=()=>{},budgetMs=60000,maxSteps=600,maxPages=100,pauseMs=120,onProgress=()=>{}}={}){
+ // Reading is bounded by the existing 100-page traversal and at most 200
+ // products per verified native page; the upload workbook's 200-product cap
+ // must not become a new total-size restriction on existing activities.
+ requireThat(Number.isInteger(count)&&count>0&&count<=20000&&Number.isInteger(budgetMs)&&budgetMs>0&&budgetMs<=60000&&
+  Number.isInteger(maxSteps)&&maxSteps>0&&maxSteps<=600&&Number.isInteger(maxPages)&&maxPages>0&&maxPages<=100&&
+  Number.isInteger(pauseMs)&&pauseMs>=20&&pauseMs<=300,'WARMUP_LIMIT','只读测量预算无效');
+ const startedAt=Date.now(),deadline=startedAt+budgetMs,measurements=[],pages=[];let steps=0,busySamples=0,headerKey=null;
+ const bound=()=>{check();requireThat(Date.now()<deadline&&steps<maxSteps,'WARMUP_UNSTABLE','商品列表未能在只读测量预算内稳定，仍未完成完整核验');};
+ const read=async()=>{
+  bound();const s=await page.evaluate(formSlice);check();steps++;
+  requireThat(s.counts?.length&&s.counts.every(n=>n===count)&&s.grids<=1&&Number.isFinite(s.total)&&s.total>0&&!(s.dialogs||[]).length,'WARMUP_SCOPE','测量期间商品数量、网格或弹窗状态变化');
+  const header=fingerprint({counts:s.counts,title:s.title,type:s.type,mode:s.mode,rules:s.rules,dates:s.dates,priceModes:s.priceModes,byDiscount:s.byDiscount,...(s.priceMode==='fixed'?{priceMode:'fixed'}:{}),renew:s.renew});
+  if(headerKey===null)headerKey=header;requireThat(headerKey===header,'WARMUP_SCOPE','测量期间活动规则、时间或定价方式发生变化');
+  if(s.pagination?.present)requireThat(s.pagination.scopeConfirmed&&s.pagination.activeCount===1&&s.pagination.nextCount===1&&s.pagination.previousCount===1&&Number.isInteger(s.pagination.page)&&s.pagination.page>=1&&s.pagination.page<=maxPages,'FORM_PAGING_SCOPE','只读测量的分页归属不明确');
+  return s;
+ };
+ let snapshot=await read();
+ if(snapshot.pagination?.present)while(snapshot.pagination.page>1){bound();snapshot=await moveFormPage(page,snapshot,'previous',{deadline,check});check();}
+ for(let pageNumber=1;pageNumber<=maxPages;pageNumber++){
+  bound();await page.evaluate(scrollForm,0);check();await delay(pauseMs);check();let offset=0,tailKey=null,stableTailSamples=0;
+  for(;;){
+   snapshot=await read();const pagination=snapshot.pagination;
+   requireThat(!pagination?.present||pagination.page===pageNumber,'FORM_PAGING_SCOPE','只读测量的分页顺序不一致');
+   if(snapshot.busy){busySamples++;await delay(pauseMs);check();continue;}
+   if(snapshot.grids===0){pages.push(pageNumber);break;}
+   requireThat(snapshot.cells.length&&snapshot.cells.every(c=>Number.isFinite(c.top)&&c.top>=0&&Number.isFinite(c.height)&&c.height>0&&c.top+c.height<=snapshot.total+.6),'VIRTUAL_LAYOUT','只读测量发现未知虚拟行位置');
+   const last=Math.max(...snapshot.cells.map(c=>c.top+c.height));measurements.push({page:pageNumber,step:steps,offset,total:snapshot.total,lastMountedEnd:last});
+   onProgress({page:pageNumber,steps,total:snapshot.total,lastMountedEnd:last,busySamples,elapsedMs:Date.now()-startedAt});check();
+   if(last>=snapshot.total-.6){
+    const geometry=fingerprint({total:snapshot.total,cells:snapshot.cells.map(c=>[c.top,c.height])});stableTailSamples=geometry===tailKey?stableTailSamples+1:1;tailKey=geometry;
+    if(stableTailSamples>=2){pages.push(pageNumber);break;}
+    await delay(pauseMs);check();continue;
+   }
+   tailKey=null;stableTailSamples=0;
+   // Overlap the last mounted cell so short viewports do not jump over rows
+   // that still need measuring. Geometry may grow/shrink freely in this phase.
+   offset=Math.min(Math.max(offset+1,last-80),Math.max(0,snapshot.total-1));
+   bound();await page.evaluate(scrollForm,offset);check();await delay(pauseMs);check();
+  }
+  if(!snapshot.pagination?.present||snapshot.pagination.nextDisabled===true){
+   if(snapshot.pagination?.present)requireThat(!snapshot.pagination.pages?.some(n=>n>pageNumber),'FORM_PAGING_INCOMPLETE','只读测量未到声明的末页');
+   break;
+  }
+  requireThat(snapshot.pagination.nextDisabled===false&&pageNumber<maxPages,'FORM_PAGING_LIMIT','只读测量超过分页上限');
+  bound();snapshot=await moveFormPage(page,snapshot,'next',{deadline,check});check();
+ }
+ while(snapshot.pagination?.present&&snapshot.pagination.page>1){bound();snapshot=await moveFormPage(page,snapshot,'previous',{deadline,check});check();}
+ bound();await page.evaluate(scrollForm,0);check();await delay(pauseMs);check();
+ return{warmupOnly:true,completeVerification:false,startedAt,finishedAt:Date.now(),elapsedMs:Date.now()-startedAt,steps,busySamples,pages,measurements};
+}
 async function completePass(page,precheck,originalRisk,deadline,previousSnapshot,check){
  let s=previousSnapshot;
  if(s?.pagination?.present)while(s.pagination.page>1){check();s=await moveFormPage(page,s,'previous',{deadline,check});}

@@ -14,7 +14,7 @@ import {recoveryRequests,requestRecovery,updateRecoveryRequest,pauseRecoveryRequ
 import {priceRemovalAfterActiveHint} from './active-hint-removal.mjs';
 import {activeOriginalPriceRecoveryGrant} from './original-price-recovery-policy.mjs';
 import {activeDualActivityCareGrant,dualActivityTypes,dualProbePlan,makeDualActivityDecision,getDualActivityDecision,dualPriceProposalReady,displayProposalPricingContext} from './dual-activity-recovery.mjs';
-import {submissionInvestigationKey} from './submission-investigation.mjs';
+import {submissionInvestigationKey,submissionTaskFingerprint} from './submission-investigation.mjs';
 import {assertDualPriceBasis} from './legacy-price-floor.mjs';
 import {createPriceApprovalIntent,validateFreshPriceIntent} from './price-approval-intent.mjs';
 import {blockerPriceOptions,activityPriceBasis} from './activity-price-comparison.mjs';
@@ -24,6 +24,20 @@ const displayRun=(run,now)=>run&&typeof run.ok==='boolean'&&Number.isFinite(run.
  {startedAt:run.startedAt,finishedAt:run.finishedAt,ok:run.ok,...(run.code?{code:String(run.code).slice(0,80)}:{}),...(run.message?{message:String(run.message).slice(0,1000)}:{})}:null;
 const unavailableProduct=code=>['PRODUCT_RECYCLED','OFF_SHELF'].includes(code);
 const blockerDelay=code=>unavailableProduct(code)?86400000:15*60000;
+// Only a candidate's concrete readback-proof failures may trigger the bounded
+// diagnostic investigation. Authentication, cancellation, identity and access
+// errors must retain their original handling rather than starting more reads.
+const investigateReadbackFailure=code=>['READBACK_MEMBERSHIP','DUPLICATE_READBACK','READBACK_PRICE','READBACK_PRICE_SOURCE',
+ 'READBACK_RULES','READBACK_REMOVED','PRICE_MODE_CHANGED','LIMITED_READBACK','DRAFT_TIME_READBACK'].includes(code);
+function readbackFailureTrigger(task,observation,error,at){
+ const expected=task.plans.flatMap(p=>p.skus.map(s=>({productId:p.productId,skuId:s.id}))),
+  actual=Array.isArray(observation?.rows)?observation.rows.map(s=>({productId:s.productId,skuId:s.id})):null,
+  key=row=>JSON.stringify([row.productId,row.skuId]),expectedKeys=new Set(expected.map(key)),actualKeys=actual?new Set(actual.map(key)):null;
+ return{source:'independent-readback-proof-failure',diagnosticOnly:true,authorizesSubmit:false,taskFingerprint:submissionTaskFingerprint(task),
+  code:error.code,at,...(observation?{observation:structuredClone(observation)}:{}),
+  ...(actual?{membership:{expectedRows:expected.length,actualRows:actual.length,actualUniqueRows:actualKeys.size,
+   missing:expected.filter(row=>!actualKeys.has(key(row))),extra:actual.filter(row=>!expectedKeys.has(key(row)))}}:{})};
+}
 // Confirmed unavailable products only need a daily state recheck. A positive
 // current activity clears the check; a changed baseline also bypasses it.
 const knownBlockerCoolingDown=(prior,baseline,now)=>prior?.contextKey===fingerprint(baseline)&&
@@ -386,26 +400,45 @@ export class GuardianService {
     this.verificationAttemptsThisPass++;try{const resolved=await this.reconcile(task);finishVerification(this.journal,this.policy.shopId,claim,{resolved},this.now());return resolved;}
     catch(error){finishVerification(this.journal,this.policy.shopId,claim,{error},this.now());throw error;}
   }
+  async investigateUnresolvedSubmission(task,{error=null,observation=null}={}){
+    // This investigation is evidence only. It cannot close an unknown result,
+    // retry its submission, change the original plan or grant a new price.
+    const key='submission-full-investigation:'+task.shopId+':'+task.id,prior=this.journal.settings(key),at=this.now();
+    if(!this.platform.investigateSubmission||at-(task.submittedAt||task.createdAt)<3600000||
+      prior&&at-prior.finishedAt<15*60000)return;
+    requireThat(!this.stopRequested,'STOPPED','运行已停止，不再开始只读调查');
+    const trigger=error?readbackFailureTrigger(task,observation,error,at):null;
+    if(trigger)this.journal.putSettings('submission-readback-proof-failure:'+task.shopId+':'+task.id,trigger);
+    const investigation=await this.platform.investigateSubmission(task);
+    this.journal.putSettings(key,{...investigation,...(trigger?{trigger}:{}),diagnosticOnly:true,authorizesSubmit:false});
+  }
+  async readbackWithInvestigation(task){
+    try{return await this.platform.readback(task);}catch(error){
+      if(investigateReadbackFailure(error.code))await this.investigateUnresolvedSubmission(task,{error});
+      throw error;
+    }
+  }
   async reconcile(task) {
-    let observed=await this.platform.readback(task);
+    let observed=await this.readbackWithInvestigation(task);
     if(!observed&&this.platform.resumeOriginalRisk&&await this.platform.resumeOriginalRisk(task,async proof=>{
       this.platform.assertWrite();this.journal.beginRiskConfirmation(task.id,proof,this.now());
     })){
       const current=this.journal.get(task.id);
       if(current.phase==='unknown')this.journal.transition(task.id,'unknown','verifying',{},this.now());
-      observed=await this.platform.readback(this.journal.get(task.id));
+      observed=await this.readbackWithInvestigation(this.journal.get(task.id));
     }
     if(!observed){
       // Missing titles do not prove failed requests. Escalate old submissions
       // to a diagnostic-only investigation without granting another submit.
-      const key='submission-full-investigation:'+task.shopId+':'+task.id,prior=this.journal.settings(key);
-      if(this.platform.investigateSubmission&&this.now()-(task.submittedAt||task.createdAt)>=3600000&&(!prior||this.now()-prior.finishedAt>=15*60000)){
-        this.journal.putSettings(key,await this.platform.investigateSubmission(task));
-      }
+      await this.investigateUnresolvedSubmission(task);
       return false;
     }
-    const receipt=proveReadback(task.plans,observed,{title:task.title,now:this.now(),
-      expectedRange:task.plans.some(p=>p.durationMs!=null)?task.draftProof?.observation:null});
+    let receipt;
+    try{receipt=proveReadback(task.plans,observed,{title:task.title,now:this.now(),
+      expectedRange:task.plans.some(p=>p.durationMs!=null)?task.draftProof?.observation:null});}catch(error){
+      if(investigateReadbackFailure(error.code))await this.investigateUnresolvedSubmission(task,{error,observation:observed});
+      throw error;
+    }
     const current=this.journal.get(task.id);
     const verified=this.journal.transition(task.id,current.phase,'verified',{receipt},this.now());
     if(!this.priorityWatch)this.priorityWatch=new PriorityWatch(this.journal,this.policy.shopId);

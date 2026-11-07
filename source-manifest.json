@@ -162,12 +162,12 @@
   {
     "path": "package-lock.json",
     "bytes": 128605,
-    "sha256": "8AF78348F28F43098538783DAB4F646D15555063359032AC1C43766AE686D14A"
+    "sha256": "65E5FBFFDABC76A96DEF34FAC1FC1D39C07DFD8C068BE27E1012422F4F8392AF"
   },
   {
     "path": "package.json",
     "bytes": 898,
-    "sha256": "D56AC72BF08F7406429B0A7A5AC59C51BFB1E78D12624F7A378D1F698578FBA0"
+    "sha256": "9FFA69BBD12C6A631EA138BD95FB248CAEA271B041AB986595302BC4B37C9B62"
   },
   {
     "path": "public\\activity-prices.js",
@@ -236,8 +236,8 @@
   },
   {
     "path": "README.md",
-    "bytes": 21077,
-    "sha256": "A55C739AFA9EBF33AF0D0E958124A03EE93B2D3376E4522B05D424AC9AC1E053"
+    "bytes": 21604,
+    "sha256": "2F620F503F9B4BF567237E35039B633E1D2A9F6EF42C387DFD3A17E5FFC4AB48"
   },
   {
     "path": "scripts\\after-desktop-pack.mjs",
@@ -441,8 +441,8 @@
   },
   {
     "path": "src\\collector.mjs",
-    "bytes": 14975,
-    "sha256": "57A8980CC59E026841EAA1FF1571AB4A54976C3831F84BFA9F82559B9D5C26C4"
+    "bytes": 20040,
+    "sha256": "5E0CC4D11354BDA377DED9804536FAB1401DBC346587AD124F10131A372560EE"
   },
   {
     "path": "src\\date-control-snapshot.mjs",
@@ -541,8 +541,8 @@
   },
   {
     "path": "src\\platform.mjs",
-    "bytes": 95483,
-    "sha256": "EA84682AE355CDD6B89D0AC7586A72D4BDC6C37F7F829254C91F590DDD80E4CC"
+    "bytes": 96464,
+    "sha256": "6C794B8FE82EADD42EE6B6655C64A2DEE0470C89F0095650A7ECD4DF85FA5A52"
   },
   {
     "path": "src\\policy.mjs",
@@ -671,8 +671,8 @@
   },
   {
     "path": "src\\service.mjs",
-    "bytes": 87839,
-    "sha256": "9F8DA2F5C94628C04928EF3532516475E2A2A98ED4E3DF56ACB2CFEC0D510A3A"
+    "bytes": 90334,
+    "sha256": "285418E63C70217FA7A696BEC1711E41DE4975ABA74875E808D9092F4225BD02"
   },
   {
     "path": "src\\submission-archive.mjs",
@@ -1078,6 +1078,16 @@
     "path": "tests\\browser\\maximized-layout.test.mjs",
     "bytes": 5384,
     "sha256": "003C4D7B98CC4DAB56F122BF2DD05F0D3521AB7A3247E870CBBC0B04F634378C"
+  },
+  {
+    "path": "tests\\browser\\measurement-fixture.mjs",
+    "bytes": 8222,
+    "sha256": "5C4A93F12859C4E07F59BA31D1A41651181EB5FF2EDCC2071D744D45C4B2EE0C"
+  },
+  {
+    "path": "tests\\browser\\measurement-warmup.test.mjs",
+    "bytes": 5764,
+    "sha256": "2C920390755CBB1BAC23E83EFE7F8289DEA0499BCF0504A0282778A5BF0885C5"
   },
   {
     "path": "tests\\browser\\membership-recovery.test.mjs",
@@ -1715,6 +1725,11 @@
     "sha256": "0EB004D503124401A95DA5BA831F59A718A6DD02D1A5338B6FC94F585E5B515B"
   },
   {
+    "path": "tests\\measurement.test.mjs",
+    "bytes": 1699,
+    "sha256": "82B2B66EC1536F70B83249542092B954B817DFE304140DA2016F54833DA51E98"
+  },
+  {
     "path": "tests\\migration-api.test.mjs",
     "bytes": 3379,
     "sha256": "5A55EADE20F4EF39B83CF81DFD88F5523FB10F63F0A58D646E60D077BC63F82A"
@@ -2010,6 +2025,11 @@
     "sha256": "BC5C064A0443AD489A6590692D26ED393AF1DB8E9A77B014EAAE46AB2C66F50B"
   },
   {
+    "path": "tests\\submission-proof-failure-investigation.test.mjs",
+    "bytes": 9233,
+    "sha256": "BA76AD34F3F97DC49CF14AFEE619C5DA95FAB819AA829AE12EDFFB3701322877"
+  },
+  {
     "path": "tests\\timed-cached-loss-refresh.test.mjs",
     "bytes": 903,
     "sha256": "B5B42945DD9FBB52C94E9B3A81904A7D9860C48009266C601B828D0CC2901BFF"
@@ -2082,6 +2102,6 @@
   {
     "path": "USER-GUIDE.md",
     "bytes": 5264,
-    "sha256": "2D903CBF48418800FAD3F1B022C21A8B3EDE125706E97FB68BCB4604988C6E88"
+    "sha256": "5E31F5CEE72614D3B979ADB5454B65632D69D55C6C28D86C389A856FEF8962F9"
   }
 ]

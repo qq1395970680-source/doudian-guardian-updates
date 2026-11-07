@@ -96,7 +96,7 @@ async function completePass(page,precheck,originalRisk,deadline,previousSnapshot
   s=current.snapshot;while(s.pagination.page>1)s=await moveFormPage(page,s,'previous',{deadline,check});current=await pass(page,precheck,originalRisk,deadline,check);
  }
  const products=[],cells=[],pages=[],seen=new Set();let firstKey=null;
- const header=v=>({counts:v.counts,mode:v.mode,...(!precheck?{title:v.title,type:v.type,rules:v.rules,dates:v.dates,byDiscount:v.byDiscount,renew:v.renew}:{})});
+ const header=v=>({counts:v.counts,mode:v.mode,...(!precheck?{title:v.title,type:v.type,rules:v.rules,dates:v.dates,byDiscount:v.byDiscount,...(v.priceMode==='fixed'?{priceMode:'fixed'}:{}),renew:v.renew}:{})});
  for(let n=1;n<=100;n++){
   check();s=current.snapshot;const p=s.pagination;
   const key=fingerprint(header(s));if(firstKey===null)firstKey=key;
@@ -125,7 +125,7 @@ export async function collectForm(page,{precheck=false,originalRisk=false,check=
    check();const value=await completePass(page,precheck,originalRisk,deadline,previousSnapshot,check);previousSnapshot=value.snapshot;materialAttempts++;
    const key=fingerprint({products:value.products.map(p=>({productId:p.productId,offShelf:p.offShelf,
     ...(!precheck&&Object.hasOwn(p,'activityLimit')?{activityLimit:p.activityLimit}:{}),skus:p.skus.map(r=>materialRow(r,precheck))})),
-    counts:value.snapshot.counts,page:value.snapshot.page,pages:value.pageEvidence.map(v=>[v.page,v.productIds,v.pagination?.pageSize]),mode:value.snapshot.mode,...(!precheck?{title:value.snapshot.title,type:value.snapshot.type,rules:value.snapshot.rules,dates:value.snapshot.dates,byDiscount:value.snapshot.byDiscount,renew:value.snapshot.renew}: {})});
+    counts:value.snapshot.counts,page:value.snapshot.page,pages:value.pageEvidence.map(v=>[v.page,v.productIds,v.pagination?.pageSize]),mode:value.snapshot.mode,...(!precheck?{title:value.snapshot.title,type:value.snapshot.type,rules:value.snapshot.rules,dates:value.snapshot.dates,byDiscount:value.snapshot.byDiscount,...(value.snapshot.priceMode==='fixed'?{priceMode:'fixed'}:{}),renew:value.snapshot.renew}: {})});
    if(previous===key)return {...value,traversal:{materialAttempts,layoutRestarts,completePages:value.pageEvidence.map(v=>v.page),pages:value.pageEvidence,cellCount:value.cells.length}};previous=key;
   }catch(e){
    if(!['VIRTUAL_CHANGED','FORM_CHANGED','VIRTUAL_GAP'].includes(e.code))throw e;

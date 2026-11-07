@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {fingerprint,id,requireThat,proveDraft,saleFen,normalizeName} from './policy.mjs';
+import {fingerprint,id,requireThat,proveDraft,saleFen,normalizeName,priceMode,priceModeFields,expectedSaleFen,assertSamePriceMode} from './policy.mjs';
 import {campaignChoice} from './campaign-choice.mjs';
 import {makePriceReviews,makeNecessaryReductionEvidence} from './price-review.mjs';
 import {priceOptions} from './price-options.mjs';
@@ -69,9 +69,9 @@ export function setDualActivityCarePolicy(journal,shop,{enabled,acceptBothActivi
   journal.event(null,enabled?'dual-activity-care-enabled':'dual-activity-care-disabled',{shopId:shop,grantId:current.grantId},now);return current;
  });
 }
-export const dualPriceContext=plan=>fingerprint({shopId:plan.shopId,productId:plan.productId,historicalFingerprint:plan.historicalFingerprint,
+export const dualPriceContext=plan=>fingerprint({...priceModeFields(plan),shopId:plan.shopId,productId:plan.productId,historicalFingerprint:plan.historicalFingerprint,
  previousApprovalId:plan.priceApprovalId||null,type:plan.type,rules:plan.rules,durationMs:plan.durationMs??null,activityLimit:plan.activityLimit??null,
- skus:plan.skus.map(s=>({id:s.id,name:s.name,baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen,originalDiscount:s.originalDiscount??s.discount})).sort((a,b)=>a.id.localeCompare(b.id))});
+ skus:plan.skus.map(s=>({id:s.id,name:s.name,baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen,...(priceMode(plan)==='fixed'?{originalSaleFen:s.originalSaleFen??s.saleFen}:{}),originalDiscount:s.originalDiscount??s.discount})).sort((a,b)=>a.id.localeCompare(b.id))});
 export function dualProbePlan(plan,type,choices=dualActivityTypes.map(campaignChoice)){
  requireThat(dualActivityTypes.includes(type)&&dualActivityTypes.includes(plan.type),'CAMPAIGN_CHOICE_INVALID','双方案仅支持限时抢购与限量抢购');
  if(type===plan.type)return structuredClone(plan);
@@ -87,9 +87,10 @@ const pending=(type,reason,extra={})=>({type,classification:'pending',reason,evi
 function assertGuardedPlan(journal,plan,now=Date.now()){
  const baseline=journal.histories(plan.shopId).find(b=>b.productId===plan.productId&&fingerprint(b)===plan.historicalFingerprint),target=journal.priceTarget(plan.shopId,plan.productId);
  requireThat(baseline&&baseline.skus.length===plan.skus.length&&!plan.skippedSkuIds?.length,'DUAL_SKUS_INCOMPLETE','双方案必须匹配全部完整历史规格');
+ assertSamePriceMode(plan,baseline);if(target&&target.id===plan.priceApprovalId)assertSamePriceMode(plan,target);
  requireThat((plan.priceApprovalId||null)===(target?.historicalFingerprint===plan.historicalFingerprint?target.id:null),'PRICE_REVIEW_CHANGED','此前守护目标已变化');
  const seen=new Set();for(const sku of plan.skus){const old=baseline.skus.find(s=>s.id===sku.id),approved=target&&target.id===plan.priceApprovalId?target.rows.find(s=>s.id===sku.id):null;
-  requireThat(!seen.has(sku.id)&&old&&normalizeName(old.name)===sku.name&&old.baseFen===sku.baseFen&&(sku.originalDiscount??sku.discount)===old.discount&&sku.discount===(approved?.discount??old.discount)&&sku.saleFen===(approved?.saleFen??saleFen(old.baseFen,old.discount)),'PRICE_REVIEW_CHANGED','本次全部规格必须与当前已批准的确切守护价一致');seen.add(sku.id);
+  requireThat(!seen.has(sku.id)&&old&&normalizeName(old.name)===sku.name&&old.baseFen===sku.baseFen&&(sku.originalDiscount??sku.discount)===old.discount&&sku.discount===(approved?.discount??old.discount)&&sku.saleFen===(approved?.saleFen??expectedSaleFen(old,baseline)),'PRICE_REVIEW_CHANGED','本次全部规格必须与当前已批准的确切守护价一致');seen.add(sku.id);
  }return assertDualPriceBasis(journal,plan,now);
 }
 function assertOriginalPriceAttempt(journal,scope,plan,guardedPlan,now){
@@ -104,7 +105,7 @@ function assertOriginalPriceAttempt(journal,scope,plan,guardedPlan,now){
  requireThat(!successor||successor.submittedAt==null&&successor.task?.submitAttempts===0&&successor.task?.riskAttempts===0||historicalSubmitReplay,'UNRESOLVED_SUCCESSOR_SUBMITTED','本次原价新恢复已使用提交资格，只能继续回读');
  requireThat((plan.priceApprovalId?prior?.status==='approved'&&prior.historicalFingerprint===plan.historicalFingerprint&&prior.rows?.length===plan.skus.length:!prior)&&((target?.id||null)===(plan.priceApprovalId||null)||ownApprovedReplay)&&baseline&&scope.floor.skus.length===plan.skus.length&&baseline.skus.length===plan.skus.length&&!plan.skippedSkuIds?.length,'UNRESOLVED_ORIGINAL_PRICE_CHANGED','本次完整当前批准价格或原守护规格发生变化');
  const seen=new Set();for(const sku of plan.skus){const old=scope.floor.skus.find(s=>s.id===sku.id),base=baseline.skus.find(s=>s.id===sku.id),expected=prior?.rows.find(s=>s.id===sku.id);
-  requireThat(!seen.has(sku.id)&&old&&base&&(!prior||expected)&&base.baseFen===sku.baseFen&&old.baseFen===sku.baseFen&&normalizeName(base.name)===normalizeName(sku.name)&&sku.saleFen>=old.saleFen&&sku.discount===(expected?.discount??base.discount)&&sku.saleFen===(expected?.saleFen??saleFen(base.baseFen,base.discount))&&sku.saleFen===saleFen(sku.baseFen,sku.discount),'UNRESOLVED_ORIGINAL_PRICE_CHANGED','原价试恢复必须保留全部规格的当前批准金额，且不能低于原守护价');seen.add(sku.id);
+  requireThat(!seen.has(sku.id)&&old&&base&&(!prior||expected)&&base.baseFen===sku.baseFen&&old.baseFen===sku.baseFen&&normalizeName(base.name)===normalizeName(sku.name)&&sku.saleFen>=old.saleFen&&sku.discount===(expected?.discount??base.discount)&&sku.saleFen===(expected?.saleFen??expectedSaleFen(base,baseline))&&sku.saleFen===expectedSaleFen(sku,plan),'UNRESOLVED_ORIGINAL_PRICE_CHANGED','原价试恢复必须保留全部规格的当前批准金额，且不能低于原守护价');seen.add(sku.id);
  }
  if(scope.row.forbidNewLimitedQuota)requireThat(plan.type==='限时抢购','UNRESOLVED_QUANTITY','本次没有新限量额度授权');
  if(plan.type==='限量抢购'){const bound=closure.quantityBounds?.find(b=>b.productId===plan.productId);requireThat(bound?.soldOut===false&&Number.isSafeInteger(plan.activityLimit)&&plan.activityLimit>0&&plan.activityLimit<=bound.maxActivityLimit,'UNRESOLVED_QUANTITY','原价试恢复不能新增或突破已确认的限量额度');}
@@ -136,7 +137,7 @@ function classifyProbe(plan,entry,now,{scope=null,journal=null}={}){
    const losses=(task.lossEvidence?.priceRules||[]).filter(l=>l.removal?.productId===plan.productId&&l.removalEvidence?.activityType===type);
    requireThat(losses.length<=1,'PRICE_REVIEW_EVIDENCE','本类型的剔除价格依据重复');
    if(losses.length)try{review=makeRemovalPriceReview(expected,losses[0],probe.observedAt);}catch(error){if(error.code==='REMOVAL_RULE_AMBIGUOUS'&&scope){assertOriginalPriceAttempt(journal,scope,expected,plan,now);requireThat(Array.isArray(probe.warnings)&&probe.warnings.length===0&&probe.dialogs?.length===0&&probe.rows.every(row=>Array.isArray(row.errors)&&row.errors.length===0),'PRICE_RULE_UNKNOWN','原价试恢复须完整读取且没有任何规格错误、警告或待处理提示');originalPriceAttemptOnly=true;ambiguousRemovalEvidence=structuredClone(losses[0]);}else if(error.code!=='PRICE_REVIEW_UNNEEDED')throw error;}
-   review||={shopId:plan.shopId,productId:plan.productId,name:plan.name,historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,type,rules:structuredClone(expected.rules),...(expected.campaignTarget?{campaignTarget:structuredClone(expected.campaignTarget)}:{}),skippedSkuIds:[],rows:rowsFor(plan),source:'live-platform-draft',createdAt:probe.observedAt,expiresAt:probe.observedAt+120000,status:'pending'};
+   review||={...priceModeFields(plan),shopId:plan.shopId,productId:plan.productId,name:plan.name,historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,type,rules:structuredClone(expected.rules),...(expected.campaignTarget?{campaignTarget:structuredClone(expected.campaignTarget)}:{}),skippedSkuIds:[],rows:rowsFor(plan),source:'live-platform-draft',createdAt:probe.observedAt,expiresAt:probe.observedAt+120000,status:'pending'};
   }
   if(originalPriceAttemptOnly){review.originalPriceAttemptOnly=true;review.originalPriceAttemptReason='原价草稿通过，允许本次一次提交验证，尚未恢复成功；多倍率剔除原因未被合并或用于调价。';review.ambiguousRemovalEvidence=ambiguousRemovalEvidence;}
   requireThat(review&&review.rows.length===plan.skus.length&&!plan.skippedSkuIds?.length,'DUAL_SKUS_INCOMPLETE','双方案必须核对全部历史规格');
@@ -161,7 +162,7 @@ export function makeDualActivityDecision({plan,probes=[],now=Date.now(),scopeRes
  const schemes=dualActivityTypes.map(type=>{if(scope&&!scope.allowedTypes.includes(type))return{type,classification:'unavailable',reason:scope.quantityExclusion?'本次未确认新限量额度，禁止新建限量活动；仅可采用合法限时方案，需降价仍由本人确认。':scope.preserveLimitedQuota?'本次须保留原限量活动的未售罄额度，仅可在已核实上限内恢复限量活动，不能改走限时绕过额度。':'本次明确恢复意图未授权该活动类型。',evidenceAt:null,review:null,scopeExcluded:true,scopeExclusion:scope.scopeKind||'activity-not-authorized',scopeClosureKey:scope.closureKey};const entries=probes.filter(p=>p.type===type);return entries.length===1?classifyProbe(plan,entries[0],now,{scope,journal}):pending(type,'本方案尚未完成独立核验');});
  const candidates=schemes.filter(s=>s.classification==='non-reducing').sort((a,b)=>Number(!a.unchanged)-Number(!b.unchanged)||Number(a.type!==plan.type)-Number(b.type!==plan.type));
  const allowed=schemes.filter(s=>!s.scopeExcluded),approvalAllowed=allowed.length>0&&allowed.every(s=>s.classification==='reduction-required')&&allowed.some(completeCandidate)&&schemes.filter(s=>s.scopeExcluded).every(s=>scope&&scopeExclusionMatches(s,scope.scopeKind));
- const body={schema:1,source:'independent-dual-activity-drafts',shopId:plan.shopId,productId:plan.productId,historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,currentContext:dualPriceContext(plan),plan:structuredClone(plan),probes:structuredClone(probes),schemes,createdAt:now,
+ const body={...priceModeFields(plan),schema:1,source:'independent-dual-activity-drafts',shopId:plan.shopId,productId:plan.productId,historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,currentContext:dualPriceContext(plan),plan:structuredClone(plan),probes:structuredClone(probes),schemes,createdAt:now,
   expiresAt:Math.min(...schemes.map(s=>s.evidenceAt?s.evidenceAt+120000:now+120000)),approvalAllowed,selectedType:candidates[0]?.type||null,...(scopeRestriction?{scopeRestriction:structuredClone(scopeRestriction)}:{}),...(legacyPriceFloor?{legacyPriceFloor:structuredClone(legacyPriceFloor)}:{}),...(schemes.some(s=>s.originalPriceAttemptOnly)?{originalPriceAttemptOnly:true}: {})};
  return {...body,pairKey:fingerprint(body)};
 }
@@ -224,6 +225,6 @@ export function validDualActivityApproval(journal,review){
   if(decision.pairKey!==source.pairKey||scheme?.classification!=='non-reducing'||!scheme.candidate)return false;
   const basis=scheme.review;
   return review.shopId===basis.shopId&&review.productId===basis.productId&&review.historicalFingerprint===basis.historicalFingerprint&&(review.previousApprovalId||null)===(basis.previousApprovalId||null)&&
-   fingerprint(review.rows)===fingerprint(scheme.candidate.rows)&&review.rows.every(row=>row.saleFen>=row.previousFen&&row.saleFen===saleFen(row.baseFen,row.discount))&&fingerprint(review.campaignTarget||null)===fingerprint(basis.campaignTarget||null)&&fingerprint(review.rules)===fingerprint(basis.rules);
+   priceMode(review)===priceMode(basis)&&fingerprint(review.rows)===fingerprint(scheme.candidate.rows)&&review.rows.every(row=>row.saleFen>=row.previousFen&&row.saleFen===expectedSaleFen(row,review))&&fingerprint(review.campaignTarget||null)===fingerprint(basis.campaignTarget||null)&&fingerprint(review.rules)===fingerprint(basis.rules);
  }catch{return false;}
 }

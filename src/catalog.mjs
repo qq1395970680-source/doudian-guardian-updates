@@ -1,4 +1,5 @@
 import {fingerprint} from './policy.mjs';
+import {priceModeFields} from './price-mode.mjs';
 
 const active=c=>['进行中','未开始'].includes(c.status);
 const fresh=(at,now)=>Number.isFinite(at)&&at>0&&now-at>=-5000&&now-at<=5*60000;
@@ -36,14 +37,14 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
   const p=products.get(id);if(name&&!p.name)p.name=name;return p;
  };
  for(const h of histories.filter(h=>h.shopId===shopId).sort((a,b)=>Number(!!a.generatedByGuardian)-Number(!!b.generatedByGuardian)||(b.historyAt||0)-(a.historyAt||0))){
-  const p=ensure(h.productId,h.name);if(!p.history)p.history={campaignId:h.campaignId,historyAt:h.historyAt,observedAt:h.observedAt,skus:skuRows(h.skus)};
+  const p=ensure(h.productId,h.name);if(!p.history)p.history={...priceModeFields(h),campaignId:h.campaignId,historyAt:h.historyAt,observedAt:h.observedAt,skus:skuRows(h.skus)};
  }
  for(const c of campaigns){
   const detail=details.get(c.id);if(detail?.complete!==true)continue;
   for(const member of detail.products||[]){
    const p=ensure(member.productId,member.name);if(member.name)p.name=member.name;
    p.observedAt=p.observedAt?Math.min(p.observedAt,detail.observedAt):detail.observedAt;
-   const activity={campaignId:c.id,name:c.name,status:c.status,startAt:c.startAt,endAt:c.endAt,observedAt:detail.observedAt,skus:skuRows(member.skus)};
+   const activity={...priceModeFields({priceMode:member.priceMode??detail.priceMode}),campaignId:c.id,name:c.name,status:c.status,startAt:c.startAt,endAt:c.endAt,observedAt:detail.observedAt,skus:skuRows(member.skus)};
    if(member.removalConfirmed)p.removed.push(activity);
    else if(member.removalAmbiguous){p.ambiguous=true;p.reason='活动详情的商品状态仍待核实';}
    else if(c.status==='未开始')p.scheduled.push(activity);
@@ -59,7 +60,7 @@ export function buildCatalog({shopId,inventory=null,observation=null,histories=[
   for(const member of detail.products||[]){
    if(member.removalConfirmed||member.removalAmbiguous)continue;
    const p=ensure(member.productId,member.name);
-   p.lastObserved.push({campaignId:c.id,name:c.name,status:c.status,observedAt:detail.observedAt,skus:skuRows(member.skus)});
+   p.lastObserved.push({...priceModeFields({priceMode:member.priceMode??detail.priceMode}),campaignId:c.id,name:c.name,status:c.status,observedAt:detail.observedAt,skus:skuRows(member.skus)});
   }
  }
  for(const id of excluded)ensure(id);

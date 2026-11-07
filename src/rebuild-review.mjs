@@ -1,5 +1,5 @@
-import {fingerprint,normalizeName,requireThat,restorationDuration,isLimited} from './policy.mjs';
-export const rebuildMaterial=plan=>({type:plan.type,rules:structuredClone(plan.rules),durationMs:restorationDuration(plan),
+import {fingerprint,normalizeName,requireThat,restorationDuration,isLimited,priceModeFields} from './policy.mjs';
+export const rebuildMaterial=plan=>({...priceModeFields(plan),type:plan.type,rules:structuredClone(plan.rules),durationMs:restorationDuration(plan),
  ...(isLimited(plan)?{activityLimit:plan.activityLimit}:{})});
 export const rebuildSourceBinding=detail=>({referenceCampaignId:detail.referenceCampaignId,status:detail.status??null,
  startAt:detail.startAt??null,endAt:detail.endAt??null,branch:detail.branch});
@@ -12,7 +12,7 @@ export function makeRebuildReview(plan,detail,now=Date.now()){
  requireThat(hash===fingerprint(material)&&validCurrentAbsence(detail?.currentAbsence,plan.shopId,plan.productId,now)&&
   plan.observedAt>0&&now-plan.observedAt<=120000&&plan.observedAt<=now+5000&&typeof detail.referenceCampaignId==='string',
   'REBUILD_REVIEW_EVIDENCE','重新建活动确认需要本轮完整活动缺失和当前规格证明');
- const value={kind:'limited-rebuild',shopId:plan.shopId,productId:plan.productId,name:plan.name,
+ const value={...priceModeFields(plan),kind:'limited-rebuild',shopId:plan.shopId,productId:plan.productId,name:plan.name,
   historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,type:plan.type,rules:structuredClone(plan.rules),
   durationMs:restorationDuration(plan),...(isLimited(plan)?{activityLimit:plan.activityLimit}:{}),skippedSkuIds:[...plan.skippedSkuIds],
   rebuildTarget:rebuildMaterial(plan),rebuildSource:rebuildSourceBinding(detail),

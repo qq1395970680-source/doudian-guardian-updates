@@ -1,10 +1,11 @@
-import {fingerprint,requireThat,validateHistorical,isLimited,restorationGroupKey,normalizeName} from './policy.mjs';
+import {fingerprint,requireThat,validateHistorical,isLimited,restorationGroupKey,normalizeName,priceMode,priceModeFields} from './policy.mjs';
 import {setCampaignPolicy,campaignPolicy} from './campaign-policy.mjs';
 import {readBatchProducts,recoveryBatches} from './recovery-batches.mjs';
 import {assertRecoveryCapacity} from './recovery-capacity.mjs';
 
 const active=c=>['进行中','未开始'].includes(c.status);
 const importable=b=>{
+ requireThat(priceMode(b)!=='fixed','FIXED_CONVERSION_UNVERIFIED','一口价的批量活动迁移尚未独立核实，原活动保持不变');
  requireThat(b.skus.every(s=>s.discount>=10&&s.discount<=95),'TEMPLATE_RANGE','现有折扣超出已验证导入范围，原活动尚未作废');
  requireThat(new Set(b.skus.map(s=>normalizeName(s.name))).size===b.skus.length,'DUPLICATE_SKU','同名规格不能唯一回读，原活动尚未作废');
  assertRecoveryCapacity([b]);
@@ -30,7 +31,7 @@ export function conversionGroups(journal,shopId,baselines,productIds){
   .map(batch=>batch.map(m=>m.baseline.productId)));
 }
 export function campaignMaterial(c,d){
- return fingerprint({id:c.id,name:c.name,type:c.type,startAt:c.startAt,endAt:c.endAt,rules:d.rules,
+ return fingerprint({...priceModeFields(d),id:c.id,name:c.name,type:c.type,startAt:c.startAt,endAt:c.endAt,rules:d.rules,
   products:[...d.products].map(p=>({productId:p.productId,activityLimit:p.activityLimit,
    removalConfirmed:!!p.removalConfirmed,removalAmbiguous:!!p.removalAmbiguous,
    skus:[...p.skus].map(s=>({id:s.id,name:s.name,baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen})).sort((a,b)=>a.id.localeCompare(b.id))})).sort((a,b)=>a.productId.localeCompare(b.productId))});
@@ -69,7 +70,7 @@ export class CampaignConversion{
    const members=[];
    for(const p of d.products){
     requireThat(!p.removalAmbiguous,'CONVERSION_CHANGED','当前商品存在不明确的部分规格退出，先核实');
-    const b={source:'verified-platform-history',complete:true,shopId:this.shopId,productId:p.productId,name:p.name,campaignId:c.id,
+    const b={...priceModeFields(d),source:'verified-platform-history',complete:true,shopId:this.shopId,productId:p.productId,name:p.name,campaignId:c.id,
      historyAt:c.startAt,generatedByGuardian:c.name.startsWith('守护2-'),observedAt:d.observedAt,type:c.type,rules:d.rules,skus:p.skus,
      durationMs:c.endAt-c.startAt,...(isLimited(c)?{activityLimit:p.activityLimit}:{})};
     validateHistorical(b);this.journal.remember(b);members.push(p.productId);

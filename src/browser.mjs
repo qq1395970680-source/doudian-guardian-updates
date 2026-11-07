@@ -14,8 +14,8 @@ export class DedicatedBrowser {
     this.context=null;this.loginMode=false;this.shopId=null;this.sessionTimer=null;this.sessionSaving=null;this.sessionPersistence=null;
     this.closeTimeoutMs=test?closeTimeoutMs:15000;
   }
-  async openLogin({shopId=null,profileKey=null}={}){profileKey??='signin-'+randomUUID();await this.open(shopId,{login:true,profileKey});return profileKey;}
-  async open(shopId, {login=false,profileKey=null}={}) {
+  async openLogin({shopId=null,profileKey=null,background=false}={}){profileKey??='signin-'+randomUUID();await this.open(shopId,{login:true,profileKey,background});return profileKey;}
+  async open(shopId, {login=false,profileKey=null,background=false}={}) {
     if(shopId!==null)id(shopId,'店铺ID');
     requireThat(shopId!==null||login,'ACCOUNT_UNKNOWN','尚未识别店铺');
     const key=profileKey||'shop-'+shopId;requireThat(/^(shop-\d+|signin-[a-zA-Z0-9-]+)$/.test(key),'PROFILE_SCOPE','专用资料目录无效');
@@ -26,7 +26,7 @@ export class DedicatedBrowser {
     requireThat(inside&&!inside.startsWith('..')&&!isAbsolute(inside),'PROFILE_SCOPE','浏览器资料必须位于本程序专用目录');
     // Never attach to or copy the user's Chrome profile. Native headless runs
     // normal rendering without patching visibility, animation clocks or timers.
-    this.context=await chromium.launchPersistentContext(actual,{channel:'chromium',headless:!login,
+    this.context=await chromium.launchPersistentContext(actual,{channel:'chromium',headless:!login||background===true,
       chromiumSandbox:true,viewport:this.viewport,deviceScaleFactor:this.deviceScaleFactor,
       locale:'zh-CN',timezoneId:'Asia/Shanghai',acceptDownloads:true,timeout:45000});
     this.shopId=shopId;this.loginMode=login;this.profilePath=actual;
@@ -69,7 +69,14 @@ export class DedicatedBrowser {
   }
   async close() {
     const context=this.context;clearInterval(this.sessionTimer);this.sessionTimer=null;
-    if(context){await this.checkpointSession();await bounded(context.close(),this.closeTimeoutMs,Object.assign(Error('专用浏览器关闭尚未确认，登录操作已停止等待；请在程序工具中修复只读后台，任务记录保留'),{code:'BROWSER_CLOSE_UNCONFIRMED'}));}
+    if(context){
+      // A periodic snapshot may predate a logout/cookie rotation. Drain it,
+      // then take a fresh final snapshot instead of merely joining that old
+      // single-flight save and reviving cookies the platform just removed.
+      if(this.sessionSaving)await this.sessionSaving;
+      if(this.context===context)await this.checkpointSession();
+      await bounded(context.close(),this.closeTimeoutMs,Object.assign(Error('专用浏览器关闭尚未确认，登录操作已停止等待；请在程序工具中修复只读后台，任务记录保留'),{code:'BROWSER_CLOSE_UNCONFIRMED'}));
+    }
     if(this.context===context){this.context=null;this.loginMode=false;this.shopId=null;this.profilePath=null;}
   }
   async failure(page,taskId,stage,error,observation=null,captureObservation=null) {

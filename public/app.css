@@ -1824,13 +1824,30 @@ body.hidden-page .skeleton {
   flex-wrap: wrap;
 }
 
-#login-alert strong {
+#login-alert .login-alert-copy {
   flex: 1;
   min-width: 220px;
 }
 
+#login-alert strong,#login-alert small {
+  display: block;
+}
+
+#login-alert small {
+  margin-top: 5px;
+  line-height: 1.6;
+  font-size: 12px;
+  opacity: .85;
+}
+
 #login-alert[hidden] {
   display: none;
+}
+
+#login-alert.account-addition-notice {
+  background: #edf4ff;
+  color: #365f9b;
+  border: 1px solid #dbe7fa;
 }
 
 .blocker-card h2 {
@@ -2616,6 +2633,10 @@ h3 {
   background: #fff;
   color: #4f729b;
   font-size: 12px;
+}
+
+.manual-discount-input input[inputmode="decimal"] {
+  width: 105px;
 }
 
 .price-source-details {

@@ -23,8 +23,9 @@ test('16GB hosts use two read pages; pressure shrinks to one without changing re
 test('a low-load inventory drains every two-page batch and still visits the complete shop', async () => {
   const journal = new Journal(':memory:');
   const platform = new DoudianPlatform({browser: {}, policy: {shopId: '900001'}, journal, resourceBudget: efficient});
+  const observedAt = Date.now();
   const campaigns = Array.from({length: 9}, (_, i) => ({id: String(400001 + i), name: '活动' + i, type: '限时抢购',
-    status: '进行中', startAt: Date.now() - 1000, endAt: Date.now() + 86400000}));
+    status: '进行中', startAt: observedAt - 1000, endAt: observedAt + 86400000}));
   platform.listActive = async () => ({complete: true, observedAt: Date.now(), campaigns});
   let active = 0, peak = 0, calls = 0;
   const batches = [];

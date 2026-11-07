@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {fingerprint,id,normalizeName,requireThat,saleFen,validateHistorical,isLimited,validateLimited} from './policy.mjs';
 import {campaignChoice} from './campaign-choice.mjs';
+import {priceModeFields,assertSamePriceMode,expectedSaleFen} from './price-mode.mjs';
 
 export const TRANSFER_FORMAT='doudian-guardian-transfer';
 export const TRANSFER_MAX_BYTES=32*1024*1024;
@@ -9,7 +10,7 @@ const unresolved=t=>['submitting','verifying','unknown'].includes(t.phase);
 function tables(j){j.db.exec(`CREATE TABLE IF NOT EXISTS migration_imports(digest TEXT PRIMARY KEY,shop TEXT NOT NULL,at INTEGER NOT NULL,body TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS migration_task_archive(shop TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(shop,id));`);}
 function archivalPlan(plan){const {originalRiskAllowed,approvedRiskAllowed,priceApprovalId,priceApprovalKey,productCampaignApprovalId,fingerprint:planHash,...record}=plan;return record;}
-function taskMaterial(t){return {title:t.title,plans:t.plans.map(p=>({shopId:p.shopId,productId:p.productId,historicalFingerprint:p.historicalFingerprint,type:p.type,rules:p.rules,
+function taskMaterial(t){return {title:t.title,plans:t.plans.map(p=>({...priceModeFields(p),shopId:p.shopId,productId:p.productId,historicalFingerprint:p.historicalFingerprint,type:p.type,rules:p.rules,
  ...(p.durationMs!=null?{durationMs:p.durationMs}:{}),...(isLimited(p)?{activityLimit:p.activityLimit}:{}),
  skus:p.skus.map(s=>({id:s.id,name:normalizeName(s.name),baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen}))}))};}
 function taskRecord(t){return {id:t.id,title:t.title,phase:t.phase,plans:t.plans.map(archivalPlan),createdAt:t.createdAt,updatedAt:t.updatedAt,
@@ -53,7 +54,7 @@ export function validateTransfer(file,expectedShop,now=Date.now()){
  requireThat(new Set(p.excludedProductIds.map(v=>id(v))).size===p.excludedProductIds.length,'TRANSFER_DUPLICATE','排除商品重复');
  const taskIds=new Set();
  for(const t of p.tasks){
-  requireThat(typeof t.id==='string'&&/^[0-9a-f-]{36}$/.test(t.id)&&!taskIds.has(t.id)&&typeof t.title==='string'&&/^守护2-(?:[0-9a-f]{18}|(?:[1-9](?:\.\d)?折|多折扣)-[0-9a-f]{12})$/.test(t.title)&&phases.includes(t.phase),
+  requireThat(typeof t.id==='string'&&/^[0-9a-f-]{36}$/.test(t.id)&&!taskIds.has(t.id)&&typeof t.title==='string'&&/^守护2-(?:[0-9a-f]{18}|(?:[1-9](?:\.\d)?折|多折扣|一口价)-[0-9a-f]{12})$/.test(t.title)&&phases.includes(t.phase),
    'TRANSFER_TASK','任务记录格式无效或重复');taskIds.add(t.id);
   requireThat(Number.isSafeInteger(t.createdAt)&&t.createdAt>0&&Number.isSafeInteger(t.updatedAt)&&t.updatedAt>=t.createdAt&&t.updatedAt<=now+5000,
    'TRANSFER_TIME','任务记录时间无效');
@@ -71,13 +72,14 @@ export function validateTransfer(file,expectedShop,now=Date.now()){
    requireThat(b&&plan.shopId===p.shopId&&plan.productId===b.productId&&!members.has(plan.productId)&&
     (plan.type===b.type&&fingerprint(plan.rules)===fingerprint(b.rules)||converted||selected),
     'TRANSFER_TASK','任务与完整历史不匹配');members.add(plan.productId);
+   assertSamePriceMode(plan,b);
    requireThat(Array.isArray(plan.skus)&&plan.skus.length>0&&new Set(plan.skus.map(s=>s.id)).size===plan.skus.length,'TRANSFER_TASK','任务规格缺失或重复');
-   for(const s of plan.skus){const original=b.skus.find(r=>r.id===s.id);requireThat(original&&s.baseFen===original.baseFen&&normalizeName(s.name)===normalizeName(original.name)&&s.saleFen===saleFen(s.baseFen,s.discount),
+   for(const s of plan.skus){const original=b.skus.find(r=>r.id===s.id);requireThat(original&&s.baseFen===original.baseFen&&normalizeName(s.name)===normalizeName(original.name)&&s.saleFen===expectedSaleFen(s,plan),
     'TRANSFER_TASK','任务规格或价格与其历史来源不匹配');}
   }
  }
  return {digest:file.digest,shopId:p.shopId,name:p.name,createdAt:p.createdAt,version:p.version,historicalCount:p.histories.length,taskCount:p.tasks.length,
-  unknown:p.tasks.filter(unresolved).length,excludedProductIds:p.excludedProductIds,products:[...products.values()].map(b=>({productId:b.productId,name:b.name,skus:b.skus.map(s=>({id:s.id,name:s.name,baseFen:s.baseFen,discount:s.discount,saleFen:saleFen(s.baseFen,s.discount)}))}))};
+  unknown:p.tasks.filter(unresolved).length,excludedProductIds:p.excludedProductIds,products:[...products.values()].map(b=>({...priceModeFields(b),productId:b.productId,name:b.name,skus:b.skus.map(s=>({id:s.id,name:s.name,baseFen:s.baseFen,discount:s.discount,saleFen:expectedSaleFen(s,b)}))}))};
 }
 
 // The selected file is previewed first. Only a separate explicit UI confirmation

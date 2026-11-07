@@ -1,7 +1,7 @@
 import {validCarePriceApproval} from './care-recovery-policy.mjs';
 import {validDualActivityApproval} from './dual-activity-recovery.mjs';
 import {randomUUID} from 'node:crypto';
-import {id,requireThat,fingerprint} from './policy.mjs';
+import {id,requireThat,fingerprint,priceMode,priceModeFields} from './policy.mjs';
 import {combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
 
 const source='human-app-price-increase-consent';
@@ -38,9 +38,9 @@ export function isAutomaticPriceIncrease(review){
   let higher=false;const ids=new Set();
   for(const row of review.rows){
    if(ids.has(row.id))return false;ids.add(row.id);
-   const bounds=combinePriceConstraints(row.evidence),selected=selectClosestPriceStep({baseFen:row.baseFen,discount:row.previousDiscount},bounds);
-   if(fingerprint(bounds)!==fingerprint(row.bounds)||selected.discount!==row.discount||selected.saleFen!==row.saleFen||selected.previousFen!==row.previousFen||row.discount<row.previousDiscount)return false;
-   if(row.discount>row.previousDiscount){if(bounds.minFen==null&&bounds.minDiscount==null)return false;higher=true;}
+   const bounds=combinePriceConstraints(row.evidence),selected=selectClosestPriceStep({...priceModeFields(review),baseFen:row.baseFen,discount:row.previousDiscount,saleFen:row.previousFen},bounds);
+   if(fingerprint(bounds)!==fingerprint(row.bounds)||selected.discount!==row.discount||selected.saleFen!==row.saleFen||selected.previousFen!==row.previousFen||row.saleFen<row.previousFen)return false;
+   if(row.saleFen>row.previousFen){if(bounds.minFen==null&&bounds.minDiscount==null)return false;higher=true;}
   }
   return higher;
  }catch{return false;}

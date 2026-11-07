@@ -1,6 +1,6 @@
-import {fingerprint,normalizeName,requireThat,saleFen} from './policy.mjs';
+import {fingerprint,normalizeName,requireThat,saleFen,priceMode} from './policy.mjs';
 
-export const needsPriceReconfirmation=review=>review?.status==='approved'&&review.rows.some(row=>row.saleFen!==saleFen(row.baseFen,row.discount));
+export const needsPriceReconfirmation=review=>review?.status==='approved'&&priceMode(review)!=='fixed'&&review.rows.some(row=>row.saleFen!==saleFen(row.baseFen,row.discount));
 const material=r=>({shopId:r.shopId,productId:r.productId,historicalFingerprint:r.historicalFingerprint,
  previousApprovalId:r.previousApprovalId,previousRowsFingerprint:r.previousRowsFingerprint,
  kind:r.kind,source:r.source,type:r.type,rules:r.rules,durationMs:r.durationMs??null,activityLimit:r.activityLimit??null,

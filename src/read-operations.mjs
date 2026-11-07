@@ -2,6 +2,7 @@ import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
 import {GuardError,requireThat} from './policy.mjs';
 import {accountSlice} from './platform-snapshot.mjs';
+import {LoginStability} from './login-state.mjs';
 
 const scope=new AsyncLocalStorage(),rawObjects=new WeakMap();
 export const currentReadOperation=()=>scope.getStore();
@@ -23,7 +24,7 @@ const unwrap=value=>{
 class ReadOperation {
  constructor(manager,meta){
   this.manager=manager;this.meta=meta;this.id=randomUUID();this.startedAt=Date.now();this.deadline=this.startedAt+(meta.budgetMs||manager.budgetMs);
-  this.lastStep='start';this.lastProgressAt=this.startedAt;this.pages=new Set();this.pendingPages=new Set();this.proxies=new WeakMap();this.error=null;this.cleanupState='not-needed';
+  this.lastStep='start';this.lastProgressAt=this.startedAt;this.pages=new Set();this.pendingPages=new Set();this.proxies=new WeakMap();this.error=null;this.cleanupState='not-needed';this.loginStability=new LoginStability({stableMs:manager.loginStableMs});
   this.cancelled=new Promise((_,reject)=>{this.reject=reject;});this.cancelled.catch(()=>{});
  }
  status(){return{operationId:this.id,...this.meta,startedAt:this.startedAt,deadline:this.deadline,lastStep:this.lastStep,lastProgressAt:this.lastProgressAt,
@@ -66,7 +67,7 @@ class ReadOperation {
   try{for(const page of this.pages){
    if(page.isClosed())continue;
    const a=await bounded(page.evaluate(accountSlice),Math.min(1500,this.manager.stepMs),this.timeout('login-check'));
-   if(a.login){this.abort(new GuardError('LOGIN_REQUIRED','专用浏览器登录已失效，请重新登录',{readOperation:this.status()}));break;}
+   if(this.loginStability.observe(page,a)){this.abort(new GuardError('LOGIN_REQUIRED','专用浏览器登录已失效，请重新登录',{readOperation:this.status()}));break;}
   }}catch{}finally{this.polling=false;}
  }
  async cleanup(){
@@ -86,8 +87,8 @@ class ReadOperation {
  }
 }
 export class ReadOperations {
- constructor({budgetMs=300000,stepMs=45000,cleanupMs=5000,pollMs=750,isolate,onEvent=()=>{}}={}){
-  Object.assign(this,{budgetMs,stepMs,cleanupMs,pollMs,isolate,onEvent});this.active=new Map();this.last=null;this.quarantined=false;this.isolation=null;
+ constructor({budgetMs=300000,stepMs=45000,cleanupMs=5000,pollMs=750,loginStableMs=2250,isolate,onEvent=()=>{}}={}){
+  Object.assign(this,{budgetMs,stepMs,cleanupMs,pollMs,loginStableMs,isolate,onEvent});this.active=new Map();this.last=null;this.quarantined=false;this.isolation=null;
  }
  snapshot(){return{quarantined:this.quarantined,active:[...this.active.values()].map(v=>v.status()),last:this.last};}
  cancel(code='STOPPED',message='只读操作已停止'){for(const op of this.active.values())op.abort(new GuardError(code,message,{readOperation:op.status()}));}

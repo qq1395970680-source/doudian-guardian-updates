@@ -1,4 +1,4 @@
-import {requireThat,saleFen} from './policy.mjs';
+import {requireThat,saleFen,priceMode,expectedSaleFen,fixedActivityMaxFen} from './policy.mjs';
 
 const boundKeys=['minFen','maxFen','minDiscount','maxDiscount'];
 const relations=new Map([
@@ -21,6 +21,8 @@ function fen(value) {
 export function parsePriceConstraint(text) {
  if(typeof text!=='string')return null;
  const s=text.replace(/\s+/g,'');
+ let fixed=s.match(/^一口价金额([≤≥<>])(\d+(?:\.\d{1,2})?)$/);
+ if(fixed){const [key,offset]=relations.get(fixed[1]);return {[key]:fen(fixed[2])+offset,evidence:text};}
  let m=s.match(/^单品活动价[¥￥]\d+(?:\.\d{1,2})?[，,]需([≤≥<>])[¥￥](\d+(?:\.\d{1,2})?)[。！!]?$/);
  if(m){const [key,offset]=relations.get(m[1]);return {[key]:fen(m[2])+offset,evidence:text};}
  m=s.match(/^(?:活动价格|活动价|折后价)(不得高于|不能高于|不高于|小于等于|≤|必须低于|需低于|小于|<|不得低于|不能低于|不低于|大于等于|≥|必须高于|需高于|大于|>)(?:近|最近)15天(?:内)?最低(?:生效标)?价([（(：:])[¥￥]?(\d+(?:\.\d{1,2})?)元([）)])?[。！!]?$/);
@@ -56,6 +58,15 @@ export function combinePriceConstraints(statements) {
 // Calculate a proposal only. This function cannot authorize, fill, submit or
 // persist a price; execution must independently validate its approval path.
 export function selectClosestPriceStep(sku,bounds={}) {
+ if(priceMode(sku)==='fixed'){
+  const previousFen=expectedSaleFen(sku);
+  requireThat(bounds&&typeof bounds==='object'&&!Array.isArray(bounds)&&Object.entries(bounds).every(([key,value])=>
+   ['minFen','maxFen'].includes(key)&&Number.isSafeInteger(value)&&value>=0),'PRICE_RULE_UNKNOWN','一口价仅接受已明确读取的金额上下限，不能套用折扣档位');
+  const min=Math.max(1,bounds.minFen??1),max=Math.min(fixedActivityMaxFen(sku),bounds.maxFen??fixedActivityMaxFen(sku));
+  requireThat(min<=max,'NO_FEASIBLE_PRICE','明确的金额上下限内没有合法一口价');
+  const price=Math.max(min,Math.min(max,previousFen));
+  return {previousDiscount:null,previousFen,discount:null,saleFen:price,deltaFen:price-previousFen};
+ }
  const previousFen=saleFen(sku?.baseFen,sku?.discount);
  requireThat(sku.discount<=95,'TEMPLATE_RANGE','原折扣超出已验证官方导入模板范围');
  requireThat(bounds&&typeof bounds==='object'&&!Array.isArray(bounds)&&Object.entries(bounds).every(([key,value])=>

@@ -7,9 +7,10 @@ import {DedicatedBrowser} from '../../src/browser.mjs';
 import {dualBlockerFixture as blockerFixture,openDualPriceWorkspace as openPriceWorkspace} from '../helpers/dual-price-ui-fixture.mjs';
 import {activeOriginalPriceRecoveryGrant} from '../../src/original-price-recovery-policy.mjs';
 import {choosePriceStrategy} from '../helpers/price-workspace-ui.mjs';
+import {exactPriceUiRevalidation} from '../helpers/ui-exact-price-revalidation.mjs';
 
 for(const width of [1440,960])test('blocker screen previews exact manual prices and confirms one product only '+width,{timeout:60000},async()=>{
- const x=await blockerFixture(),dir=await mkdtemp(join(tmpdir(),'guardian-blocker-editor-ui-')),browser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width,height:1000}});
+ const x=await blockerFixture(),validation=exactPriceUiRevalidation(x),dir=await mkdtemp(join(tmpdir(),'guardian-blocker-editor-ui-')),browser=new DedicatedBrowser(join(dir,'ui'),{test:true,viewport:{width,height:1000}});
  try{
   await browser.open(x.review.shopId);const page=await browser.page(),errors=[],writes=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.method()==='POST')writes.push(r.url());});
   await page.goto(x.app.url);await page.waitForFunction(()=>document.getElementById('price-count').textContent==='1');
@@ -26,9 +27,10 @@ for(const width of [1440,960])test('blocker screen previews exact manual prices 
   await consent.check();
   await mkdir(resolve('artifacts'),{recursive:true});await page.screenshot({path:resolve('artifacts',`blocker-prices-${width}.png`),fullPage:false});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-  await approve.click();await page.waitForFunction(()=>document.querySelector('dialog[data-price-workspace] .price-review-heading .badge')?.textContent==='已确认价格');
+  await validation.confirm({page,dialog,button:approve});
   const target=x.journal.priceTarget(x.review.shopId,x.review.productId);assert.deepEqual(target.rows.map(r=>r.discount),[47,62]);assert.equal(target.approvalContext,'recovery-blockers');
   assert.equal(activeOriginalPriceRecoveryGrant(x.journal,x.review.shopId).key,x.grant.key);assert.equal(x.journal.get(x.f.task.id).submitAttempts,0);assert.equal(writes.filter(p=>p.endsWith('/decide')).length,1);assert.deepEqual(errors,[]);
+  await validation.assertNewerProposalVisible();
  }finally{await browser.close();await x.close();await rm(dir,{recursive:true,force:true});}
 });
 

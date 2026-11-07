@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import {priceMode,priceModeFields,expectedSaleFen,assertSamePriceMode} from './price-mode.mjs';
+export {priceMode,priceModeFields,expectedSaleFen,validateFixedPrice,assertSamePriceMode,fixedActivityMaxFen} from './price-mode.mjs';
 
 export class GuardError extends Error {
   constructor(code, message, detail = null) { super(message); this.code = code; this.detail = detail; }
@@ -26,7 +28,7 @@ export function restorationDuration(plan) {
   return value;
 }
 export function restorationGroupKey(plan) {
-  return fingerprint({type: plan.type, rules: plan.rules, durationMs:restorationDuration(plan),
+  return fingerprint({...priceModeFields(plan),type: plan.type, rules: plan.rules, durationMs:restorationDuration(plan),
     ...(isLimited(plan) ? {durationMs: plan.durationMs, discounts: [...new Set(plan.skus.map(s => s.discount))].sort((a,b) => a-b)} : {})});
 }
 function proveProductLimits(plans, observation) {
@@ -74,7 +76,7 @@ export function validateHistorical(baseline) {
   const r=baseline.rules;
   requireThat((isLimited(baseline) ? r.noLimit===false : r.noLimit===true) && r.noPerUserLimit===true && r.noWarmup===true && Number.isInteger(r.orderMinutes) && r.orderMinutes>0 && r.orderMinutes<=1440,
     'UNSUPPORTED_RULE','仅支持已核对的活动限量、不限购、不预热及明确订单取消时间');
-  for (const sku of baseline.skus) saleFen(sku.baseFen, sku.discount);
+  for (const sku of baseline.skus) expectedSaleFen(sku,baseline);
   return baseline;
 }
 export function planOriginalRestore(baseline, current, policy, now = Date.now()) {
@@ -97,15 +99,15 @@ export function planOriginalRestore(baseline, current, policy, now = Date.now())
     const saved = matches[0];
     requireThat(normalizeName(saved.name) === normalizeName(row.name), 'SKU_CHANGED', '规格名称发生变化');
     requireThat(saved.baseFen === row.baseFen, 'BASE_PRICE_CHANGED', '规格原价发生变化');
-    requireThat(saved.discount >= 10 && saved.discount <= 95, 'TEMPLATE_RANGE', '原折扣超出已验证官方导入模板范围');
+    requireThat(priceMode(baseline)==='fixed'||saved.discount >= 10 && saved.discount <= 95, 'TEMPLATE_RANGE', '原折扣超出已验证官方导入模板范围');
     used.add(saved.id);
     mappings.push({ id: saved.id, historicalId: saved.id, observedId:row.id??null, mapping:row.id?'id-and-name-and-base':'unique-name-and-base', name: normalizeName(row.name), baseFen: row.baseFen,
-      discount: saved.discount, saleFen: saleFen(saved.baseFen, saved.discount) });
+      ...(priceMode(baseline)==='fixed'?{originalSaleFen:saved.saleFen}:{}),discount: saved.discount, saleFen: expectedSaleFen(saved,baseline) });
   }
   const skippedSkuIds = baseline.skus.filter(s => !used.has(s.id)).map(s => s.id);
   requireThat(!skippedSkuIds.length || policy.allowMissingHistoricalSkus === true, 'MISSING_SKUS', '历史规格缺失，未获得保留子集的授权');
   const result = { shopId: baseline.shopId, productId: baseline.productId, name: baseline.name,
-    type: baseline.type, rules: structuredClone(baseline.rules), skus: mappings, skippedSkuIds,
+    ...priceModeFields(baseline),type: baseline.type, rules: structuredClone(baseline.rules), skus: mappings, skippedSkuIds,
     ...(baseline.durationMs!=null?{durationMs:baseline.durationMs}:{}),
     ...(isLimited(baseline) ? {activityLimit: baseline.activityLimit} : {}),
     historicalFingerprint: fingerprint(baseline), currentFingerprint: fingerprint(current), observedAt: current.observedAt,
@@ -114,6 +116,7 @@ export function planOriginalRestore(baseline, current, policy, now = Date.now())
 }
 export function proveReadback(plans, observation, { title, now = Date.now(), exactMembership = true, expectedRange = null } = {}) {
   requireThat(plans.length > 0 && observation?.complete === true, 'READBACK_INCOMPLETE', '没有完整独立回读');
+  for(const plan of plans)assertSamePriceMode(plan,observation);
   requireThat(observation.shopId === plans[0].shopId && observation.observedAt > 0 && observation.observedAt <= now + 5000 && now - observation.observedAt <= 120000,
     'READBACK_IDENTITY', '回读店铺或时间无效');
   if (title) requireThat(observation.title === title, 'READBACK_JOURNAL', '回读活动与任务名称不一致');
@@ -124,8 +127,10 @@ export function proveReadback(plans, observation, { title, now = Date.now(), exa
   if (exactMembership) requireThat(expected.length === actual.length, 'READBACK_MEMBERSHIP', '活动规格集合不一致');
   for (const row of expected) {
     const found = actual.find(r => r.productId === row.productId && r.id === row.id);
+    const plan=plans.find(p=>p.productId===row.productId);expectedSaleFen(row,plan);
     requireThat(found && found.baseFen === row.baseFen && found.discount === row.discount && found.saleFen === row.saleFen,
       'READBACK_PRICE', '回读原价、折扣或活动价不一致');
+    if(priceMode(plan)==='fixed')requireThat(found.saleSource==='observed','READBACK_PRICE_SOURCE','一口价必须直接独立读取确切金额，不能以计算或推测代替');
   }
   for (const plan of plans) requireThat(fingerprint(observation.rules) === fingerprint(plan.rules) && observation.type === plan.type,
     'READBACK_RULES', '回读活动规则不一致');
@@ -139,7 +144,7 @@ export function proveReadback(plans, observation, { title, now = Date.now(), exa
     ...(plans[0].durationMs!=null?{durationMs:plans[0].durationMs}:{}),
     ...(plans.some(isLimited) ? {type: '限量抢购', productLimits: structuredClone(observation.productLimits),
       durationMs: plans[0].durationMs, autoRenew: observation.rules.autoRenew} : {}),
-    salePriceEvidence:actual.every(r=>r.saleSource==='observed')?'observed':'verified-base-and-discount-with-computed-sale',
+    ...priceModeFields(plans[0]),salePriceEvidence:actual.every(r=>r.saleSource==='observed')?'observed':'verified-base-and-discount-with-computed-sale',
     evidenceFingerprint: fingerprint(observation) };
 }
 export function proveDraft(task, observation, now = Date.now()) {
@@ -148,6 +153,7 @@ export function proveDraft(task, observation, now = Date.now()) {
 function checkDraft(task, observation, now, continuation) {
   requireThat(observation?.kind === 'draft' && observation.title === task.title && observation.shopId === task.shopId && observation.complete === true,
     'DRAFT_IDENTITY', '创建草稿与当前任务不一致');
+  for(const plan of task.plans)assertSamePriceMode(plan,observation);
   requireThat(observation.observedAt > 0 && now - observation.observedAt <= 30000 && observation.observedAt <= now + 5000,
     'DRAFT_EXPIRED', '草稿校验已过期');
   requireThat(observation.warnings?.length === 0 && observation.dialogs?.length === 0, 'DRAFT_WARNING', '草稿仍有未解决的提示或弹窗');
@@ -192,7 +198,7 @@ export function proveOriginalRisk(task,observation,now=Date.now()){
 }
 
 export function draftMaterial(o){
-  return fingerprint({shopId:o.shopId,title:o.title,type:o.type,rules:o.rules,startAt:o.startAt,endAt:o.endAt,
+  return fingerprint({shopId:o.shopId,title:o.title,...priceModeFields(o),type:o.type,rules:o.rules,startAt:o.startAt,endAt:o.endAt,
     ...(isLimited(o) ? {productLimits: [...(o.productLimits || [])].sort((a,b) => a.productId.localeCompare(b.productId))} : {}),
     rows:[...(o.rows||[])].map(r=>({productId:r.productId,id:r.id,name:normalizeName(r.name),baseFen:r.baseFen,discount:r.discount,saleFen:r.saleFen})).sort((a,b)=>(a.productId+':'+a.id).localeCompare(b.productId+':'+b.id))});
 }

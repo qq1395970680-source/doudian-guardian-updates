@@ -1,4 +1,4 @@
-import {fingerprint,normalizeName,requireThat,saleFen,validateHistorical,restorationDuration} from './policy.mjs';
+import {fingerprint,normalizeName,requireThat,saleFen,validateHistorical,restorationDuration,priceMode} from './policy.mjs';
 import {carePriceCandidate} from './care-recovery-policy.mjs';
 import {combinePriceConstraints} from './price-constraints.mjs';
 import {selectRatioPrices} from './ratio-prices.mjs';
@@ -17,6 +17,7 @@ const sourceMaterial=source=>Object.fromEntries(Object.entries(source).filter(([
 // It deliberately does NOT validate the ambiguous ratio as a current rule and
 // cannot satisfy Journal.assertPricePlans or a financial submission boundary.
 function canonicalFloor(journal,plan,{requireCurrentTarget=true,now=Date.now()}={}){
+ check(priceMode(plan)==='discount','旧折扣倍率价格下限不能用于一口价或近似换算');
  check(plan&&typeof plan.shopId==='string'&&typeof plan.productId==='string'&&plan.priceApprovalId&&plan.priceApprovalKey,'缺少原守护目标身份');
  check(plan.fingerprint===fingerprint({...plan,fingerprint:undefined}),'旧目标执行计划材料指纹已变化');
  const review=journal.priceReview(plan.priceApprovalId),source=review?.careSource,consent=review?.automaticConsent;

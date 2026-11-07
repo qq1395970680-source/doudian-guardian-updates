@@ -5,6 +5,12 @@ export function formSlice() {
   const visible=e=>!!e&&e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
   const all=(s,r=document)=>[...r.querySelectorAll(s)];
   const money=s=>{const m=String(s).replaceAll(',','').match(/^[¥￥]?(\d+)(?:\.(\d{1,2}))?$/);return m?Number(m[1])*100+Number((m[2]||'').padEnd(2,'0')):null;};
+  const priceModes=all('th .ecom-mcenter-select-selection-item').filter(visible).map(e=>{
+    const clone=e.cloneNode(true);
+    for(const tag of all('.ecom-mcenter-sp-tag',clone))if(text(tag)==='上次选择')tag.remove();
+    return {raw:text(e),value:text(clone)};
+  });
+  const priceMode=priceModes.length===1?(priceModes[0].value==='一口价'?'fixed':priceModes[0].value==='打折'?'discount':null):null;
   const quotaColumns=all('tr').filter(r=>r.querySelector('th')).flatMap(r=>[...r.cells].map((c,i)=>({i,label:text(c).replace(/\s/g,'')})).filter(c=>c.label==='活动限量'));
   const quotaColumn=quotaColumns.length===1?quotaColumns[0].i:-1;
   const warningSelector='[role="alert"],.ecom-mcenter-zform-error,[class*="zform-item-explain-error"],[class*="form-item-explain-error"]';
@@ -16,16 +22,21 @@ export function formSlice() {
     const labels=all('[role="status"],[class*="-tag"],[class*="index-status"],[class*="index-errorInfo--"]',row).filter(visible).map(text);
     const input=row.querySelector('input[role="spinbutton"]'),name=(clone?.textContent||infoText).split(/原价[：:]/)[0].trim();
     const errors=all(warningSelector,row).filter(visible).map(text).filter(Boolean);
+    const fixedInputUnique=kind!=='sku'||all('input[role="spinbutton"]',row).length===1;
+    // Keep the discount branch's existing parser and field expression stable:
+    // the independent listing reader still adapts those two real expressions.
     const displayedSale=money(text(row.cells[2]).match(/折后价[：:]\s*[¥￥]([\d,.]+)/)?.[1]);
+    const selectedSale=priceMode==='fixed'?(fixedInputUnique?money(input?.value):null):displayedSale;
     // A rejected SKU can replace its ordinary sale label with an explicit
     // current-price constraint. Read that observed amount, never the bound or
     // a computed fallback. Conflicting evidence must remain unprovable.
     const errorSales=errors.map(s=>s.match(/^单品活动价\s*[¥￥]([\d,.]+)\s*[，,]\s*需[≤≥<>]/)?.[1]).filter(s=>s!==undefined).map(money);
-    const prices=[...(displayedSale!==null?[displayedSale]:[]),...errorSales];
-    const observedSale=prices.length&&prices.every(p=>p!==null&&p===prices[0])?prices[0]:null;
+    const prices=[...(selectedSale!==null?[selectedSale]:[]),...errorSales];
+    const observedSale=priceMode==='fixed'&&selectedSale===null?null:prices.length&&prices.every(p=>p!==null&&p===prices[0])?prices[0]:null;
     return {kind,productId:kind==='product'?infoText.match(/ID[：:]\s*(\d+)/)?.[1]||null:null,name,
       baseFen:money(infoText.match(/原价[：:]\s*[¥￥]([\d,.]+)/)?.[1]),
       discount:input?.value?Math.round(Number(input.value)*10):null,
+      ...(priceMode==='fixed'?{discount:null}:{}),
       saleFen:observedSale,
       ...(kind==='product'&&quotaColumn>=0?{activityLimit:(()=>{const inputs=all('input[role="spinbutton"]',row.cells[quotaColumn]);return inputs.length===1&&/^\d+$/.test(inputs[0].value)?Number(inputs[0].value):null;})()}:{}),
       errors,
@@ -38,11 +49,6 @@ export function formSlice() {
   const selected=all('input[type="radio"]:checked').map(e=>text(e.closest('label')));
   // The platform decorates a remembered selection with a separate "上次选择"
   // tag. Remove only that observed tag, never an arbitrary text suffix.
-  const priceModes=all('th .ecom-mcenter-select-selection-item').filter(visible).map(e=>{
-    const clone=e.cloneNode(true);
-    for(const tag of all('.ecom-mcenter-sp-tag',clone))if(text(tag)==='上次选择')tag.remove();
-    return {raw:text(e),value:text(clone)};
-  });
   const title=text(document.querySelector('.market-activity-radio-card-item.active [class*="index-title--"]'));
   const renew=selected.some(label=>/^(?:开启|开启自动续期)(?:推荐)?$/.test(label.replace(/\s/g,'')))?true:
     selected.includes('不开启')?false:title==='限量抢购'?null:false;
@@ -68,7 +74,7 @@ export function formSlice() {
   const originalRiskReady=dialogs.length===1&&/^\d+个商品存在低价风险，请谨慎新建/.test(text(dialogs[0]).replace(/\s/g,''))&&riskButtons.length===1;
   return {title:document.querySelector('#title')?.value||'',type:title,mode:text(document.querySelector('#select_product_method input:checked')?.closest('label')),
     rules:{noLimit:selected.includes('不设置'),noPerUserLimit:selected.includes('不限购'),noWarmup:selected.includes('不预热'),orderMinutes:Number(order.match(/^(\d+)分钟$/)?.[1]),...(title==='限量抢购'?{autoRenew:renew}:{})},
-    renew,priceModes,byDiscount:priceModes.length===1&&priceModes[0].value==='打折',
+    renew,priceModes,byDiscount:priceMode==='discount',...(priceMode==='fixed'?{priceMode:'fixed'}:{}),
     dates:all('input[placeholder="开始日期"],input[placeholder="结束日期"]').map(e=>e.value),counts,grids:grids.length,total:inner?Number.parseFloat(inner.style.height):1,cells,
     page:pager.length?Number(pager[0].title):1,pagerCount:pager.length,pagination,countDetails,
     busy:busyNodes.length>0,formBusy:busyNodes.some(e=>!e.matches('.ecom-mcenter-spin-spinning')||!e.closest('#marketing-global-spin-portal')),originalRiskReady,
@@ -111,6 +117,8 @@ export function listSlice() {
 export function detailSlice({limited=false}={}) {
   const text=e=>(e?.innerText||e?.textContent||'').trim(),body=text(document.body);
   const headerRows=[...document.querySelectorAll('tr')].filter(r=>r.querySelector('th'));
+  const fixedHeaders=headerRows.flatMap(r=>[...r.cells].map(c=>text(c).replace(/\s/g,''))).filter(label=>label==='一口价'||label==='一口价（元）');
+  const fixedLabel=/优惠方式\s*一口价(?:\s|$)|定价方式\s*一口价(?:\s|$)/.test(body);
   const quotaColumns=headerRows.flatMap(r=>[...r.cells].map((c,i)=>({i,label:text(c).replace(/\s/g,'')})).filter(c=>c.label==='活动限量'));
   const quotaColumn=quotaColumns.length===1?quotaColumns[0].i:-1;
   const quotaValue=cell=>{const value=text(cell).replaceAll(',','').trim();const match=value.match(/^(?:活动限量[：:]\s*)?(\d+)(?:\s*件)?$/);return match?Number(match[1]):null;};
@@ -119,7 +127,7 @@ export function detailSlice({limited=false}={}) {
   const products=rows.map(row=>{
     const info=[...row.cells].find(c=>/ID[：:]\s*\d+/.test(text(c))),productId=text(info).match(/ID[：:]\s*(\d+)/)?.[1],nested=row.nextElementSibling;
     const skus=nested?.querySelector('table')?[...nested.querySelectorAll('tr[data-row-key]')].map(r=>{
-      const t=text(r.cells[0]),discount=text(r.cells[1]).match(/^(\d(?:\.\d)?)折$/)?.[1],sale=text(r).match(/折后价[：:]\s*[¥￥]([\d,.]+)/)?.[1];
+      const t=text(r.cells[0]),discount=text(r.cells[1]).match(/^(\d(?:\.\d)?)折$/)?.[1],sale=text(r).match(/(?:折后价|一口价)[：:]\s*[¥￥]([\d,.]+)/)?.[1];
       return {id:r.getAttribute('data-row-key'),name:t.split(/原价[：:]/)[0].trim(),baseFen:money(t.match(/原价[：:]\s*[¥￥]([\d,.]+)/)?.[1]),discount:discount?Math.round(Number(discount)*10):null,saleFen:money(sale)};
     }):[];
     return {productId,name:text(info).split(/ID[：:]/)[0].trim(),key:row.getAttribute('data-row-key'),expanded:!!nested?.querySelector('table'),skus,
@@ -129,7 +137,7 @@ export function detailSlice({limited=false}={}) {
       removalConfirmed:/已退出活动|自动退出/.test(text(row)),removalAmbiguous:/已退出活动|自动退出/.test(text(nested))&&!/已退出活动|自动退出/.test(text(row))};
   });
   const renewal=body.match(/自动续期\s*(不开启|开启自动续期|已开启|开启)(?:\s|$)/)?.[1];
-  return {declared:Number(body.match(/商品数量\s*(\d+)\s*个/)?.[1]),products,
+  return {declared:Number(body.match(/商品数量\s*(\d+)\s*个/)?.[1]),products,...(fixedHeaders.length===1||fixedLabel?{priceMode:'fixed'}:{}),
     rules:{noLimit:/是否设置活动限量\s*不设置/.test(body),noPerUserLimit:/每人限购\s*不限购/.test(body),noWarmup:/是否预热\s*不预热/.test(body),orderMinutes:Number(body.match(/订单取消时间\s*(\d+)分钟/)?.[1]),
       ...(limited?{autoRenew:renewal?renewal!=='不开启':null}:{})}};
 }

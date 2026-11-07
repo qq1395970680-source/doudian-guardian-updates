@@ -28,7 +28,7 @@ test('unconfirmed page and context cleanup quarantines the browser instead of re
  await assert.rejects(manager.run({kind:'list'},async()=>true),{code:'READ_CLEANUP_BLOCKED'});
 });
 test('login interruption on a non-login URL closes the pending read without waiting for locator timeout',async()=>{
- const manager=new ReadOperations({budgetMs:1000,stepMs:800,cleanupMs:30,pollMs:5});
+ const manager=new ReadOperations({budgetMs:1000,stepMs:800,cleanupMs:30,pollMs:5,loginStableMs:20});
  const raw=fakePage();raw.evaluate=async()=>({login:true});
  await assert.rejects(manager.run({kind:'renewal'},async()=>{
   currentReadOperation().page(raw);await new Promise(()=>{});

@@ -1,4 +1,4 @@
-import {fingerprint,id,requireThat,proveDraft,proveOriginalRisk,saleFen,validateHistorical} from './policy.mjs';
+import {fingerprint,id,requireThat,proveDraft,proveOriginalRisk,saleFen,validateHistorical,priceModeFields,expectedSaleFen} from './policy.mjs';
 import {assessSubmissionQuery,adjudicateSubmissionInvestigation,submissionTaskFingerprint,officialQueryCoverage} from './submission-investigation.mjs';
 import {campaignChoice} from './campaign-choice.mjs';
 
@@ -11,14 +11,14 @@ const fresh=(at,now)=>Number.isSafeInteger(at)&&at>0&&at<=now+5000&&now-at<=1200
 const reject=(code,reason)=>({allowed:false,code,reason});
 export const unresolvedOriginalFingerprint=task=>fingerprint(task);
 const products=task=>[...new Set(task.plans.map(p=>p.productId))].sort();
-const priceFloors=task=>task.plans.map(p=>({productId:p.productId,type:p.type,historicalFingerprint:p.historicalFingerprint,
+const priceFloors=task=>task.plans.map(p=>({...priceModeFields(p),productId:p.productId,type:p.type,historicalFingerprint:p.historicalFingerprint,
  activityLimit:p.activityLimit??null,skus:p.skus.map(s=>({id:s.id,baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen})).sort((a,b)=>a.id.localeCompare(b.id))})).sort((a,b)=>a.productId.localeCompare(b.productId));
 function assertTask(task){
  requireThat(task&&typeof task.id==='string'&&task.id&&['unknown','submitting','verifying'].includes(task.phase),'UNRESOLVED_TASK','只处理明确尚未核实的原任务');
  id(task.shopId);requireThat(task.submitAttempts===1&&[0,1].includes(task.riskAttempts)&&Array.isArray(task.plans)&&task.plans.length>0,'UNRESOLVED_BOUNDARY','原提交计数或完整计划缺失');
  requireThat(task.plans.every(p=>p.shopId===task.shopId&&typeof p.productId==='string'&&Array.isArray(p.skus)&&p.skus.length)&&new Set(task.plans.map(p=>p.productId)).size===task.plans.length,'UNRESOLVED_SCOPE','原任务商品范围不完整或跨店');
  for(const p of task.plans){id(p.productId);requireThat(['限时抢购','限量抢购'].includes(p.type)&&hash(p.historicalFingerprint)&&new Set(p.skus.map(s=>s.id)).size===p.skus.length,'UNRESOLVED_SCOPE','原活动类型、历史或规格身份缺失');
-  for(const s of p.skus){id(s.id);requireThat(Number.isSafeInteger(s.baseFen)&&s.baseFen>0&&Number.isInteger(s.discount)&&s.discount>0&&s.discount<=100&&s.saleFen===saleFen(s.baseFen,s.discount),'UNRESOLVED_PRICE','原任务价格材料不完整');}}
+  for(const s of p.skus){id(s.id);requireThat(Number.isSafeInteger(s.baseFen)&&s.baseFen>0&&s.saleFen===expectedSaleFen(s,p),'UNRESOLVED_PRICE','原任务价格材料不完整');}}
  const proof=task.draftProof;requireThat(proof&&Number.isSafeInteger(proof.at)&&proof.at>0&&Number.isSafeInteger(task.submittedAt)&&task.submittedAt>=proof.at&&task.submittedAt-proof.at<=30000,'UNRESOLVED_DRAFT','缺少持久绑定的原提交草稿');
  requireThat(!task.receipt,'UNRESOLVED_RECEIPT','已有原提交回执线索，须先按活动编号核实，不能按查无归档');
  const verified=proveDraft(task,proof.observation,proof.at);

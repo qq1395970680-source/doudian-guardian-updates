@@ -1,3 +1,4 @@
+import {isFixedPrice} from './price-display.js';
 export function createRecoveries({getState,node,money,discount,time}){
  const $=id=>document.getElementById(id),list=$('recovery-records');
  let filter='verified',query='',page=0,shop,revision='',request=0,controller,searchTimer,result;
@@ -21,7 +22,8 @@ export function createRecoveries({getState,node,money,discount,time}){
    const meta=node('div','recovery-meta'),label=r.state==='verified'?'恢复成功':r.state==='pending'?(r.submitted?'结果待核实':'等待恢复'):r.submitted?'本次未恢复':'未提交';
    meta.append(node('span','badge '+(r.state==='verified'?'green':r.state==='pending'?'purple':'amber'),label),node('time','',time(r.verifiedAt||r.updatedAt)));
    summary.append(mark,title,meta,node('span','recovery-chevron','⌄'));card.append(summary);
-   const context=node('div','recovery-context');context.append(node('span','',r.mode==='original'?'原折扣恢复':r.mode==='automatic-price-increase'?'按授权自动提价':'按确认价格恢复'),node('span','',`${r.skuCount} 个规格`));
+   const fixed=isFixedPrice(r),context=node('div','recovery-context');context.append(node('span','',r.mode==='original'?(fixed?'原一口价恢复':'原折扣恢复'):r.mode==='automatic-price-increase'?'按授权自动提价':'按确认价格恢复'),node('span','',`${r.skuCount} 个规格`));
+   if(fixed)context.append(node('span','','一口价'));
    if(r.activityType)context.append(node('span','',r.activityType));
    if(r.activityType==='限量抢购')context.append(node('span','',`商品总限量 ${r.activityLimit} 件`));
    if(r.campaignId)context.append(node('span','',`活动 ${r.campaignId}`));card.append(context);
@@ -32,17 +34,18 @@ export function createRecoveries({getState,node,money,discount,time}){
     const facts=node('div','recovery-facts');for(const [label,value] of [['创建任务',time(r.createdAt)],['记录提交',time(r.submittedAt)],['独立回读',time(r.verifiedAt)]]){const fact=node('div');fact.append(node('small','',label),node('strong','',value));facts.append(fact);}body.append(facts);
     if(r.activityType==='限量抢购')body.append(node('p','helper',`限量抢购 · 商品共用 ${r.activityLimit} 件 · ${r.durationMs/86400000} 天 · 自动续期${r.autoRenew?'开启':'关闭'}。`));
     const tableWrap=node('div','price-table-scroll'),table=node('table','recovery-skus'),head=node('thead'),tr=node('tr'),rows=node('tbody');
-    for(const h of ['规格','原价','历史折后价',r.state==='verified'?'恢复折后价':'计划折后价','折扣'])tr.append(node('th','',h));head.append(tr);table.append(head,rows);tableWrap.append(table);body.append(tableWrap);
+    for(const h of ['规格','原价',fixed?'历史一口价':'历史折后价',r.state==='verified'?(fixed?'恢复一口价':'恢复折后价'):(fixed?'计划一口价':'计划折后价'),fixed?'定价方式':'折扣'])tr.append(node('th','',h));head.append(tr);table.append(head,rows);tableWrap.append(table);body.append(tableWrap);
     const pager=node('div','pagination'),info=node('span'),buttons=node('div'),prev=node('button','button small secondary','上一页规格'),next=node('button','button small secondary','下一页规格');
     const key=r.id;let skuPage=Math.min(expanded.get(key)||0,Math.max(0,Math.ceil(r.skus.length/10)-1));
     const draw=()=>{const f=document.createDocumentFragment();for(const s of r.skus.slice(skuPage*10,(skuPage+1)*10)){const row=node('tr');
      const title=node('td');title.append(node('strong','',s.name||s.id),node('small','',s.id));row.append(title);
-     for(const t of [money(s.baseFen),money(s.historicalSaleFen),money(s.saleFen),discount(s.discount)])row.append(node('td','',t));
+     for(const t of [money(s.baseFen),money(s.historicalSaleFen),money(s.saleFen),fixed?'固定金额':discount(s.discount)])row.append(node('td','',t));
      if(s.historicalSaleFen!==s.saleFen)row.classList.add('price-changed');f.append(row);}
      rows.replaceChildren(f);info.textContent=`${r.skus.length} 个规格 · ${skuPage+1} / ${Math.max(1,Math.ceil(r.skus.length/10))}`;
      prev.disabled=skuPage===0;next.disabled=(skuPage+1)*10>=r.skus.length;expanded.set(key,skuPage);};
     prev.onclick=()=>{skuPage--;draw();};next.onclick=()=>{skuPage++;draw();};buttons.append(prev,next);pager.append(info,buttons);body.append(pager);
-    if(r.salePriceEvidence==='verified-base-and-discount-with-computed-sale')body.append(node('p','detail-note','折后价根据独立核对过的原价和折扣计算。'));
+    if(fixed)body.append(node('p','detail-note','记录保留本次逐规格固定活动金额；到手价还受优惠券和礼金影响。'));
+    else if(r.salePriceEvidence==='verified-base-and-discount-with-computed-sale')body.append(node('p','detail-note','折后价根据独立核对过的原价和折扣计算。'));
     if(r.skippedSkuCount)body.append(node('p','detail-note',`${r.skippedSkuCount} 个已缺失历史规格未参与本次恢复，完整历史仍保留。`));
     body.append(node('p','recovery-task-id','任务编号 '+r.taskId));card.append(body);draw();
    }

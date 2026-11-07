@@ -1,4 +1,4 @@
-import {fingerprint,normalizeName,requireThat,saleFen} from './policy.mjs';
+import {fingerprint,normalizeName,requireThat,saleFen,priceMode,priceModeFields,expectedSaleFen,fixedActivityMaxFen} from './policy.mjs';
 import {parseRemovalPriceRatio} from './removal-export.mjs';
 
 // Enumerate possible minimum prices, not combinations of SKU discounts.
@@ -14,6 +14,8 @@ export function selectRatioPrices(skus,ratio,bounds=null){
  requireThat(Array.isArray(bounds)&&bounds.length===skus.length&&bounds.every(b=>b&&typeof b==='object'&&!Array.isArray(b)&&
   Object.entries(b).every(([k,v])=>['minFen','maxFen','minDiscount','maxDiscount'].includes(k)&&Number.isSafeInteger(v)&&v>=0)),
   'PRICE_RULE_UNKNOWN','逐规格价格范围不完整');
+ if(priceMode(skus[0])==='fixed')return selectFixedRatioPrices(skus,ratio,bounds);
+ requireThat(skus.every(s=>priceMode(s)==='discount'),'PRICE_MODE_CHANGED','倍率候选不能混合一口价与折扣');
  const ranges=skus.map((s,i)=>{
   requireThat(s.discount<=95&&s.saleFen===saleFen(s.baseFen,s.discount),'PRICE_REVIEW_EVIDENCE','已有守护价不一致');
   const b=bounds[i],low=Math.max(10,b.minDiscount??10,Math.floor(((b.minFen??1)-1)*100/s.baseFen)+1);
@@ -54,6 +56,40 @@ export function selectRatioPrices(skus,ratio,bounds=null){
  return best.rows;
 }
 
+function selectFixedRatioPrices(skus,{numerator:n,denominator:d},bounds){
+ const ranges=skus.map((s,i)=>{
+  requireThat(priceMode(s)==='fixed','PRICE_MODE_CHANGED','一口价倍率候选不能混合折扣');expectedSaleFen(s);
+  const b=bounds[i];requireThat(b.minDiscount==null&&b.maxDiscount==null,'PRICE_RULE_UNKNOWN','一口价不能套用折扣上下限');
+  const low=Math.max(1,b.minFen??1),high=Math.min(fixedActivityMaxFen(s),b.maxFen??fixedActivityMaxFen(s));
+  requireThat(low<=high,'NO_FEASIBLE_PRICE','逐规格明确金额范围内没有合法一口价');
+  return {low,high,preferred:Math.max(low,Math.min(high,s.saleFen))};
+ });
+ const low=Math.ceil(Math.max(...ranges.map(r=>r.low))*d/n),high=Math.min(...ranges.map(r=>r.high));
+ requireThat(low<=high,'NO_FEASIBLE_PRICE','逐规格金额范围与倍率要求没有合法交集');
+ // For a fixed residue modulo d, every score component is affine between
+ // these clamp breakpoints. Testing both ends of each interval for all d
+ // residues therefore covers the exact integer-fen optimum without scanning
+ // every cent or converting any amount to a discount.
+ const pivots=[low,high,...ranges.flatMap(r=>[r.preferred,Math.ceil(r.preferred*d/n)])],candidates=new Set();
+ for(const pivot of pivots)for(let x=Math.max(low,pivot-d);x<=Math.min(high,pivot+d);x++){
+  candidates.add(x);requireThat(candidates.size*skus.length<=50000000,'PRICE_RATIO_CAPACITY','一口价倍率组合较大，先核对商品规格，未生成或采用近似金额');
+ }
+ let best=null;
+ for(const minimum of [...candidates].sort((a,b)=>a-b)){
+  const maximum=Math.floor(minimum*n/d),rows=[];let absolute=0,reductions=0,changed=0,feasible=true;
+  for(let i=0;i<skus.length;i++){
+   const s=skus[i],range=ranges[i],min=Math.max(minimum,range.low),max=Math.min(maximum,range.high);
+   if(min>max){feasible=false;break;}
+   const price=Math.max(min,Math.min(max,s.saleFen)),delta=price-s.saleFen;
+   absolute+=Math.abs(delta);reductions+=Math.max(0,-delta);if(delta)changed++;rows.push({discount:null,saleFen:price});
+  }
+  if(!feasible)continue;
+  const score=[Number(reductions>0),absolute,reductions,absolute,changed];
+  if(!best||score.some((v,i)=>v<best.score[i]&&score.slice(0,i).every((x,j)=>x===best.score[j])))best={rows,score};
+ }
+ requireThat(best,'NO_FEASIBLE_PRICE','明确金额上下限内没有符合倍率的一口价');return best.rows;
+}
+
 export function validateRemovalPriceEvidence(plan,loss,now=Date.now()){
  const proof=loss?.removalEvidence,record=loss?.removal;
  const fresh=at=>Number.isFinite(at)&&at>0&&at<=now+5000&&now-at<=120000;
@@ -82,7 +118,7 @@ export function makeRemovalPriceReview(plan,loss,now=Date.now()){
  requireThat(Math.max(...previous)*ratio.denominator>Math.min(...previous)*ratio.numerator,
   'PRICE_REVIEW_UNNEEDED','当前守护价格已满足倍率，无需生成调整建议');
  let selected,originalUnavailable=null;
- try{selected=selectRatioPrices(plan.skus,ratio);}
+ try{selected=selectRatioPrices(plan.skus.map(s=>({...s,...priceModeFields(plan)})),ratio);}
  catch(error){
   if(error.code!=='NO_FEASIBLE_PRICE')throw error;
   // Keep the complete product visible in price confirmation even when the
@@ -95,7 +131,7 @@ export function makeRemovalPriceReview(plan,loss,now=Date.now()){
   historicalDiscount:sku.originalDiscount??sku.discount,previousDiscount:sku.discount,previousFen:sku.saleFen,
   ...selected[i],bounds:{},evidence:[record.reason]}));
  const rule=describeRatio(plan.skus,rows,ratio);
- const value={kind:'sku-price-ratio',shopId:plan.shopId,productId:plan.productId,name:plan.name,
+ const value={...priceModeFields(plan),kind:'sku-price-ratio',shopId:plan.shopId,productId:plan.productId,name:plan.name,
   historicalFingerprint:plan.historicalFingerprint,previousApprovalId:plan.priceApprovalId||null,
   type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows,ratio:rule,
   ...(originalUnavailable?{originalUnavailable}:{}),

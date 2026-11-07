@@ -26,11 +26,16 @@ async function vault(mode,profile,bytes){
 export async function saveProfileSession(profile,cookies,now=Date.now()){
  requireThat(Array.isArray(cookies)&&cookies.length<=10000,'PROFILE_SESSION_LIMIT','登录会话超过保存上限');
  const session=cookies.filter(c=>c.expires===-1);
- const bytes=Buffer.from(JSON.stringify({schema:1,savedAt:now,cookies:session}),'utf8');
+ // Keep the legacy session array readable by older installed versions. Also
+ // protect still-valid persistent cookies: Chromium's disk flush/encryption
+ // must not be the sole copy when the dedicated browser restarts. Preserve
+ // the platform's original expiration; never extend or revive expired login.
+ const persistentCookies=cookies.filter(c=>Number.isFinite(c.expires)&&c.expires>now/1000);
+ const bytes=Buffer.from(JSON.stringify({schema:1,savedAt:now,cookies:session,persistentCookies}),'utf8');
  requireThat(bytes.length<=max,'PROFILE_SESSION_LIMIT','登录会话超过保存上限');
  const encrypted=await vault('protect',profile,bytes),path=join(profile,'guardian-session.v1.dpapi'),temp=path+'.'+randomUUID()+'.tmp';
  try{await writeFile(temp,encrypted,{mode:0o600,flag:'wx'});await rename(temp,path);}finally{await unlink(temp).catch(()=>{});}
- return{savedAt:now,cookieCount:session.length};
+ return{savedAt:now,cookieCount:session.length+persistentCookies.length};
 }
 export async function loadProfileSession(profile,now=Date.now()){
  let encrypted;try{encrypted=await readFile(join(profile,'guardian-session.v1.dpapi'));}catch(error){if(error.code==='ENOENT')return[];throw error;}
@@ -38,8 +43,12 @@ export async function loadProfileSession(profile,now=Date.now()){
  const value=JSON.parse((await vault('unprotect',profile,encrypted)).toString('utf8'));
  requireThat(value.schema===1&&Number.isFinite(value.savedAt)&&value.savedAt<=now+5000&&Array.isArray(value.cookies)&&value.cookies.length<=10000,
   'PROFILE_SESSION_INVALID','已保存登录会话格式无效，原资料保留');
- requireThat(value.cookies.every(c=>c&&typeof c.name==='string'&&typeof c.value==='string'&&typeof c.domain==='string'&&typeof c.path==='string'&&c.expires===-1&&
-  typeof c.httpOnly==='boolean'&&typeof c.secure==='boolean'&&['Strict','Lax','None'].includes(c.sameSite)),
+ const valid=c=>c&&typeof c.name==='string'&&typeof c.value==='string'&&typeof c.domain==='string'&&typeof c.path==='string'&&
+  typeof c.httpOnly==='boolean'&&typeof c.secure==='boolean'&&['Strict','Lax','None'].includes(c.sameSite);
+ const persistent=value.persistentCookies??[];
+ requireThat(Array.isArray(persistent)&&persistent.length+value.cookies.length<=10000&&value.cookies.every(c=>valid(c)&&c.expires===-1)&&persistent.every(c=>valid(c)&&Number.isFinite(c.expires)&&c.expires>0),
   'PROFILE_SESSION_INVALID','已保存登录会话字段无效，原资料保留');
- return value.cookies;
+ const cookies=[...value.cookies,...persistent.filter(c=>c.expires>now/1000)],keys=cookies.map(c=>[c.name,c.domain,c.path,c.partitionKey||''].join('\u0000'));
+ requireThat(new Set(keys).size===keys.length,'PROFILE_SESSION_INVALID','已保存登录会话包含重复记录，原资料保留');
+ return cookies;
 }

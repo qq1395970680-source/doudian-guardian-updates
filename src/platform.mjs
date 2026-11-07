@@ -1,7 +1,9 @@
 import {GuardError,requireThat,id,fingerprint,saleFen,validateHistorical,proveDraft,proveOriginalRisk,proveReadback,isLimited} from './policy.mjs';
+import {priceMode,priceModeFields,validateFixedPrice} from './price-mode.mjs';
+import {waitForAuthenticatedAccount} from './login-state.mjs';
 import {accountSlice,listSlice,detailSlice,pagerSlice,formSlice,scrollForm,formStructureSnapshot} from './platform-snapshot.mjs';
 import {until,delay,parseDate,collectForm,bindFormProducts,assertPrecheckMembership,moveFormPage,fitFormPage} from './collector.mjs';
-import {makeWorkbook} from './workbook.mjs';
+import {makeWorkbook,assertFixedPriceTemplate} from './workbook.mjs';
 import {catalogObservation} from './catalog.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {inspectRecycledProduct,inspectManagedProduct} from './product-state.mjs';
@@ -52,14 +54,12 @@ export class DoudianPlatform {
  readBudget(){return normalizeReadBudget(this.resourceBudget());}
  async ensure(){this.check();if(!this.browser.context)await this.browser.open(this.policy.shopId,{profileKey:this.policy.profileKey});requireThat(!this.browser.loginMode,'LOGIN_OPEN','专用登录窗口尚未结束');}
  async identify(page){
-  await until(async()=>{this.check();const a=await page.evaluate(accountSlice);if(a.login)throw new GuardError('LOGIN_REQUIRED','专用浏览器需要登录');return a.names.length===1;},'店铺名称尚未加载');
-  let result=await page.evaluate(accountSlice),opened=false;
-  if(result.login)throw new GuardError('LOGIN_REQUIRED','专用浏览器需要登录');
+  let result=await waitForAuthenticatedAccount(page,{read:accountSlice,check:()=>this.check()}),opened=false;
   if(result.ids.length===0){
    const target=page.locator('[class*="index_shopTitle__"]:visible');requireThat(await target.count()===1,'ACCOUNT_UNKNOWN','店铺入口不唯一');
    await target.hover();opened=true;await delay(500);result=await page.evaluate(accountSlice);
    if(!result.ids.length)await target.click();
-   result=await until(async()=>{this.check();const a=await page.evaluate(accountSlice);if(a.login)throw new GuardError('LOGIN_REQUIRED','专用浏览器需要登录');return a.ids.length&&a;},'尚未读取到店铺 ID');
+   result=await waitForAuthenticatedAccount(page,{read:accountSlice,check:()=>this.check(),requireIds:true});
   }
   requireThat(result.ids.length===1&&result.names.length===1,'ACCOUNT_UNKNOWN','登录店铺身份不唯一');id(result.ids[0]);
   if(opened){await page.keyboard.press('Escape');await page.locator('body').hover({position:{x:5,y:5}});}
@@ -198,7 +198,7 @@ export class DoudianPlatform {
   // These values come from the just-verified independent platform read, never
   // an old journal receipt or a diagnostic. Global absence still requires all
   // other currently listed details to have been obtained independently.
-  details.set(campaign.id,{complete:true,observedAt:observation.observedAt,rules:structuredClone(observation.rules),
+  details.set(campaign.id,{complete:true,observedAt:observation.observedAt,rules:structuredClone(observation.rules),...priceModeFields(observation),
    products:task.plans.map(plan=>({productId:plan.productId,name:plan.name,
     skus:observation.rows.filter(r=>r.productId===plan.productId).map(({productId,...row})=>structuredClone(row)),
     ...(isLimited(plan)?{activityLimit:observation.productLimits.find(p=>p.productId===plan.productId).activityLimit,soldOut:false,removalRiskConfirmed:false}:{}),
@@ -208,10 +208,11 @@ export class DoudianPlatform {
  async detail(campaign){
   id(campaign.id);const page=await this.open(LIST+`/view?refer=view&id=${campaign.id}&is_new_limit=1&operate_use_mode=0`);
   try{
-   const products=[],seen=new Set();let declared=null,rules=null;
+   const products=[],seen=new Set();let declared=null,rules=null,fixedDeclared=false;
    for(let n=1;n<=100;n++){
     await this.ready(page);let slice=await until(async()=>{const s=await page.evaluate(detailSlice,{limited:isLimited(campaign)});return Number.isInteger(s.declared)&&(s.products.length||s.declared===0)&&s;},'活动详情商品未加载');
     if(declared===null)declared=slice.declared;requireThat(slice.declared===declared,'DETAIL_CHANGED','详情商品总数在读取期间变化');
+    if(slice.priceMode==='fixed')fixedDeclared=true;
     if(slice.products.some(p=>!p.expanded)){
      const expectedIds=slice.products.map(p=>p.productId),sw=page.getByRole('switch'),switchCount=await sw.count();
      const checked=switchCount===1?await sw.getAttribute('aria-checked'):null;
@@ -234,8 +235,7 @@ export class DoudianPlatform {
     for(const p of slice.products){
      requireThat(p.productId&&p.key.split('_')[0]===p.productId&&!seen.has(p.productId),'DETAIL_MEMBERSHIP','详情商品编号重复或不一致');seen.add(p.productId);
      requireThat(p.skus.length&&new Set(p.skus.map(s=>s.id)).size===p.skus.length,'DETAIL_SKUS','详情规格缺失或重复');
-     for(const s of p.skus){id(s.id);requireThat(s.name&&s.baseFen>0&&Number.isInteger(s.discount),'DETAIL_SKUS','详情规格字段不完整');
-      if(s.saleFen===null){s.saleFen=saleFen(s.baseFen,s.discount);s.saleSource='computed-from-verified-base-and-discount';}else s.saleSource='observed';}
+     for(const s of p.skus){id(s.id);requireThat(s.name&&Number.isSafeInteger(s.baseFen)&&s.baseFen>0&&(s.discount===null||Number.isInteger(s.discount)),'DETAIL_SKUS','详情规格字段不完整');}
      products.push(p);
     }
     const pager=await page.evaluate(pagerSlice);
@@ -249,13 +249,46 @@ export class DoudianPlatform {
       if(['STOPPED','SHOP_MISMATCH','LOGIN_REQUIRED'].includes(error.code))throw error;
       removalExportError={code:error.code||'REMOVAL_EXPORT_READ',message:String(error.message).slice(0,500)};
      }
-     return {complete:true,products,rules,observedAt:Date.now(),...(removalExport?{removalExport}:{}),...(removalExportError?{removalExportError}:{})};
+     const needsFixedRead=fixedDeclared||products.some(p=>p.skus.some(s=>s.discount===null));
+     if(needsFixedRead){
+      // Null/opaque discounts are only a reason to investigate. A separate
+      // read page must independently show the unique fixed-price mode and
+      // bind every original view SKU; null itself never grants that mode.
+      await this.readFixedDetail(campaign,products,rules);
+     }else for(const p of products)for(const s of p.skus){
+      if(s.saleFen===null){s.saleFen=saleFen(s.baseFen,s.discount);s.saleSource='computed-from-verified-base-and-discount';}else s.saleSource='observed';
+     }
+     return {complete:true,products,rules,...(needsFixedRead?{priceMode:'fixed'}:{}),observedAt:Date.now(),...(removalExport?{removalExport}:{}),...(removalExportError?{removalExportError}:{})};
     }
     const before=slice.products.map(p=>p.productId).join(',');await page.locator('li[title="下一页"] button:visible').click();
     await until(async()=>(await page.evaluate(detailSlice,{limited:isLimited(campaign)})).products.map(p=>p.productId).join(',')!==before,'详情翻页停滞');
    }
    throw new GuardError('DETAIL_LIMIT','活动详情超过页数上限');
   }catch(e){await this.fault(page,campaign.id,'detail',e);throw e;}finally{await page.close();}
+ }
+ async readFixedDetail(campaign,products,rules){
+  const page=await this.open(LIST+`/edit?refer=edit&id=${campaign.id}&operate_use_mode=0`);
+  try{
+   await this.ready(page);await page.locator('#title').waitFor();await this.expand(page);
+   const {snapshot,products:formProducts}=await collectForm(page,{check:()=>this.check()});
+   const dates=snapshot.dates.map(parseDate);
+   requireThat(snapshot.priceModes?.length===1&&snapshot.priceModes[0].value==='一口价'&&snapshot.priceMode==='fixed'&&!snapshot.byDiscount&&
+    snapshot.title===campaign.name&&snapshot.type===campaign.type&&dates.length===2&&dates[0]===campaign.startAt&&dates[1]===campaign.endAt&&
+    snapshot.counts.length&&snapshot.counts.every(n=>n===products.length)&&snapshot.dialogs.length===0&&
+    fingerprint(snapshot.rules)===fingerprint(rules),'DETAIL_PRICE_MODE','现有活动的一口价方式、时间或规则未独立核实');
+   requireThat(formProducts.length===products.length&&new Set(formProducts.map(p=>p.productId)).size===products.length,'DETAIL_MEMBERSHIP','一口价独立读取的商品集合不同');
+   for(const product of products){
+    const found=formProducts.find(p=>p.productId===product.productId);
+    requireThat(found&&found.skus.length===product.skus.length&&(!isLimited(campaign)||found.activityLimit===product.activityLimit),'DETAIL_MEMBERSHIP','一口价独立读取的规格或商品限量不同');
+    const seen=new Set();for(const sku of product.skus){
+     const rows=found.skus.filter(s=>s.name.normalize('NFKC').replace(/\s+/g,' ').trim()===sku.name.normalize('NFKC').replace(/\s+/g,' ').trim()&&s.baseFen===sku.baseFen);
+     requireThat(rows.length===1&&!seen.has(rows[0]),'DETAIL_SKUS','一口价规格名称、原价不能唯一对应原始ID');seen.add(rows[0]);const row=rows[0];
+     validateFixedPrice(row);requireThat(sku.saleFen===null||sku.saleFen===row.saleFen,'DETAIL_CHANGED','详情与独立一口价金额发生变化');
+     Object.assign(sku,{discount:null,saleFen:row.saleFen,saleSource:'observed'});
+    }
+   }
+   await this.identity(page);
+  }finally{await page.close();}
  }
  async readRemovalExport(page,campaign){
   const link=page.getByText('点击下载详情',{exact:true}),count=await link.count();if(!count)return null;
@@ -388,7 +421,7 @@ export class DoudianPlatform {
    for(const p of detail.products){
     if(this.policy.captureExistingOnly&&(!active(c)||p.removalConfirmed||p.removalAmbiguous))continue;
     const baseline={source:'verified-platform-history',complete:true,shopId:this.policy.shopId,productId:p.productId,name:p.name,campaignId:c.id,
-     historyAt:c.startAt,generatedByGuardian:c.name.startsWith('守护2-'),observedAt:detail.observedAt,type:c.type,rules:detail.rules,skus:p.skus,
+     historyAt:c.startAt,generatedByGuardian:c.name.startsWith('守护2-'),observedAt:detail.observedAt,type:c.type,rules:detail.rules,skus:p.skus,...priceModeFields(detail),
      durationMs:c.endAt-c.startAt,...(isLimited(c)?{activityLimit:p.activityLimit}:{})};
     try{validateHistorical(baseline);baselines.push(baseline);}catch(e){errors.push({campaignId:c.id,productId:p.productId,code:e.code,message:e.message});}
    }
@@ -863,13 +896,38 @@ export class DoudianPlatform {
  }
  async observeDraft(task,page,{originalRisk=false,priceReview=false}={}){
   const {products,snapshot}=await collectForm(page,{originalRisk,check:()=>this.check()});
-  requireThat(snapshot.counts.length&&snapshot.counts.every(n=>n===task.plans.length)&&snapshot.mode==='Excel批量导入'&&snapshot.byDiscount&&snapshot.renew===(isLimited(task.plans[0])&&task.plans[0].rules.autoRenew),'DRAFT_RULES',
-   '导入数量、打折方式或续期规则未核对：'+JSON.stringify({expectedCount:task.plans.length,counts:snapshot.counts,mode:snapshot.mode,priceModes:snapshot.priceModes,byDiscount:snapshot.byDiscount,renew:snapshot.renew}));
+  const expectedMode=priceMode(task.plans[0]),modeMatches=snapshot.priceModes?.length===1&&(expectedMode==='fixed'?
+   snapshot.priceMode==='fixed'&&snapshot.priceModes[0].value==='一口价'&&!snapshot.byDiscount:snapshot.byDiscount&&snapshot.priceModes[0].value==='打折');
+  requireThat(task.plans.every(p=>priceMode(p)===expectedMode)&&snapshot.counts.length&&snapshot.counts.every(n=>n===task.plans.length)&&snapshot.mode==='Excel批量导入'&&modeMatches&&snapshot.renew===(isLimited(task.plans[0])&&task.plans[0].rules.autoRenew),'DRAFT_RULES',
+   '导入数量、定价方式或续期规则未核对：'+JSON.stringify({expectedCount:task.plans.length,expectedMode,counts:snapshot.counts,mode:snapshot.mode,priceModes:snapshot.priceModes,byDiscount:snapshot.byDiscount,renew:snapshot.renew}));
   const warnings=draftPriceWarnings(products,snapshot.warnings,{priceReview});
   const dates=snapshot.dates.map(parseDate);requireThat(dates.length===2,'DRAFT_TIME','草稿时间不完整');
-  return {kind:'draft',shopId:this.policy.shopId,title:snapshot.title,type:snapshot.type,rules:snapshot.rules,startAt:dates[0],endAt:dates[1],
+  return {kind:'draft',shopId:this.policy.shopId,title:snapshot.title,type:snapshot.type,rules:snapshot.rules,...priceModeFields(snapshot),startAt:dates[0],endAt:dates[1],
    complete:true,observedAt:Date.now(),rows:bindFormProducts(products,task.plans),warnings,dialogs:snapshot.dialogs,
    ...(isLimited(task.plans[0])?{productLimits:products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
+ }
+ async readFixedPriceTemplate(page,type){
+  // Read the template offered for THIS selected native activity. In particular
+  // a limited campaign cannot borrow a timed campaign's capability evidence.
+  let downloadPromise=null;
+  try{
+   this.check();await this.identity(page);const before=await page.evaluate(formSlice);
+   requireThat(before.type===type&&!before.dialogs.length&&!before.counts.some(n=>n>0),'FIXED_ACTIVITY_UNAVAILABLE','一口价模板读取前活动类型或空白草稿已变化');
+   const entry=page.getByText('下载模板',{exact:true}).filter({visible:true});requireThat(await entry.count()===1,'FIXED_ACTIVITY_UNAVAILABLE','当前活动未提供唯一的一口价官方模板入口');
+   await entry.click();const modal=page.getByRole('dialog').filter({hasText:'下载模版'});await modal.waitFor({state:'visible',timeout:10000});
+   requireThat(await modal.count()===1,'FIXED_ACTIVITY_UNAVAILABLE','当前活动的模板类型弹窗不唯一');
+   const choice=modal.getByText('一口价',{exact:true});requireThat(await choice.count()===1,'FIXED_ACTIVITY_UNAVAILABLE','当前活动没有可核对的一口价官方模板');await choice.click();
+   const confirm=modal.getByRole('button',{name:'确定',exact:true});requireThat(await confirm.count()===1,'FIXED_ACTIVITY_UNAVAILABLE','一口价模板下载确认不唯一');
+   downloadPromise=page.waitForEvent('download',{timeout:20000});downloadPromise.catch(()=>{});await confirm.click();const download=await downloadPromise;
+   const stream=await download.createReadStream();requireThat(stream,'FIXED_ACTIVITY_UNAVAILABLE','官方一口价模板未返回完整文件');
+   const chunks=[];let bytes=0;for await(const part of stream){bytes+=part.length;requireThat(bytes<=4*1024*1024,'FIXED_ACTIVITY_UNAVAILABLE','官方一口价模板超过核对上限');chunks.push(part);}
+   const body=Buffer.concat(chunks),template=assertFixedPriceTemplate(body);await this.identity(page);const after=await page.evaluate(formSlice);
+   requireThat(after.type===type&&!after.dialogs.length&&!after.counts.some(n=>n>0),'FIXED_ACTIVITY_UNAVAILABLE','一口价模板读取后活动类型或空白草稿已变化');
+   return{...template,type,observedAt:Date.now(),sha256:createHash('sha256').update(body).digest('hex')};
+  }catch(error){
+   if(['LOGIN_REQUIRED','SHOP_MISMATCH','STOPPED'].includes(error.code))throw error;
+   throw new GuardError('FIXED_ACTIVITY_UNAVAILABLE','当前'+type+'的一口价官方模板尚未完整核实，保留原金额、不提交：'+String(error.message).slice(0,600));
+  }
  }
  async priceCheck(task){
   assertDualProbeAllowed(this.journal,task);
@@ -879,6 +937,7 @@ export class DoudianPlatform {
  }
  async prepare(task,{priceCheck=false}={}){
   assertRecoveryCapacity(task.plans);
+  const mode=priceMode(task.plans[0]);requireThat(task.plans.every(p=>priceMode(p)===mode),'DRAFT_RULES','一个活动不能混用一口价与打折');
   requireThat(this.policy.liveEnabled&&this.policy.cutoverConfirmed,'CUTOVER_REQUIRED','尚未切换执行权');
   this.progress={stage:'准备独立的干净创建页',taskId:task.id,at:Date.now()};const page=await this.open(LIST+'/create');
   this.drafts.set(task.id,page);
@@ -890,6 +949,7 @@ export class DoudianPlatform {
    // This page has never selected products online. No clear/switch recovery.
    await this.radio(page,'Excel批量导入');await this.rules(page,task.plans[0]);await page.locator('#title').fill(task.title);
    await this.setDates(page,task.plans[0]);
+   const fixedTemplate=mode==='fixed'?await this.readFixedPriceTemplate(page,task.plans[0].type):null;
    await this.identity(page);this.check();this.assertWrite();
    if(priceCheck)assertDualProbeAllowed(this.journal,task);else this.journal.assertPricePlans(task.shopId,task.plans);
    const file=page.locator('input[type="file"][accept*=".xlsx"]');requireThat(await file.count()===1,'UPLOAD_CONTROL','官方导入控件不唯一');
@@ -907,7 +967,7 @@ export class DoudianPlatform {
     {priceProbe:{...observation,source:'live-platform-draft'}});
    proveDraft(task,observation);
    const capacity=await page.evaluate(formSlice);
-   return {page,observation,formRiskReadable,formCapacity:{pageSize:capacity.pagination?.pageSize,scopeConfirmed:capacity.pagination?.scopeConfirmed===true,observedAt:Date.now()}};
+   return {page,observation,formRiskReadable,...(fixedTemplate?{fixedTemplate}:{}),formCapacity:{pageSize:capacity.pagination?.pageSize,scopeConfirmed:capacity.pagination?.scopeConfirmed===true,observedAt:Date.now()}};
   }catch(e){await this.fault(page,task.id,'prepare',e);throw e;}
  }
  async submit(task,draft,beforeRisk,beforeSubmit){
@@ -1088,7 +1148,7 @@ export class DoudianPlatform {
    requireThat(!product?.removalAmbiguous,'CONVERSION_INCOMPLETE','迁移商品部分规格状态不明');
    if(active(campaign)&&product&&!product.removalConfirmed){
     const observation={complete:true,shopId:this.policy.shopId,title:campaign.name,campaignId:campaign.id,status:campaign.status,
-     observedAt:detail.observedAt,type:campaign.type,rules:detail.rules,startAt:campaign.startAt,endAt:campaign.endAt,
+     observedAt:detail.observedAt,type:campaign.type,rules:detail.rules,...priceModeFields(detail),startAt:campaign.startAt,endAt:campaign.endAt,
      rows:product.skus.map(s=>({...s,productId:plan.productId})),
      ...(isLimited(campaign)?{productLimits:[{productId:plan.productId,activityLimit:product.activityLimit}]}:{})};
     const receipt=proveReadback([plan],observation,{title:task.title});

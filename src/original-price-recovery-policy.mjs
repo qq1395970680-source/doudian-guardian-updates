@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {id,fingerprint,requireThat} from './policy.mjs';
+import {id,fingerprint,requireThat,priceMode} from './policy.mjs';
 import {validAutomaticPriceApproval} from './price-increase-policy.mjs';
 const source='human-app-original-price-recovery-consent';
 const currentKey=shop=>'original-price-recovery-policy:'+id(shop);
@@ -34,7 +34,7 @@ export function validOriginalPriceApproval(journal,review,seen=new Set()){
  const grant=journal.settings(grantKey(review.shopId,consent.grantId));
  const previous=journal.priceReview(review.previousApprovalId);
  if(!validGrant(grant,review.shopId,review.approvedAt)||review.approvedAt<grant.at||!previous||previous.id===review.id||
-  previous.shopId!==review.shopId||previous.productId!==review.productId||!hasExactPriceConsent(previous)||
+  previous.shopId!==review.shopId||previous.productId!==review.productId||priceMode(previous)!==priceMode(review)||!hasExactPriceConsent(previous)||
   previous.approvedAt>=review.approvedAt||fingerprint(previous.rows)!==review.previousRowsFingerprint||
   fingerprint(previous.campaignTarget)!==fingerprint(review.campaignTarget)||previous.rows.length!==review.rows.length||
   !review.rows.every(row=>previous.rows.some(old=>old.id===row.id&&old.name===row.name&&old.baseFen===row.baseFen&&old.discount===row.discount&&old.saleFen===row.saleFen)))return false;

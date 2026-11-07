@@ -1,5 +1,5 @@
 import {inflateRawSync} from 'node:zlib';
-import {GuardError,requireThat,id,saleFen} from './policy.mjs';
+import {GuardError,requireThat,id,saleFen,priceMode} from './policy.mjs';
 
 const MAX_BYTES=4*1024*1024;
 function crc(bytes){let n=0xffffffff;for(const b of bytes){n^=b;for(let i=0;i<8;i++)n=(n>>>1)^((n&1)?0xedb88320:0);}return(n^0xffffffff)>>>0;}
@@ -91,7 +91,7 @@ export function checkRemovalPrices(plan,removal){
  const ratio=parseRemovalPriceRatio(removal.reason);
  const prices=plan.skus.map(s=>s.saleFen),min=Math.min(...prices),max=Math.max(...prices);
  if(max*ratio.denominator<=min*ratio.numerator)return;
- const floor=Math.ceil(max*ratio.denominator/ratio.numerator),increaseOnlyPossible=plan.skus.every(s=>saleFen(s.baseFen,95)>=floor);
+ const floor=Math.ceil(max*ratio.denominator/ratio.numerator),increaseOnlyPossible=plan.skus.every(s=>(priceMode(plan)==='fixed'?s.baseFen:saleFen(s.baseFen,95))>=floor);
  throw new GuardError('SKU_RATIO_REVIEW_REQUIRED',
   `平台要求最高规格价不超过最低价的 ${ratio.numerator/ratio.denominator} 倍；当前为 ${(max/min).toFixed(2)} 倍。${increaseOnlyPossible?'需要逐规格核对调价方案':'仅提高低价规格无法满足，保留当前价格等待处理'}，未重复创建。`,
   {productId:plan.productId,maxToMinRatio:ratio.numerator/ratio.denominator,minFen:min,maxFen:max,requiredMinFen:floor,increaseOnlyPossible,reason:removal.reason});

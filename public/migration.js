@@ -1,3 +1,4 @@
+import {isFixedPrice} from './price-display.js';
 export function createMigration({getState,post,toast,node,money,discount,time}){
  const $=id=>document.getElementById(id);let preview=null,busy=false,shop=null,productPage=0,skuPages=new Map();
  const selected=()=>getState().state?.shopId;
@@ -13,11 +14,11 @@ export function createMigration({getState,post,toast,node,money,discount,time}){
  function renderProducts(){
   const all=preview.products,pages=Math.max(1,Math.ceil(all.length/10));productPage=Math.min(productPage,pages-1);const fragment=document.createDocumentFragment();
   for(const p of all.slice(productPage*10,(productPage+1)*10)){
-   const detail=node('details','transfer-product'),summary=node('summary');summary.append(node('strong','',p.name||p.productId),node('small','',`${p.productId} · ${p.skus.length} 个规格`));detail.append(summary);let loaded=false;
+   const fixed=isFixedPrice(p),detail=node('details','transfer-product'),summary=node('summary');summary.append(node('strong','',p.name||p.productId),node('small','',`${p.productId} · ${p.skus.length} 个规格${fixed?' · 一口价':''}`));detail.append(summary);let loaded=false;
    detail.addEventListener('toggle',()=>{if(!detail.open||loaded)return;loaded=true;
-    const table=node('table','sku-table'),head=node('thead'),tr=node('tr'),body=node('tbody');for(const h of ['规格','原价','历史折后价','折扣'])tr.append(node('th','',h));head.append(tr);table.append(head,body);
+    const table=node('table','sku-table'),head=node('thead'),tr=node('tr'),body=node('tbody');for(const h of ['规格','原价',fixed?'历史一口价':'历史折后价',fixed?'定价方式':'折扣'])tr.append(node('th','',h));head.append(tr);table.append(head,body);
     const pager=node('div','pagination'),label=node('span'),buttons=node('div'),prev=node('button','button small secondary','上一页规格'),next=node('button','button small secondary','下一页规格');buttons.append(prev,next);pager.append(label,buttons);
-    const draw=()=>{const index=skuPages.get(p.productId)||0,max=Math.max(1,Math.ceil(p.skus.length/25)),rows=document.createDocumentFragment();for(const s of p.skus.slice(index*25,(index+1)*25)){const row=node('tr');for(const value of [s.name,money(s.baseFen),money(s.saleFen),discount(s.discount)])row.append(node('td','',value));rows.append(row);}body.replaceChildren(rows);label.textContent=`全部 ${p.skus.length} 个规格 · 第 ${index+1} / ${max} 页`;prev.disabled=index===0;next.disabled=index===max-1;};
+    const draw=()=>{const index=skuPages.get(p.productId)||0,max=Math.max(1,Math.ceil(p.skus.length/25)),rows=document.createDocumentFragment();for(const s of p.skus.slice(index*25,(index+1)*25)){const row=node('tr');for(const value of [s.name,money(s.baseFen),money(s.saleFen),fixed?'固定金额':discount(s.discount)])row.append(node('td','',value));rows.append(row);}body.replaceChildren(rows);label.textContent=`全部 ${p.skus.length} 个规格 · 第 ${index+1} / ${max} 页`;prev.disabled=index===0;next.disabled=index===max-1;};
     prev.onclick=()=>{skuPages.set(p.productId,(skuPages.get(p.productId)||0)-1);draw();};next.onclick=()=>{skuPages.set(p.productId,(skuPages.get(p.productId)||0)+1);draw();};draw();detail.append(table,pager);
    });fragment.append(detail);
   }

@@ -1,4 +1,4 @@
-import {fingerprint,normalizeName,requireThat,saleFen,proveDraft} from './policy.mjs';
+import {fingerprint,normalizeName,requireThat,saleFen,proveDraft,priceMode,priceModeFields,expectedSaleFen,assertSamePriceMode} from './policy.mjs';
 import {combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
 import {validateRemovalPriceEvidence,selectRatioPrices,describeRatio} from './ratio-prices.mjs';
 export {parsePriceConstraint,combinePriceConstraints,selectClosestPriceStep} from './price-constraints.mjs';
@@ -16,16 +16,16 @@ export function makeNecessaryReductionEvidence(task,probe,now=Date.now()){
  const plan=task.plans[0],required=[];
  for(const sku of plan.skus){
   const row=probe.rows.find(r=>r.productId===plan.productId&&r.id===sku.id),statements=[...(row.errors||[])],bounds=combinePriceConstraints(statements);
-  selectClosestPriceStep(sku,bounds); // Reject contradictory or impossible caps.
+  selectClosestPriceStep({...sku,...priceModeFields(plan)},bounds); // Reject contradictory or impossible caps.
   if(bounds.maxFen==null&&bounds.maxDiscount==null)continue;
-  const prices=[];for(let d=10;d<=95;d++){const price=saleFen(sku.baseFen,d);
+  const prices=[];if(priceMode(plan)==='fixed')prices.push(Math.min(sku.baseFen,bounds.maxFen??sku.baseFen));else for(let d=10;d<=95;d++){const price=saleFen(sku.baseFen,d);
    if(d>=(bounds.minDiscount??10)&&d<=(bounds.maxDiscount??95)&&price>0&&price>=(bounds.minFen??1)&&price<=(bounds.maxFen??Infinity))prices.push(price);}
   const maximumExplicitPriceFen=Math.max(...prices);
   if(maximumExplicitPriceFen<sku.saleFen)required.push({id:sku.id,name:normalizeName(sku.name),baseFen:sku.baseFen,guardedDiscount:sku.discount,guardedFen:sku.saleFen,
    maximumExplicitPriceFen,minimumReductionFen:sku.saleFen-maximumExplicitPriceFen,bounds,statements});
  }
  if(!required.length)return null;
- return {source:'live-platform-necessary-sku-reduction',shopId:plan.shopId,productId:plan.productId,activityType:plan.type,historicalFingerprint:plan.historicalFingerprint,
+ return {...priceModeFields(plan),source:'live-platform-necessary-sku-reduction',shopId:plan.shopId,productId:plan.productId,activityType:plan.type,historicalFingerprint:plan.historicalFingerprint,
   previousApprovalId:plan.priceApprovalId||null,taskId:task.id,observedAt:probe.observedAt,probeFingerprint:fingerprint(probe),allSkuIds:plan.skus.map(s=>s.id),rows:required};
 }
 
@@ -46,19 +46,19 @@ export function makePriceReviews(task,probe,now=Date.now()) {
     const sourceLoss=sourceLosses[0],ratio=sourceLoss?validateRemovalPriceEvidence(plan,sourceLoss,now):null;
     const statements=plan.skus.map(sku=>[...(probe.rows.find(r=>r.productId===plan.productId&&r.id===sku.id).errors||[])]);
     const limits=statements.map(combinePriceConstraints);
-    const joint=ratio?selectRatioPrices(plan.skus,ratio,limits):null;
+    const joint=ratio?selectRatioPrices(plan.skus.map(s=>({...s,...priceModeFields(plan)})),ratio,limits):null;
     const rows=plan.skus.map((sku,i)=>{
       const evidence=statements[i],bounds=limits[i];
-      let discount;
-      try{({discount}=joint?joint[i]:selectClosestPriceStep(sku,bounds));}catch(error){error.message=`${sku.name}：${error.message}`;throw error;}
-      if(discount<sku.discount)requireThat(ratio||bounds.maxFen!=null||bounds.maxDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格上限');
-      if(discount>sku.discount)requireThat(ratio||bounds.minFen!=null||bounds.minDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格下限');
+      let discount,price;
+      try{({discount,saleFen:price}=joint?joint[i]:selectClosestPriceStep({...sku,...priceModeFields(plan)},bounds));}catch(error){error.message=`${sku.name}：${error.message}`;throw error;}
+      if(priceMode(plan)==='fixed'?price<sku.saleFen:discount<sku.discount)requireThat(ratio||bounds.maxFen!=null||bounds.maxDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格上限');
+      if(priceMode(plan)==='fixed'?price>sku.saleFen:discount>sku.discount)requireThat(ratio||bounds.minFen!=null||bounds.minDiscount!=null,'PRICE_BOUND_UNKNOWN','缺少明确价格下限');
       return {id:sku.id,name:normalizeName(sku.name),baseFen:sku.baseFen,historicalDiscount:sku.originalDiscount??sku.discount,
-        previousDiscount:sku.discount,previousFen:sku.saleFen,discount,saleFen:saleFen(sku.baseFen,discount),bounds,
+        previousDiscount:sku.discount,previousFen:sku.saleFen,discount,saleFen:price,bounds,
         evidence:ratio?[...evidence,sourceLoss.removal.reason]:evidence};
     });
-    if(!rows.some(r=>r.discount!==r.previousDiscount))continue;
-    const value={shopId:task.shopId,productId:plan.productId,name:plan.name,historicalFingerprint:plan.historicalFingerprint,
+    if(!rows.some(r=>priceMode(plan)==='fixed'?r.saleFen!==r.previousFen:r.discount!==r.previousDiscount))continue;
+    const value={...priceModeFields(plan),shopId:task.shopId,productId:plan.productId,name:plan.name,historicalFingerprint:plan.historicalFingerprint,
       previousApprovalId:plan.priceApprovalId||null,type:plan.type,rules:structuredClone(plan.rules),skippedSkuIds:[...plan.skippedSkuIds],rows,
       ...(plan.campaignTarget?{campaignTarget:structuredClone(plan.campaignTarget)}:{}),
       ...(ratio?{kind:'sku-price-ratio',ratio:describeRatio(plan.skus,rows,ratio)}:{})};
@@ -72,6 +72,7 @@ export function makePriceReviews(task,probe,now=Date.now()) {
 // exact target, valid only for the same historical source and matching SKUs.
 export function applyPriceTarget(original,review) {
   if(!review||review.status!=='approved'||review.shopId!==original.shopId||review.productId!==original.productId||review.historicalFingerprint!==original.historicalFingerprint)return original;
+  assertSamePriceMode(original,review);
   const {fingerprint:oldFingerprint,...base}=original;
   let changed=false;
   const skus=original.skus.map(sku=>{
@@ -80,10 +81,10 @@ export function applyPriceTarget(original,review) {
     if(!row)return sku;
     const historicalDiscount=sku.originalDiscount??sku.discount;
     requireThat(row.name===normalizeName(sku.name)&&row.baseFen===sku.baseFen&&row.historicalDiscount===historicalDiscount&&
-      Number.isInteger(row.discount)&&row.discount>=10&&row.discount<=95&&row.saleFen===saleFen(sku.baseFen,row.discount),
+      (priceMode(original)==='fixed'?row.discount===null:Number.isInteger(row.discount)&&row.discount>=10&&row.discount<=95)&&row.saleFen===expectedSaleFen({...sku,...row},original),
       'PRICE_APPROVAL_CHANGED','已确认价格与当前规格或历史发生变化');
-    changed=changed||row.discount!==sku.discount||review.kind==='rounding-reconfirmation';
-    return {...sku,originalDiscount:historicalDiscount,discount:row.discount,saleFen:row.saleFen};
+    changed=changed||row.discount!==sku.discount||row.saleFen!==sku.saleFen||review.kind==='rounding-reconfirmation';
+    return {...sku,...(priceMode(original)==='fixed'?{originalSaleFen:sku.originalSaleFen??sku.saleFen}:{}),originalDiscount:historicalDiscount,discount:row.discount,saleFen:row.saleFen};
   });
   // Retain the previous approval identity even when its changed SKU is absent.
   // Any further proposal must still be linked to the target the human saw.

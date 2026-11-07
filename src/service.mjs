@@ -1,7 +1,7 @@
 import {dueVerificationTasks,claimVerification,finishVerification,verificationState,wakeVerification,verificationSummary} from './verification-schedule.mjs';
 import {activeCareRecoveryGrant} from './care-recovery-policy.mjs';
 import {randomUUID} from 'node:crypto';
-import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat,restorationGroupKey} from './policy.mjs';
+import {planOriginalRestore,proveDraft,proveReadback,fingerprint,requireThat,restorationGroupKey,priceMode} from './policy.mjs';
 import {preferCampaignBaselines,applyCampaignPolicy} from './campaign-policy.mjs';
 import {PriorityWatch,currentListingKey} from './priority-watch.mjs';
 import {applyPriceTarget,makePriceReviews} from './price-review.mjs';
@@ -168,7 +168,8 @@ export class GuardianService {
     requireThat(review?.shopId===this.policy.shopId&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','本店商品或建议已经变化');
     requireThat(!this.journal.list(this.policy.shopId).some(t=>!['verified','blocked'].includes(t.phase)&&t.plans.some(p=>p.productId===review.productId)),'PENDING','已有未核实提交，不能调整其确切价格');
     const context={...displayProposalPricingContext(decision,review,this.now()),reviews:this.journal.priceReviews(this.policy.shopId),tasks:this.journal.list(this.policy.shopId)};
-    const option=args.optionId==='manual-discount'?manualPriceOption(activityPriceBasis(review,args.manualActivityType||review.type,context),args.manualDiscounts,context.now):blockerPriceOptions(review,context).find(o=>o.id===args.optionId);
+    const manualId=priceMode(review)==='fixed'?'manual-fixed-price':'manual-discount';
+    const option=args.optionId===manualId?manualPriceOption(activityPriceBasis(review,args.manualActivityType||review.type,context),priceMode(review)==='fixed'?args.manualPrices:args.manualDiscounts,context.now):blockerPriceOptions(review,context).find(o=>o.id===args.optionId);
     const intent=createPriceApprovalIntent({review,decision,option,args,now:this.now()});
     this.savePriceApprovalIntent(review.productId,{schema:1,state:'pending',intent,updatedAt:this.now()});
     this.journal.event(null,'exact-price-revalidation-requested',{shopId:this.policy.shopId,productId:review.productId,intentId:intent.id,priceFingerprint:intent.consent.exactMaterialFingerprint},this.now());
@@ -189,7 +190,7 @@ export class GuardianService {
     const scheme=decision.schemes.find(s=>s.type===saved.intent.desired.type),review=scheme?.reviewId?this.journal.priceReview(scheme.reviewId):null;
     const context={reviews:this.journal.priceReviews(this.policy.shopId),tasks:this.journal.list(this.policy.shopId),dualDecision:decision,now:this.now()};
     let option=null;
-    try{if(review)option=saved.intent.optionId==='manual-discount'?manualPriceOption(activityPriceBasis(review,saved.intent.desired.type,context),saved.intent.desired.rows.map(r=>({id:r.id,discount:r.discount})),this.now()):blockerPriceOptions(review,context).find(o=>(o.id===saved.intent.optionId||o.id===saved.intent.optionId.replace(/^activity-(?:timed|limited)-/,''))&&o.activityType===saved.intent.desired.type);}catch{}
+    try{if(review){const manualId=priceMode(review)==='fixed'?'manual-fixed-price':'manual-discount';option=saved.intent.optionId===manualId?manualPriceOption(activityPriceBasis(review,saved.intent.desired.type,context),saved.intent.desired.rows.map(r=>priceMode(review)==='fixed'?{id:r.id,saleFen:r.saleFen}:{id:r.id,discount:r.discount}),this.now()):blockerPriceOptions(review,context).find(o=>(o.id===saved.intent.optionId||o.id===saved.intent.optionId.replace(/^activity-(?:timed|limited)-/,''))&&o.activityType===saved.intent.desired.type);}}catch{}
     const result=validateFreshPriceIntent(saved.intent,{review,decision,option,now:this.now()});
     if(result.status==='automatic'){this.savePriceApprovalIntent(baseline.productId,{...saved,state:'superseded-by-non-reducing',updatedAt:this.now(),reason:result.reason});return false;}
     requireThat(!decision.schemes.some(s=>s.classification==='pending'),'PRICE_REVALIDATION_PENDING','新价格条件尚未全部核实，继续保留本次确切确认，后台稍后重试');
@@ -248,7 +249,7 @@ export class GuardianService {
     const review=this.journal.priceReview(args.reviewId),baseline=review&&this.latestHistories().get(review.productId);
     requireThat(review?.shopId===this.policy.shopId&&baseline&&!this.policy.excludedProductIds?.includes(review.productId),'PRICE_REVIEW_CHANGED','店铺、历史或排除设置已变化');
     if(args.decision==='approve'&&(review.dualPairKey||activeDualActivityCareGrant(this.journal,this.policy.shopId,this.now()))){const decision=getDualActivityDecision(this.journal,this.policy.shopId,review.productId,this.now());requireThat(decision?.valid&&decision.approvalAllowed&&decision.pairKey===review.dualPairKey&&(!args.dualPairKey||args.dualPairKey===decision.pairKey)&&decision.schemes.some(s=>s.reviewId===review.id&&s.type===review.type&&s.classification==='reduction-required'),'DUAL_APPROVAL_BLOCKED','只有两种活动均独立证明必须降价后，才能明确确认新的降价方案');}
-    const result=this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline),optionId:args.optionId??null,optionKey:args.optionKey??null,confirmRebuild:args.confirmRebuild===true,queueRecovery:this.immediateEnabled,approvalContext:args.approvalContext,manualDiscounts:args.manualDiscounts,manualActivityType:args.manualActivityType},this.now());
+    const result=this.journal.decidePriceReview(this.policy.shopId,args.reviewId,args.key,args.decision,{confirmedSkuIds:args.confirmedSkuIds,acceptPriceAndRisk:args.acceptPriceAndRisk,historicalFingerprint:fingerprint(baseline),optionId:args.optionId??null,optionKey:args.optionKey??null,confirmRebuild:args.confirmRebuild===true,queueRecovery:this.immediateEnabled,approvalContext:args.approvalContext,manualDiscounts:args.manualDiscounts,manualPrices:args.manualPrices,manualActivityType:args.manualActivityType},this.now());
     if(this.immediateEnabled&&['approve','recalculate'].includes(args.decision)){
       if(this.policy.liveEnabled&&this.policy.cutoverConfirmed&&this.policy.originalRiskAllowed){
         if(this.busy&&this.stopRequested)this.requestedResume=true;else{this.stopRequested=false;this.platform.stopping=false;}

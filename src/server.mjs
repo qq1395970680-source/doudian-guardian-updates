@@ -14,11 +14,13 @@ import {buildCatalog} from './catalog.mjs';
 import {withCatalogAttention} from './catalog-attention.mjs';
 import {hiddenInactiveProductIds,visibleCatalog} from './catalog-visibility.mjs';
 import {blockerPriceOptions,buildActivityPriceComparison,activityPriceBasis} from './activity-price-comparison.mjs';
-import {manualPriceOption,manualPriceEditable} from './manual-price-option.mjs';
+import {manualPriceOption,manualPriceEditable,manualFixedPriceEditable} from './manual-price-option.mjs';
+import {priceMode} from './price-mode.mjs';
 import {workspaceOwnership} from './workspace-ownership.mjs';
 import {recoveryRequests} from './recovery-requests.mjs';
 import {buildRecoveryBlockers} from './recovery-blockers.mjs';
 import {AccountRegistry} from './accounts.mjs';
+import {AccountAddition} from './account-addition.mjs';
 import {activePriceIncreaseGrant,setPriceIncreasePolicy} from './price-increase-policy.mjs';
 import {buildRecoveryHistory} from './recovery-history.mjs';
 import {checkForUpdates,UPDATE_REPOSITORY} from './updates.mjs';
@@ -26,6 +28,7 @@ import {projectBuild} from './build.mjs';
 import {makeTransfer,validateTransfer,importTransfer,TRANSFER_MAX_BYTES} from './migration.mjs';
 import {exportDiagnostics} from './diagnostics.mjs';
 import {authenticationView,markAuthenticationRequired,markAuthenticated} from './authentication.mjs';
+import {AuthenticationRecovery} from './authentication-recovery.mjs';
 import {activeOriginalRebuildGrant,setOriginalRebuildPolicy} from './original-rebuild-policy.mjs';
 import {buildRecoveryIssues} from './recovery-issues.mjs';
 import {activeOriginalPriceRecoveryGrant,setOriginalPriceRecoveryPolicy} from './original-price-recovery-policy.mjs';
@@ -38,11 +41,14 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  await mkdir(runtime,{recursive:true});
  const journal=dependencies.journal||new Journal(join(runtime,'guardian.sqlite')),accounts=new AccountRegistry(journal);
  if(config?.shopId)accounts.register(config,config.profileKey||'shop-'+id(config.shopId),{...config,captureExistingOnly:config.captureExistingOnly===true});
+ const accountAddition=new AccountAddition({runtime,registry:accounts,browserFactory:dependencies.accountAdditionBrowserFactory,platformFactory:dependencies.accountAdditionPlatformFactory});
  const browser=dependencies.browser||new DedicatedBrowser(runtime),token=randomBytes(32).toString('hex'),instance=randomBytes(16).toString('hex');
  const startedAt=Date.now(),runtimeBuild={version,sourceBuild,instance,startedAt};
  journal.setDiagnosticContext(runtimeBuild);browser.diagnosticContext=Object.freeze(runtimeBuild);
- let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,loginExpectedShop=null,migrationPreview=null,exportingDiagnostics=false;
+ const loginRecovery=new AuthenticationRecovery(dependencies.authenticationRecoveryOptions);
+ let shopId=null,policy={},saved={},platform,service,connection=null,action=null,lastAction=null,closing=false,loginProfile=null,loginExpectedShop=null,migrationPreview=null,exportingDiagnostics=false,authenticationTimer=null,authenticationGeneration=0,authenticationRecoveryPaused=false;
  function bind(account){
+  authenticationGeneration++;authenticationRecoveryPaused=false;loginRecovery.cancel();
   shopId=account?.shopId||null;saved=shopId?journal.settings(shopId)||{}:{};
   const enabled=saved.executionEnabled===true||saved.cutoverConfirmed===true;
   policy={...account,shopId,liveEnabled:enabled,cutoverConfirmed:enabled};
@@ -51,17 +57,17 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
   const bound=platform,boundShop=shopId;
   const authenticationFailed=error=>{
    if(bound!==platform)return;
-   connection=null;markAuthenticationRequired(journal,boundShop,error);service.stop();platform.stopping=true;platform.cancelReads?.();
+   connection=null;markAuthenticationRequired(journal,boundShop,error);if(!authenticationRecoveryPaused&&!closing)loginRecovery.request(boundShop);service.stop();platform.stopping=true;platform.cancelReads?.();
   };
   platform.onAuthenticationFailure=authenticationFailed;service.onAuthenticationFailure=authenticationFailed;
-  platform.onAuthenticated=identity=>{if(bound===platform&&identity.shopId===boundShop){connection=identity;markAuthenticated(journal,identity);}};
+  platform.onAuthenticated=identity=>{if(bound===platform&&identity.shopId===boundShop){connection=identity;markAuthenticated(journal,identity);loginRecovery.finish(boundShop,true);}};
   service.canRunImmediate=()=>!action&&!authView().required&&connection?.shopId===boundShop;
   connection=null;migrationPreview=null;
  }
  bind(accounts.selected());
- const authView=()=>authenticationView({shopId,record:shopId?journal.settings('authentication:'+shopId):null,connection,
-  lastRun:service.status().lastRun,lastAction,readHealth:platform.readHealth?.(),loginOpen:browser.loginMode===true,persistence:browser.sessionPersistence||null});
- const acceptConnection=identity=>{connection=identity;markAuthenticated(journal,identity,Date.now(),{force:true});return identity;};
+ const authView=()=>({...authenticationView({shopId,record:shopId?journal.settings('authentication:'+shopId):null,connection,
+  lastRun:service.status().lastRun,lastAction:lastAction?.authenticationScope==='new-account'?null:lastAction,readHealth:platform.readHealth?.(),loginOpen:browser.loginMode===true,persistence:browser.sessionPersistence||null}),...loginRecovery.view(shopId)});
+ const acceptConnection=identity=>{requireThat(identity?.shopId===shopId,'SHOP_MISMATCH','登录核对返回了其他店铺，保持原记录');connection=identity;markAuthenticated(journal,identity,Date.now(),{force:true});loginRecovery.finish(shopId,true);return identity;};
  const displayContext=()=>{
   const tasks=shopId?journal.list(shopId):[],reviews=shopId?journal.priceReviews(shopId):[],queue=shopId?recoveryRequests(journal,shopId):{items:[],paused:false};
   const checks=shopId?journal.productChecks(shopId):[];
@@ -96,7 +102,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  const workspaceView=(options={},context=displayContext())=>buildRecoveryWorkspace({shopId,...context,...options});
  const snapshot=()=>{const context=displayContext(),{hiddenProductIds,catalog}=context,viewNow=Date.now(),blockers=blockerView({pageSize:1},context);return({version,build:'isolated-headless-journal',sourceBuild,instance,startedAt,shopId,name:policy.name||null,connection:authView().required?null:connection,authentication:authView(),action,lastAction,
   ...service.status(),running:service.running,busy:service.busy,progress:platform.progress,excluded:policy.excludedProductIds||[],
-  accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true,
+  accounts:accounts.list(),originalRestoreAuthorized:policy.originalRiskAllowed===true,loginOpen:browser.loginMode===true||accountAddition.snapshot().open,accountAddition:accountAddition.snapshot(),
   automaticPriceIncreaseEnabled:!!activePriceIncreaseGrant(journal,shopId)||!!activeCareRecoveryGrant(journal,shopId)||context.dualEnabled,careRecoveryEnabled:!!activeCareRecoveryGrant(journal,shopId),dualActivityCareEnabled:context.dualEnabled,
   automaticOriginalRebuildEnabled:!!activeOriginalRebuildGrant(journal,shopId),
   originalPriceRecoveryEnabled:originalPricesOnly(),
@@ -112,7 +118,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  async function background(kind,fn){
   requireThat(!action&&!service.busy,'BUSY','当前任务完成前不能执行另一操作');action=kind;
   void(async()=>{try{const result=await fn();lastAction={kind,ok:true,at:Date.now(),result};}
-   catch(e){lastAction={kind,ok:false,at:Date.now(),code:e.code||'ERROR',message:e.message};if(e.code==='LOGIN_REQUIRED'){connection=null;markAuthenticationRequired(journal,shopId,e);}journal.event(null,'control-error',{shopId,...lastAction});}
+   catch(e){const independentLogin=['打开独立新店登录','核对并添加新店铺','取消添加店铺'].includes(kind);lastAction={kind,ok:false,at:Date.now(),code:e.code||'ERROR',message:e.message,...(independentLogin?{authenticationScope:'new-account'}:{})};if(e.code==='LOGIN_REQUIRED'&&!independentLogin){connection=null;markAuthenticationRequired(journal,shopId,e);if(!authenticationRecoveryPaused&&!closing)loginRecovery.request(shopId);}journal.event(null,'control-error',{shopId,...lastAction});}
    finally{action=null;service.wakeImmediate?.();}})();
  }
  async function readCurrent(){
@@ -123,6 +129,24 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     if(result.submitted||result.refreshRequired)return{refreshRequired:true,listing:await platform.listActive()};
    }});
   for(const b of d.baselines)journal.remember(b);return{products:journal.histories(shopId).length,complete:d.activeComplete,errors:d.errors};
+ }
+ async function recheckAuthentication(){
+  const health=platform.readHealth?.();
+  if(closing||authenticationRecoveryPaused||accountAddition.snapshot().open||action||service.running||service.busy||browser.loginMode||health?.quarantined||health?.active?.length||!authView().required||!loginRecovery.begin(shopId))return;
+  const selectedShop=shopId,selectedPlatform=platform,generation=authenticationGeneration;
+  await background('自动核对登录',async()=>{
+   try{
+    selectedPlatform.stopping=false;
+    const identity=await selectedPlatform.probe();
+    requireThat(generation===authenticationGeneration&&!authenticationRecoveryPaused&&!closing,'STOPPED','自动登录核对已取消，忽略晚到结果');
+    requireThat(platform===selectedPlatform&&shopId===selectedShop&&identity?.shopId===selectedShop,'SHOP_MISMATCH','自动核对只允许恢复原店铺');
+    acceptConnection(identity);await browser.checkpointSession?.();
+    const latest=journal.settings(selectedShop)||{};
+    if(latest.autoStart===true&&policy.originalRiskAllowed===true&&policy.liveEnabled&&!selectedPlatform.stopping)service.start();
+    journal.event(null,'account-login-auto-rechecked',{shopId:selectedShop,resumed:service.running===true});
+    return{shopId:selectedShop,authenticated:true};
+   }catch(error){if(generation===authenticationGeneration&&!authenticationRecoveryPaused)loginRecovery.finish(selectedShop,false);if(platform===selectedPlatform)selectedPlatform.stopping=true;throw error;}
+  });
  }
  const html=(await readFile(join(rootDir,'public','index.html'),'utf8')).replace('__SESSION_TOKEN__',token).replace('__SERVICE_INSTANCE__',instance);
  let boundPort;
@@ -138,6 +162,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    if(req.method==='GET'&&path==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(html);return;}
    const assets={'/app.js':['app.js','text/javascript; charset=utf-8'],'/price-reviews.js':['price-reviews.js','text/javascript; charset=utf-8'],'/migration.js':['migration.js','text/javascript; charset=utf-8'],'/app.css':['app.css','text/css; charset=utf-8'],'/guardian.png':['guardian.png','image/png']};
    assets['/price-review-card.js']=['price-review-card.js','text/javascript; charset=utf-8'];
+   assets['/price-display.js']=['price-display.js','text/javascript; charset=utf-8'];
    assets['/activity-prices.js']=['activity-prices.js','text/javascript; charset=utf-8'];
    assets['/blocker-prices.js']=['blocker-prices.js','text/javascript; charset=utf-8'];
    assets['/recovery-blockers.js']=['recovery-blockers.js','text/javascript; charset=utf-8'];
@@ -167,8 +192,14 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     const selectedId=requestUrl.searchParams.get('reviewId'),selected=selectedId?journal.priceReview(selectedId):null;
     if(selectedId)requireThat(selected?.shopId===shopId&&selected.productId===productId&&['pending','approved','declined'].includes(selected.status)&&(!['pending','declined'].includes(selected.status)||selected.expiresAt>Date.now()),'PRICE_REVIEW_CHANGED','价格记录已变化或过期，请刷新列表');
     const assignment=view.ownership.byProduct.get(productId),dualDecision=view.dualDecisions.get(productId),paired=assignment?.reviewId?journal.priceReview(assignment.reviewId):null;
-    const review=selectedId?selected:paired?.status==='pending'&&paired.expiresAt>Date.now()?paired:latest?.expiresAt>Date.now()?latest:journal.priceTarget(shopId,productId);
-    const pendingPriceApproval=service.priceApprovalIntent?.(productId),hasPendingPriceApproval=pendingPriceApproval?.state==='pending';
+    const target=journal.priceTarget(shopId,productId),pendingPriceApproval=service.priceApprovalIntent?.(productId),hasPendingPriceApproval=pendingPriceApproval?.state==='pending';
+    const candidate=selectedId?selected:paired?.status==='pending'&&paired.expiresAt>Date.now()?paired:latest?.expiresAt>Date.now()?latest:target;
+    // The unchosen sibling of an approved exact-price pair remains an audit
+    // fact. It must not hide the newly approved target in this display drawer.
+    // A later proposal or a proposal based on that new target still wins.
+    const completedExactTarget=!selectedId&&pendingPriceApproval?.state==='approved'&&pendingPriceApproval.approvedReviewId===target?.id&&target?.status==='approved'&&candidate?.status==='pending'&&
+     candidate.createdAt<=target.approvedAt&&candidate.previousApprovalId===target.previousApprovalId&&candidate.dualPairKey===target.dualPairKey;
+    const review=completedExactTarget?target:candidate;
     const approvalAllowed=!!(!selectedId&&!hasPendingPriceApproval&&view.dualEnabled&&dualPriceProposalReady(dualDecision)&&review?.status==='pending'&&review.expiresAt>Date.now()&&review.dualPairKey===dualDecision.pairKey&&dualDecision.schemes.some(s=>s.reviewId===review.id&&s.candidateReady!==false));
     const readOnly=!!review&&(review.status!=='pending'||!!selectedId||view.dualEnabled&&!approvalAllowed);
     requireThat(record||review||view.catalog.products.some(p=>p.productId===productId),'PRICE_REVIEW_CHANGED','商品不在本店可展示列表');
@@ -180,7 +211,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     const dualSchemes=workspaceSchemes(!selectedId?dualDecision:null),comparison=buildActivityPriceComparison({review,reviews:context.reviews,tasks:context.tasks,shopId,productId,options,schemes:record?.schemes||{},now:context.now}).map(item=>{const s=dualSchemes.find(s=>s.type===item.type);return{...item,classification:s.classification,evidenceAt:s.evidenceAt,...(!selectedId&&view.dualEnabled?{reason:s.reason}:{}),...(s.candidateReady===false?{candidateReady:false}:{}),...(s.scopeExcluded?{scopeExcluded:true,scopeExclusion:s.scopeExclusion}:{}),...(s.classification==='reduction-required'?{rejectionState:'rejected'}:{})};});
     const manualBasisKeys={};const manualTypes=review&&!readOnly&&manualPriceEditable(review)?['限时抢购','限量抢购'].filter(type=>{if(excludedScheme(type))return false;try{const basis=activityPriceBasis(review,type,context);manualBasisKeys[type]=basis.activityBasisKey||null;return true;}catch{return false;}}):[];
     const approvalBlockedReason=selectedId?'历史记录只读。':!view.dualEnabled?'请先启用双方案省心守护，让后台分别核验两种活动。':pending?assignment?.blockedReason||'后台正在处理或回读本商品。':dualDecision?.blockedReason||'尚未证明两种方案都必须降价，后台继续核验。';
-    json(200,{shopId,productId,blocked:pending,blockedReason:hasPendingPriceApproval?'已收到确切价格确认，后台正在重新核验；不会再次要求确认同一组价格。':assignment?.blockedReason||null,...(hasPendingPriceApproval?{pendingPriceApproval:{id:pendingPriceApproval.intent.id,state:'pending'}}:{}),approvalAllowed,approvalBlockedReason:approvalAllowed?null:approvalBlockedReason,canRecalculate,readOnly,comparison,recheckReview:!selectedId&&latest?{id:latest.id,key:latest.key}:null,review:review?{...review,dualPairKey:dualDecision?.pairKey||review.dualPairKey||null,approvalAllowed,approvalBlockedReason:approvalAllowed?null:approvalBlockedReason,canRecalculate:canRecalculate&&review.id===latest?.id,options:review.status==='pending'&&!readOnly?options:undefined,activityComparison:comparison,manualTypes,manualBasisKeys,manualEditable:review.status==='pending'&&!readOnly&&manualPriceEditable(review)}:null});return;
+    json(200,{shopId,productId,blocked:pending,blockedReason:hasPendingPriceApproval?'已收到确切价格确认，后台正在重新核验；不会再次要求确认同一组价格。':assignment?.blockedReason||null,...(hasPendingPriceApproval?{pendingPriceApproval:{id:pendingPriceApproval.intent.id,state:'pending'}}:{}),approvalAllowed,approvalBlockedReason:approvalAllowed?null:approvalBlockedReason,canRecalculate,readOnly,comparison,recheckReview:!selectedId&&latest?{id:latest.id,key:latest.key}:null,review:review?{...review,dualPairKey:dualDecision?.pairKey||review.dualPairKey||null,approvalAllowed,approvalBlockedReason:approvalAllowed?null:approvalBlockedReason,canRecalculate:canRecalculate&&review.id===latest?.id,options:review.status==='pending'&&!readOnly?options:undefined,activityComparison:comparison,manualTypes,manualBasisKeys,manualEditable:review.status==='pending'&&!readOnly&&manualPriceEditable(review),manualFixedEditable:review.status==='pending'&&!readOnly&&manualFixedPriceEditable(review)}:null});return;
    }
    if(req.method==='GET'&&path==='/api/recovery-blockers'){
     const q=requestUrl.searchParams,filter=['both','other','all'].includes(q.get('filter'))?q.get('filter'):'all';
@@ -196,6 +227,13 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;requireThat(bytes<bodyLimit,'REQUEST_REJECTED','请求过大');chunks.push(chunk);}
    const body=Buffer.concat(chunks).toString('utf8');
    const args=JSON.parse(body||'{}');requireThat(args&&typeof args==='object'&&!Array.isArray(args),'REQUEST_REJECTED','请求内容无效');
+   if(accountAddition.snapshot().open||action==='打开独立新店登录')requireThat(['/api/finish-login','/api/accounts/addition/cancel','/api/accounts/addition/qr','/api/accounts/addition/view','/api/stop','/api/shutdown','/api/updates/check','/api/diagnostics/export'].includes(path),'ACCOUNT_ADDITION_BUSY','正在独立添加新店铺；完成或取消后再操作原店铺');
+   if(path==='/api/accounts/addition/qr'){json(200,await accountAddition.loginQr({flowId:args.flowId}));return;}
+   if(path==='/api/accounts/addition/view'){json(200,await accountAddition.readLoginView({flowId:args.flowId}));return;}
+   if(path==='/api/accounts/addition/cancel'){
+    requireThat((!action||['打开独立新店登录','核对并添加新店铺'].includes(action))&&!service.running&&!service.busy,'BUSY','请先等待原店铺工作收尾');
+    await accountAddition.cancel({flowId:args.flowId});json(200,{ok:true,...snapshot()});return;
+   }
    if(path==='/api/updates/check'){json(200,await checkForUpdates(version));return;}
    if(path==='/api/diagnostics/export'){
     requireThat(shopId&&args.shopId===shopId,'SHOP_MISMATCH','当前店铺已变化，请重新导出');
@@ -297,20 +335,29 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     requireThat(review?.shopId===shopId&&review.key===args.key&&!context.hiddenProductIds.includes(review.productId),'PRICE_REVIEW_CHANGED','商品或建议已变化，请刷新列表');
     const dualDecision=context.dualDecisions.get(review.productId);
     if(context.dualEnabled&&(path.endsWith('/preview')||args.decision==='approve'))requireThat((path.endsWith('/preview')?dualPriceApprovalReady(dualDecision):dualPriceProposalReady(dualDecision))&&args.dualPairKey===dualDecision.pairKey&&review.dualPairKey===dualDecision.pairKey&&dualDecision.schemes.some(s=>s.reviewId===review.id&&s.candidateReady!==false),'DUAL_ACTIVITY_RECHECK_REQUIRED','可用方案尚未证明必须降价，或核验已更新；请等待后台重新核验。');
-    if(path.endsWith('/preview')){service.assertBlockedPriceReview(review);const basis=activityPriceBasis(review,args.activityType||review.type,{reviews:journal.priceReviews(shopId),tasks:journal.list(shopId),dualDecision});json(200,{ok:true,option:manualPriceOption(basis,args.discounts)});return;}
+    if(path.endsWith('/preview')){service.assertBlockedPriceReview(review);const basis=activityPriceBasis(review,args.activityType||review.type,{reviews:journal.priceReviews(shopId),tasks:journal.list(shopId),dualDecision});const fixed=priceMode(basis)==='fixed';requireThat(fixed?!args.discounts&&args.priceMode==='fixed':!args.prices&&args.priceMode!=='fixed','PRICE_MODE_CHANGED','只能按本次已核实的价格方式预览，不能混用金额与折扣');json(200,{ok:true,option:manualPriceOption(basis,fixed?args.prices:args.discounts)});return;}
     requireThat(args.decision!=='approve'||args.acceptBlockedPriceChange===true,'PRICE_CONSENT_REQUIRED','须明确确认只调整本商品的确切价格');
     if(context.dualEnabled&&args.decision==='approve'){json(202,{ok:true,...service.queueExactPriceApproval({...args,approvalContext:'recovery-blockers'})});return;}
     const result=service.decidePriceReview({...args,approvalContext:'recovery-blockers'});json(200,{ok:true,review:result});return;
    }else if(path==='/api/price-reviews/decide'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId,'SHOP_MISMATCH','请先连接并核对当前店铺');
     requireThat(args.decision!=='approve'||!originalPricesOnly(),'ORIGINAL_PRICE_BLOCKED','本店只按原价恢复，新价格要求在恢复受阻查看；如需调价请先关闭该模式');
-    const review=service.decidePriceReview({...args,approvalContext:null,manualDiscounts:null});json(200,{ok:true,review});return;
+    const review=service.decidePriceReview({...args,approvalContext:null,manualDiscounts:null,manualPrices:null});json(200,{ok:true,review});return;
    }else if(path==='/api/recovery/request'){
     requireThat(shopId&&args.shopId===shopId&&connection?.shopId===shopId&&!authView().required,'LOGIN_REQUIRED','请先登录并核对当前店铺');
     const productId=id(args.productId,'商品ID');const result=service.requestRecovery([productId],{reason:'user-recheck'});json(202,{ok:true,...result});return;
    }else if(path==='/api/login'){
+    if(args.registerOnly===true){
+     requireThat(args.newAccount===true&&!args.reauthenticate,'ACCOUNT_ADDITION_CONFIG','仅添加新店铺须使用添加其他店铺入口');
+     const health=platform.readHealth?.();requireThat(!action&&!service.running&&!service.busy&&!browser.loginMode&&!health?.active?.length&&!health?.quarantined,'BUSY','请先停止原店铺守护并等待已开始的工作安全收尾');
+     authenticationGeneration++;authenticationRecoveryPaused=true;loginRecovery.cancel();
+     const additionGeneration=authenticationGeneration;
+     await background('打开独立新店登录',async()=>{await browser.close();requireThat(additionGeneration===authenticationGeneration&&!closing,'ACCOUNT_ADDITION_CANCELLED','添加店铺已取消，未打开晚到的登录窗口');connection=null;return accountAddition.start({background:args.background===true,expectedShopId:args.expectedShopId??null,expectedShopName:args.expectedShopName??null});});
+     json(202,{ok:true,...snapshot()});return;
+    }
     const selected=accounts.selected(),reauthenticate=!!selected&&args.newAccount!==true&&(args.reauthenticate===true||authView().required);
     requireThat(!action&&!service.running&&!service.busy&&(!snapshot().unknown||reauthenticate),'BUSY','请等待当前工作停止；未知提交仅允许重新登录同一家店铺后回读');
+    authenticationGeneration++;authenticationRecoveryPaused=false;loginRecovery.cancel();
     await background('打开店铺登录窗口',async()=>{
      await browser.close();connection=null;platform.stopping=false;
      loginExpectedShop=reauthenticate?selected.shopId:null;
@@ -319,7 +366,14 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
      const page=await browser.page();await page.goto(platform.base+LIST,{waitUntil:'domcontentloaded'});return'在专用窗口登录后，点击“登录完成”';
     });
    }else if(path==='/api/finish-login'){
+    if(accountAddition.snapshot().open||args.flowId!==undefined){
+     requireThat(!service.running&&!service.busy,'BUSY','原店铺仍在执行，请先停止');
+     const addition=accountAddition.snapshot(),flowId=args.flowId;requireThat(flowId===addition.flowId&&(addition.open||addition.phase==='added'),'ACCOUNT_ADDITION_FLOW_CHANGED','请使用当前新店登录流程');
+     if(addition.phase==='added'){json(200,{ok:true,alreadyAdded:true,...snapshot()});return;}
+     await background('核对并添加新店铺',()=>accountAddition.finish({flowId}));json(202,{ok:true,...snapshot()});return;
+    }
     requireThat(!service.running,'BUSY','守护期间不能切换登录');
+    authenticationRecoveryPaused=false;
     if(shopId)wakeVerification(journal,shopId,journal.list(shopId).filter(t=>['unknown','verifying'].includes(t.phase)).map(t=>t.id));
     await background('识别店铺并同步当前折扣',async()=>{
      if(browser.loginMode){
@@ -341,6 +395,7 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
     await background('切换店铺并同步折扣',async()=>{await browser.close();bind(accounts.select(target));return await readCurrent();});
    }else if(path==='/api/audit'){
     requireThat(shopId,'LOGIN_REQUIRED','请先登录店铺');requireThat(!service.running,'BUSY','后台已在自动同步');
+    authenticationRecoveryPaused=false;
     await background('同步当前折扣',readCurrent);
    }else if(path==='/api/preflight'){
     requireThat(shopId&&!service.running,'BUSY','请先登录并等待守护停止');
@@ -348,22 +403,26 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
    }else if(path==='/api/start'){
     requireThat(!action&&!service.busy,'BUSY','请等待当前检查完成');
     requireThat(shopId&&connection?.shopId===shopId,'LOGIN_REQUIRED','请先完成店铺登录识别');
+    authenticationRecoveryPaused=false;
     if(!policy.originalRiskAllowed){requireThat(args.originalDiscountConsent===true,'CONSENT_REQUIRED','请先确认按本店已记录的原折扣自动恢复');Object.assign(policy,accounts.authorizeOriginal(shopId));}
     saved.executionEnabled=true;saved.autoStart=true;journal.putSettings(shopId,saved);
     Object.assign(policy,{cutoverConfirmed:true,liveEnabled:true});platform.stopping=false;service.start();
    }else if(path==='/api/stop'){
-    service.stop({pauseRequests:args.forUpgrade!==true});platform.stopping=true;if(shopId){saved.autoStart=false;journal.putSettings(shopId,saved);}
+    authenticationGeneration++;authenticationRecoveryPaused=true;loginRecovery.cancel();service.stop({pauseRequests:args.forUpgrade!==true});platform.stopping=true;if(shopId){saved.autoStart=false;journal.putSettings(shopId,saved);}
+    if(accountAddition.snapshot().open)await accountAddition.cancel({flowId:accountAddition.snapshot().flowId});
    }else if(path==='/api/shutdown'){
     const resumeIdle=args.resumeOnLaunch===true&&(saved.executionEnabled===true||saved.cutoverConfirmed===true)&&saved.autoStart===true;
     requireThat((!service.running||resumeIdle)&&!service.busy&&!action,'BUSY','后台空闲后才可维护退出');
+    if(accountAddition.snapshot().open)await accountAddition.cancel({flowId:accountAddition.snapshot().flowId});
     json(202,{ok:true,shuttingDown:true});setTimeout(()=>{void close();},20);return;
    }else throw Object.assign(new Error('没有此操作'),{code:'NOT_FOUND'});
    json(202,{ok:true,...snapshot()});
   }catch(e){json(e.code==='NOT_FOUND'?404:400,{ok:false,code:e.code||'BAD_REQUEST',message:e.message});}
  });
  await new Promise((accept,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',()=>{boundPort=server.address().port;accept();});});
- async function close(){if(closing)return;closing=true;service.stop();platform.stopping=true;
-  while(service.busy||action)await new Promise(r=>setTimeout(r,100));await browser.close();await new Promise(r=>{server.close(r);server.closeIdleConnections();});journal.close();}
+ async function close(){if(closing)return;closing=true;authenticationGeneration++;authenticationRecoveryPaused=true;clearInterval(authenticationTimer);loginRecovery.cancel();service.stop();platform.stopping=true;
+  if(accountAddition.snapshot().open)await accountAddition.cancel({flowId:accountAddition.snapshot().flowId});
+  while(service.busy||action)await new Promise(r=>setTimeout(r,100));if(accountAddition.snapshot().open)await accountAddition.cancel({flowId:accountAddition.snapshot().flowId});await browser.close();await new Promise(r=>{server.close(r);server.closeIdleConnections();});journal.close();}
  // A desktop upgrade may have paused an older backend using its existing stop
  // API, which clears autoStart. Resume only an already authorized shop; this
  // flag never creates execution, original-discount or price-increase consent.
@@ -375,7 +434,8 @@ export async function createApp({config=null,rootDir=root,port=19417,runtime=joi
  }else if(shopId&&!config&&!dependencies.platform&&!dependencies.service){await background('连接店铺并同步折扣',readCurrent);}
  const url='http://127.0.0.1:'+boundPort;
  await writeFile(join(runtime,'service-status.json'),JSON.stringify({pid:process.pid,url,shopId,startedAt:Date.now(),version,sourceRoot:root,sourceBuild},null,2),'utf8');
- return {server,url,close,snapshot};
+ authenticationTimer=setInterval(()=>{void recheckAuthentication().catch(()=>{});},1000);authenticationTimer.unref();
+ return {server,url,close,snapshot,recheckAuthentication};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const flag=process.argv.indexOf('--shop');let config=null;

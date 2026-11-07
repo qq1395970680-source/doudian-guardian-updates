@@ -1,4 +1,5 @@
 import {fingerprint,proveReadback,requireThat} from './policy.mjs';
+import {priceModeFields} from './price-mode.mjs';
 export {officialQuerySurfaceSnapshot,officialQueryCoverage} from './official-query-coverage.mjs';
 
 // Investigation is diagnostic evidence. It never authorizes another submit,
@@ -72,7 +73,7 @@ export function assessSubmissionQuery(listing,query,task,now=Date.now(),{maxAgeM
  return{complete:issues.length===0,code:issues[0]?.code||'QUERY_COMPLETE',issues,ageMs,maxAgeMs,observedAt:listing?.observedAt||null,query,dateCoverage:dateCoverage(listing,task),reason:issues[0]?.reason||'已完整读取且复核本次查询控件。'};
 }
 export function submissionReadbackObservation(task,campaign,detail){
- return{complete:detail.complete,shopId:task.shopId,title:campaign.name,campaignId:campaign.id,status:campaign.status,
+ return{...priceModeFields(detail),complete:detail.complete,shopId:task.shopId,title:campaign.name,campaignId:campaign.id,status:campaign.status,
   observedAt:detail.observedAt,type:campaign.type,rules:detail.rules,rows:detail.products.flatMap(p=>p.skus.map(s=>({...s,productId:p.productId}))),startAt:campaign.startAt,endAt:campaign.endAt,
   ...(campaign.type==='限量抢购'?{productLimits:detail.products.map(p=>({productId:p.productId,activityLimit:p.activityLimit}))}:{})};
 }

@@ -5,6 +5,7 @@ import {createRecoveryWorkspace} from './recovery-workspace.js';
 import {createMigration} from './migration.js';
 import {createRecoveries} from './recoveries.js';
 import {createPriceWorkspace} from './blocker-prices.js';
+import {isFixedPrice} from './price-display.js';
 const names={overview:'折扣概览',workspace:'恢复工作台',recoveries:'恢复记录',accounts:'店铺管理',activity:'运行记录',updates:'软件更新'};
 const labels={active:'生效中',scheduled:'未开始',missing:'待恢复',pending:'待核实',unconfirmed:'待更新',excluded:'已排除',recycled:'商品已回收','off-shelf':'商品已下架'};
 const phases={queued:'待准备',prepared:'草稿已核对',submitting:'提交已记录',verifying:'回读中',unknown:'待核实',verified:'回读通过',blocked:'本次未完成'};
@@ -52,13 +53,14 @@ function renderCatalog(force=false){
   if(p.recoveryFailure&&!resolvedChronology)titleBody.append(node('small','reason',failureLabel+' · '+friendly(p.recoveryFailure.message)));
   const lastOnly=!p.current.length&&p.state==='unconfirmed'&&p.lastObserved?.length>0,shown=lastOnly?p.lastObserved:p.current,skus=shown.flatMap(a=>a.skus),price=node('span','price',range(skus.map(s=>s.saleFen),money));
   if(lastOnly)price.append(node('small','last-price-note','上次读取 '+time(Math.min(...shown.map(a=>a.observedAt)))));
-  summary.append(title,price,node('span','discount',range(skus.map(s=>s.discount),discount)),badge(p.displayAttention?.label||(p.recoveryFailure?failureLabel:labels[p.state]),resolvedChronology?'neutral':p.displayAttention?.waiting?'amber':p.recoveryFailure?'amber':p.state==='active'?'green':p.state==='missing'?'amber':p.state==='pending'?'purple':'neutral'),icon('chevron'));
+  const fixedShown=shown.filter(isFixedPrice),priceMode=fixedShown.length?(fixedShown.length===shown.length?'一口价':'多种定价'):!shown.length&&isFixedPrice(p.history)?'一口价（历史）':range(skus.map(s=>s.discount),discount);
+  summary.append(title,price,node('span','discount',priceMode),badge(p.displayAttention?.label||(p.recoveryFailure?failureLabel:labels[p.state]),resolvedChronology?'neutral':p.displayAttention?.waiting?'amber':p.recoveryFailure?'amber':p.state==='active'?'green':p.state==='missing'?'amber':p.state==='pending'?'purple':'neutral'),icon('chevron'));
   detail.append(summary);let populated=false;const populate=()=>{if(populated)return;populated=true;const inner=node('div','sku-detail');
-   const addActivity=(a,title)=>{inner.append(node('h3','',title+' · '+(a.campaignId||'')));const table=node('table','sku-table'),head=node('thead'),tr=node('tr');for(const h of ['规格','原价','折后价','折扣'])tr.append(node('th','',h));head.append(tr);table.append(head);const body=node('tbody');for(const s of a.skus){const row=node('tr');for(const cell of [s.name||s.id,money(s.baseFen),money(s.saleFen),discount(s.discount)])row.append(node('td','',cell));body.append(row);}table.append(body);inner.append(table);if(a.skus.some(s=>s.saleSource==='computed-from-verified-base-and-discount'))inner.append(node('p','detail-note','部分折后价由已核对的原价 × 折扣计算。'));};
+   const addActivity=(a,title)=>{const fixed=isFixedPrice(a);inner.append(node('h3','',title+' · '+(a.campaignId||'')+(fixed?' · 一口价':'')));const table=node('table','sku-table'),head=node('thead'),tr=node('tr');for(const h of ['规格','原价',fixed?'一口价':'折后价',fixed?'定价方式':'折扣'])tr.append(node('th','',h));head.append(tr);table.append(head);const body=node('tbody');for(const s of a.skus){const row=node('tr');for(const cell of [s.name||s.id,money(s.baseFen),money(s.saleFen),fixed?'固定金额':discount(s.discount)])row.append(node('td','',cell));body.append(row);}table.append(body);inner.append(table);if(fixed)inner.append(node('p','detail-note','按每个规格的固定活动金额恢复；优惠券和礼金会另行影响到手价。'));else if(a.skus.some(s=>s.saleSource==='computed-from-verified-base-and-discount'))inner.append(node('p','detail-note','部分折后价由已核对的原价 × 折扣计算。'));};
    for(const a of p.current)addActivity(a,p.stale?'上次读到的活动（待刷新）':'当前活动');for(const a of p.scheduled)addActivity(a,'即将开始');
    if(lastOnly){inner.append(node('p','detail-note','以下为上次读取的价格，正在重新核对，不能代表当前仍然生效。'));for(const a of p.lastObserved)addActivity(a,'上次读取 '+time(a.observedAt));}
-   if(!p.current.length&&!p.scheduled.length)inner.append(node('p','detail-note','当前折后价尚未确认，历史价格仅供对照。'));
-   if(p.history){const history=node('details'),hs=node('summary','detail-note','查看完整历史规格');history.append(hs);history.addEventListener('toggle',()=>{if(history.open&&!history.dataset.loaded){history.dataset.loaded='1';const box=node('div');const before=inner.childNodes.length;addActivity(p.history,'历史折扣');for(const child of [...inner.childNodes].slice(before))box.append(child);history.append(box);}});inner.append(history);}
+   if(!p.current.length&&!p.scheduled.length)inner.append(node('p','detail-note','当前活动价尚未确认，历史价格仅供对照。'));
+   if(p.history){const history=node('details'),hs=node('summary','detail-note','查看完整历史规格');history.append(hs);history.addEventListener('toggle',()=>{if(history.open&&!history.dataset.loaded){history.dataset.loaded='1';const box=node('div');const before=inner.childNodes.length;addActivity(p.history,isFixedPrice(p.history)?'历史一口价':'历史折扣');for(const child of [...inner.childNodes].slice(before))box.append(child);history.append(box);}});inner.append(history);}
    if(readback)inner.append(node('p','detail-note','本商品的恢复已独立回读，正在更新店铺目录；当前活动状态以后续读取为准。'));
    else if(observed)inner.append(node('p','detail-note','后来已读取到本商品的活动信息，正在核对当前状态；这不代表活动目前仍然生效。'));
    else if(p.reason)inner.append(node('div','reason',friendly(p.reason)));
@@ -113,15 +115,15 @@ function renderActivity(s){
   const key='event:'+(e.id||e.at+':'+e.kind),detail=node('details','record-details');detail.open=openActivity.has(key);detail.ontoggle=()=>detail.open?openActivity.add(key):openActivity.delete(key);detail.append(node('summary','','详细记录'),node('p','',e.kind));if(e.detail.productId)detail.append(node('p','','商品 '+e.detail.productId));if(e.detail.message||e.detail.reason)detail.append(node('p','',e.detail.message||e.detail.reason));if(e.detail.runtimeBuild?.version)detail.append(node('p','','发生版本 '+e.detail.runtimeBuild.version));body.append(detail);item.append(node('span','record-icon blue','·'),body,node('time','',time(e.at)));events.append(item);
  }if(!s.events?.length)events.append(node('div','empty','新的运行记录会显示在这里'));more(events,s.events?.length||0,eventLimit,'event');$('events').replaceChildren(events);
 }
-function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s.running,s.busy,s.action,s.unknown]);if(signature!==accountSignature){accountSignature=signature;const fragment=document.createDocumentFragment();for(const a of s.accounts||[]){const row=node('div','setting-row'),body=node('div');body.append(node('strong','',a.name||'店铺'),node('p','',a.shopId));row.append(body);if(a.shopId===s.shopId)row.append(badge('当前店铺','blue'));else{const b=node('button','button small secondary','切换店铺');b.disabled=!!(s.running||s.busy||s.action||s.unknown);b.onclick=()=>act('accounts/select',{shopId:a.shopId});row.append(b);}fragment.append(row);}if(!s.accounts?.length)fragment.append(node('div','empty','登录后自动添加店铺，无需填写店铺 ID'));$('account-list').replaceChildren(fragment);$('account-switcher').open=(s.accounts?.length||0)>1;}
- text('connection',s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':s.authentication?.required?'店铺登录已失效，请重新登录本店；历史折扣和确认方案已保留':s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:'登录后自动读取店铺名称、当前活动与规格价格');
+function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s.running,s.busy,s.action,s.unknown,!!s.accountAddition?.open]);if(signature!==accountSignature){accountSignature=signature;const fragment=document.createDocumentFragment();for(const a of s.accounts||[]){const row=node('div','setting-row'),body=node('div');body.append(node('strong','',a.name||'店铺'),node('p','',a.shopId));row.append(body);if(a.shopId===s.shopId)row.append(badge('当前店铺','blue'));else{const b=node('button','button small secondary','切换店铺');b.disabled=!!(s.running||s.busy||s.action||s.unknown||s.accountAddition?.open);b.onclick=()=>act('accounts/select',{shopId:a.shopId});row.append(b);}fragment.append(row);}if(!s.accounts?.length)fragment.append(node('div','empty','登录后自动添加店铺，无需填写店铺 ID'));$('account-list').replaceChildren(fragment);$('account-switcher').open=(s.accounts?.length||0)>1;}
+ text('connection',s.accountAddition?.open?'正在登录新店，仅添加到店铺列表；当前店铺和未核实任务保持原状。':s.loginOpen?'请在专用窗口登录，然后点击“登录完成”':s.authentication?.required?'店铺登录已失效，请重新登录本店；历史折扣和确认方案已保留':s.connection?`已识别 ${s.connection.name||s.name||'店铺'} · ${s.connection.shopId}`:'登录后自动读取店铺名称、当前活动与规格价格');
  text('consent-status',s.originalRestoreAuthorized?'已确认原折扣恢复':'尚未确认');$('consent-wrap').hidden=!!s.originalRestoreAuthorized;text('exclusions',s.excluded?.length?'已排除 '+s.excluded.length+' 件商品，可在概览的已排除列表查看':'当前没有排除商品');
  const automatic=s.automaticPriceIncreaseEnabled===true,signaturePolicy=JSON.stringify([s.shopId,automatic]);
  if(signaturePolicy!==pricePolicySignature){pricePolicySignature=signaturePolicy;$('price-increase-consent').checked=false;}
  const managed=s.careRecoveryEnabled===true||s.dualActivityCareEnabled===true;
  $('price-increase-consent-wrap').hidden=automatic;text('price-increase-status',managed?'由省心守护统一管理':automatic?'已开启本店自动提价':'等待逐项确认');
  text('price-increase-policy',managed?'由省心守护统一管理':automatic?'停止自动提价':'开启自动提价');
- const ready=online&&!pending&&!s.action&&s.shopId&&s.connection?.shopId===s.shopId;
+ const ready=online&&!pending&&!s.action&&!s.accountAddition?.open&&s.shopId&&s.connection?.shopId===s.shopId;
  const care=s.dualActivityCareEnabled===true,legacyCare=s.careRecoveryEnabled===true,careSignature=JSON.stringify([s.shopId,care,legacyCare]);
  if(carePolicySignature!==careSignature){carePolicySignature=careSignature;$('care-policy-consent').checked=false;}
  $('care-policy-consent-wrap').hidden=care;text('care-policy-status',care?'已开启双方案':legacyCare?'原活动守护已开启':'未开启双方案');text('care-policy-save',care?'停用双方案守护':'开启双方案守护');
@@ -145,12 +147,17 @@ function renderAccounts(s){const signature=JSON.stringify([s.accounts,s.shopId,s
 }
 function render(s){
  if(s.instance&&s.instance!==instance){location.reload();return;}state=s;
- const loginRequired=s.authentication?.required===true||s.lastRun?.code==='LOGIN_REQUIRED'&&!s.action&&!s.running&&!s.authentication;
- $('login-alert').hidden=!loginRequired&&!s.loginOpen;text('login-alert-message',s.loginOpen?'请在专用窗口完成登录，再点击“登录完成”':'店铺登录已失效，守护已暂停；历史折扣与价格确认保留');
- text('reauthenticate',s.loginOpen?'登录完成':'重新登录本店');$('reauthenticate').disabled=pending||!online||!!s.action||!!s.busy||s.running;
+ const loginRequired=s.authentication?.required===true||s.lastRun?.code==='LOGIN_REQUIRED'&&!s.action&&!s.running&&!s.authentication,loginRechecking=s.authentication?.rechecking===true,additionOpen=s.accountAddition?.open===true;
+ $('login-alert').hidden=!loginRequired&&!s.loginOpen&&!loginRechecking&&!additionOpen;$('login-alert').classList.toggle('account-addition-notice',additionOpen);$('login-alert').classList.toggle('danger',!additionOpen);$('login-alert').setAttribute('role',additionOpen?'status':'alert');
+ text('login-alert-message',additionOpen?'登录新店后仅添加，当前店铺不切换':s.loginOpen?'请在专用窗口完成登录，再点击“登录完成”':loginRechecking?'正在重新核对店铺登录，守护暂时暂停':'店铺登录已失效，守护已暂停；历史价格与确认方案保留');
+ const persistenceSaved=s.authentication?.persistentSession?.available===true&&s.authentication.persistentSession.state==='saved';
+ text('login-alert-detail',additionOpen?'当前店铺与未核实任务保留，新店尚未守护。'+(s.accountAddition.background?'请使用展示的官方登录二维码完成扫码，再点击“新店登录完成”。':'请在新店专用窗口完成登录，再点击“新店登录完成”。'):s.loginOpen?'完成平台要求的扫码或验证后，程序会重新核对这家店铺。':loginRechecking?'正在用本店已保存的登录资料重新读取，不会创建活动或改价。':persistenceSaved?'本机登录资料已保存；平台仍可能要求重新扫码或验证。':'原店铺资料和任务保留，重新登录后继续核验。');
+ text('reauthenticate',additionOpen?'新店登录完成':s.loginOpen?'登录完成':loginRechecking?'正在核对':'重新登录本店');$('reauthenticate').disabled=pending||!online||!!s.action||!!s.busy||s.running||!additionOpen&&loginRechecking;
+ $('cancel-account-addition').hidden=!additionOpen;$('cancel-account-addition').disabled=pending||!online||!!s.action;
  const sessionWarning=s.authentication?.persistentSession?.available===false;$('session-alert').hidden=!sessionWarning;
  if(sessionWarning)text('session-alert',s.authentication.persistentSession.message);
- $('action-alert').hidden=s.lastAction?.ok!==false||!!s.action;if(s.lastAction?.ok===false)text('action-alert',friendly(s.lastAction.message));
+ const duplicateLoginAction=(loginRequired||loginRechecking)&&(s.lastAction?.code==='LOGIN_REQUIRED'||/LOGIN_REQUIRED|专用浏览器登录已失效|店铺登录已失效/.test(s.lastAction?.message||''));
+ $('action-alert').hidden=s.lastAction?.ok!==false||!!s.action||duplicateLoginAction;if(s.lastAction?.ok===false&&!duplicateLoginAction)text('action-alert',friendly(s.lastAction.message));
  text('shop',s.shopId?(s.name||'店铺')+' · '+s.shopId:'尚未登录店铺');text('avatar',(s.name||'店').slice(0,1));$('shop-dot').classList.toggle('online',!!s.connection&&!loginRequired);
  const desktopVersion=window.guardianDesktop?.version,versionMismatch=!!desktopVersion&&desktopVersion!==s.version;
  text('version','后台 v'+s.version);text('update-version',desktopVersion?'桌面 '+desktopVersion+' · 后台 '+s.version+(versionMismatch?'（后台尚未切换）':''):'后台 '+s.version);text('footer-state',s.running?'守护正在后台运行':'后台已连接');
@@ -173,22 +180,24 @@ function render(s){
  }
  if(blockedCleanup){text('progress','读取已中止，专用浏览器关闭尚未确认。请使用程序工具中的“修复只读后台”。');text('patrol-status','清理待核实');text('run-pill','守护已暂停');}
  if(s.immediateRecovery?.pending&&!s.immediateRecovery.paused&&!loginRequired&&!blockedCleanup){text('run-pill',`优先恢复 ${s.immediateRecovery.pending} 件已请求商品`);text('patrol-status','优先恢复');}
- if(loginRequired){text('progress','平台登录已失效，守护已暂停。请重新登录本店。');text('patrol-status','需要登录');text('run-pill','等待重新登录');text('hero-title','店铺登录已失效');text('hero-detail','重新登录本店后重新核对活动；原有守护、商品历史和确切价格方案保留。');text('footer-state','店铺需要重新登录');text('connection-label','后台在线 · 店铺需登录');$('connection-dot').classList.remove('online');}
+ if(loginRequired||loginRechecking){text('progress',loginRechecking?'正在只读核对本店登录，确认后再继续守护。':'平台登录已失效，守护已暂停。请重新登录本店。');text('patrol-status',loginRechecking?'核对登录中':'需要登录');text('run-pill',loginRechecking?'正在核对登录':'等待重新登录');text('hero-title',loginRechecking?'正在核对店铺登录':'店铺登录已失效');text('hero-detail',loginRechecking?'使用本店已有资料重新核对连接；当前不会创建活动或调整价格。':'重新登录本店后重新核对活动；原有守护、商品历史和确切价格方案保留。');text('footer-state',loginRechecking?'正在核对本店登录':'店铺需要重新登录');text('connection-label',loginRechecking?'后台在线 · 正在核对登录':'后台在线 · 店铺需登录');$('connection-dot').classList.remove('online');}
  if(!working&&!loginRequired&&!blockedCleanup&&s.lastRun?.ok===false){text('patrol-status','巡检未完成');text('progress',p.stage+' · '+(s.lastRun.message||s.lastRun.code));text('run-pill',s.running?'等待下一轮核对':'守护已暂停');}
- $('login').disabled=pending||!online||working||s.running||!!s.unknown;$('finish-login').disabled=pending||!online||working||s.running||(!s.loginOpen&&!s.shopId);text('finish-login',s.loginOpen?'登录完成':'重新连接');
- $('audit').disabled=pending||!online||working||s.running||!s.shopId;$('start').disabled=pending||!online||working||s.running||!s.connection||loginRequired;
- text('login',s.shopId?'重新登录本店':'登录店铺');$('add-account').disabled=pending||!online||working||s.running||!!s.unknown;
+ $('login').disabled=pending||!online||working||s.running||!!s.unknown||additionOpen;$('finish-login').disabled=pending||!online||working||s.running||(!s.loginOpen&&!s.shopId);text('finish-login',additionOpen?'新店登录完成':s.loginOpen?'登录完成':'重新连接');
+ $('audit').disabled=pending||!online||working||s.running||!s.shopId||additionOpen;$('start').disabled=pending||!online||working||s.running||!s.connection||loginRequired||loginRechecking||additionOpen;
+ text('login',s.shopId?'重新登录本店':'登录店铺');$('add-account').disabled=pending||!online||working||s.running||additionOpen;
  $('stop').disabled=pending||!online||!(s.running||s.busy);
  $('start').hidden=!!s.running;$('stop').hidden=!(s.running||s.busy);
  recoveryWorkspace.sync();priceWorkspace.sync();renderAccounts(s);migration.sync();recoveries.sync();if(view==='activity')renderActivity(s);
 }
 async function post(path,args={}){const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Guardian-Token':token},body:JSON.stringify(args),signal:AbortSignal.timeout(25000)});const result=await response.json();if(!response.ok)throw Error(result.message||'操作未完成');return result;}
 async function act(name,args={}){if(pending)return;if(name==='start'&&!state.originalRestoreAuthorized&&!$('original-consent').checked){navigate('accounts');toast('请先确认本店的原折扣恢复规则，然后开启守护。');$('original-consent').focus();return;}
- pending=true;if(state)render(state);try{await post(name,{...args,...(name==='start'?{originalDiscountConsent:$('original-consent').checked}:{})});toast(name==='login'?'登录窗口正在打开，完成后点击“登录完成”。':name==='stop'?'已请求暂停，正在安全收尾。':'已开始处理');catalogAt=0;}catch(e){toast(e.message);}finally{pending=false;await poll();}}
+ const additionFlow=state?.accountAddition?.open&&['finish-login','accounts/addition/cancel'].includes(name)?{flowId:state.accountAddition.flowId}:{};
+ pending=true;if(state)render(state);try{await post(name,{...args,...additionFlow,...(name==='start'?{originalDiscountConsent:$('original-consent').checked}:{})});toast(name==='login'?(args.registerOnly?'正在准备新店登录；完成后仅添加店铺，当前店铺不切换。':'登录窗口正在打开，完成后点击“登录完成”。'):name==='accounts/addition/cancel'?'已取消添加，当前店铺和任务保留。':name==='stop'?'已请求暂停，正在安全收尾。':'已开始处理');catalogAt=0;}catch(e){toast(e.message);}finally{pending=false;await poll();}}
 for(const name of ['finish-login','audit','start','stop'])$(name).onclick=()=>act(name);
 $('login').onclick=()=>act('login',state?.shopId?{reauthenticate:true}:{});
-$('add-account').onclick=()=>act('login',{newAccount:true});
-$('reauthenticate').onclick=()=>act(state?.loginOpen?'finish-login':'login',{reauthenticate:true});
+$('add-account').onclick=()=>act('login',{newAccount:true,...(state?.unknown>0?{registerOnly:true}:{})});
+$('reauthenticate').onclick=()=>act(state?.loginOpen||state?.accountAddition?.open?'finish-login':'login',{reauthenticate:true});
+$('cancel-account-addition').onclick=()=>act('accounts/addition/cancel');
 $('care-policy-consent').onchange=()=>{if(state)renderAccounts(state);};
 $('care-policy-save').onclick=()=>{if(!state)return;const enabled=!state.dualActivityCareEnabled;if(enabled&&!$('care-policy-consent').checked)return;void act('dual-activity-care-policy',{shopId:state.shopId,enabled,acceptBothActivityTypes:enabled&&$('care-policy-consent').checked,acceptNonReducingRecovery:enabled&&$('care-policy-consent').checked});};
 $('legacy-care-policy-consent').onchange=()=>{if(state)renderAccounts(state);};

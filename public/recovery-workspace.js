@@ -1,3 +1,4 @@
+import {isFixedPrice} from './price-display.js';
 // One product, one row. Only the service can classify a confirmed reduction.
 export function createRecoveryWorkspace({getState,post,toast,node,time,openPricing}){
  const $=id=>document.getElementById(id);
@@ -28,7 +29,7 @@ export function createRecoveryWorkspace({getState,post,toast,node,time,openPrici
    const status=renderedScope==='confirm'?'两种活动均需降价':record.statusLabel||labels[record.category]||labels[record.verificationState]||(renderedScope==='history'?'已处理':'后台核验中');
    heading.append(node('strong','',record.name||'商品 '+record.productId),node('span','badge '+(renderedScope==='confirm'?'amber':renderedScope==='automatic'?'blue':'neutral'),status));
    const summary=record.summary||record.message||(renderedScope==='automatic'?'后台会继续核对平台状态，无需重复操作。':'打开查看当时的处理记录。');
-   body.append(heading,node('p','workspace-row-summary',String(summary).replace(/^[A-Z_]+:\s*/,'')),node('small','workspace-row-meta','商品 '+record.productId+(record.updatedAt?' · '+time(record.updatedAt):'')));
+   body.append(heading,node('p','workspace-row-summary',String(summary).replace(/^[A-Z_]+:\s*/,'')),node('small','workspace-row-meta','商品 '+record.productId+(isFixedPrice(record)?' · 一口价':'')+(record.updatedAt?' · '+time(record.updatedAt):'')));
    const actions=node('div','workspace-row-actions'),button=node('button','button small '+(renderedScope==='confirm'?'primary':'secondary'),renderedScope==='confirm'?'核对降价':renderedScope==='history'?'查看记录':'查看核验');button.dataset.openPriceReview=record.productId;
    button.onclick=()=>openPricing({...record,reviewId:renderedScope==='history'?record.reviewId:null,history:renderedScope==='history'});actions.append(button);
    if(renderedScope==='automatic'&&record.canRecheck===true){const retry=node('button','text-button','重新核验');retry.disabled=!current.online||current.state?.connection?.shopId!==shop;retry.onclick=async()=>{retry.disabled=true;try{await post('recovery/request',{shopId:shop,productId:record.productId});toast('已请求重新核验，后台会继续处理。');}catch(error){toast(error.message);}finally{signature='';void refresh();}};actions.append(retry);}

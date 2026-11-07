@@ -1,4 +1,5 @@
 import {fingerprint,saleFen} from './policy.mjs';
+import {priceMode,priceModeFields} from './price-mode.mjs';
 
 export const verifiedRecoveryReceipt=(task,shopId)=>task.shopId===shopId&&task.phase==='verified'&&task.submitAttempts>0&&
  typeof task.receipt?.campaignId==='string'&&task.receipt.campaignId.length>0&&Number.isFinite(task.receipt.verifiedAt)&&task.receipt.verifiedAt>0&&
@@ -21,10 +22,11 @@ export function buildRecoveryHistory({shopId,tasks=[],reviews=[],filter='verifie
    const approval=approvals.get(plan.priceApprovalId),matching=approval?.productId===plan.productId;
    const skus=(plan.skus||[]).map(s=>{
     const historicalDiscount=s.originalDiscount??s.discount;let historicalSaleFen=null;
-    try{historicalSaleFen=saleFen(s.baseFen,historicalDiscount);}catch{}
+    if(priceMode(plan)==='fixed')historicalSaleFen=s.originalSaleFen??s.saleFen;
+    else try{historicalSaleFen=saleFen(s.baseFen,historicalDiscount);}catch{}
     return{id:s.id,name:s.name,baseFen:s.baseFen,discount:s.discount,saleFen:s.saleFen,historicalDiscount,historicalSaleFen};
    });
-   records.push({id:task.id+':'+plan.productId,taskId:task.id,productId:plan.productId,name:plan.name||'商品 '+plan.productId,
+   records.push({...priceModeFields(plan),id:task.id+':'+plan.productId,taskId:task.id,productId:plan.productId,name:plan.name||'商品 '+plan.productId,
     activityType:plan.type,activityLimit:plan.activityLimit??null,durationMs:plan.durationMs??null,autoRenew:plan.rules?.autoRenew??null,
     phase:task.phase,state,createdAt:task.createdAt,submittedAt:task.submittedAt||null,updatedAt:task.updatedAt,
     verifiedAt:receiptValid?receipt.verifiedAt:null,campaignId:receiptValid?receipt.campaignId:null,

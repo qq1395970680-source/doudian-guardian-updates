@@ -1,3 +1,4 @@
+import {isFixedPrice} from './price-display.js';
 // Pending decisions are summaries; exact prices have one shared drawer.
 export function createPriceReviews({getState,node,money,time,openPricing,navigate}){
  const $=id=>document.getElementById(id);let shop=undefined,scope='pending',direction='all',page=0,pages=1,loading=false,generation=0,signature='';
@@ -16,7 +17,7 @@ export function createPriceReviews({getState,node,money,time,openPricing,navigat
    const row=node('article','price-queue-row'),body=node('div','price-queue-copy'),head=node('div','button-row');row.dataset.reviewId=review.id;row.dataset.priceProduct=review.productId;
    const raised=review.rows.filter(s=>s.saleFen>s.previousFen),lowered=review.rows.filter(s=>s.saleFen<s.previousFen);
    head.append(node('strong','',review.name||'商品 '+review.productId),node('span','badge '+(review.status==='pending'?'amber':'neutral'),review.status==='pending'?(lowered.length?'需要降价确认':'需要核对方案'):review.status==='approved'?'已确认价格':review.status==='declined'?'暂不调整':'历史记录'));
-   body.append(head,node('p','helper',review.status==='pending'?`${review.rows.length} 个规格 · ${review.type||'活动规则待核对'}${lowered.length?' · '+lowered.length+' 个需降价，单个最多降低 '+money(Math.max(...lowered.map(s=>s.previousFen-s.saleFen))):raised.length?' · '+raised.length+' 个规格提价':' · 价格或来源需重新核对'}`:`${time(review.approvedAt||review.createdAt)} · ${review.rows.length} 个规格`));
+   body.append(head,node('p','helper',review.status==='pending'?`${review.rows.length} 个规格 · ${review.type||'活动规则待核对'}${isFixedPrice(review)?' · 一口价':''}${lowered.length?' · '+lowered.length+' 个需降价，单个最多降低 '+money(Math.max(...lowered.map(s=>s.previousFen-s.saleFen))):raised.length?' · '+raised.length+' 个规格提价':' · 价格或来源需重新核对'}`:`${time(review.approvedAt||review.createdAt)} · ${review.rows.length} 个规格${isFixedPrice(review)?' · 一口价':''}`));
    const button=node('button','button small '+(review.status==='pending'?'primary':'secondary'),review.status==='pending'?'核对价格':'查看记录');button.dataset.openPriceReview=review.productId;button.onclick=()=>openPricing({...review,reviewId:renderedScope==='history'?review.id:null});row.append(body,button);return row;
   });
   if(!rows.length){const empty=node('div','empty');empty.append(node('strong','',scope==='history'?'暂无确认记录':'当前没有需要你确认的价格'),node('p','',scope==='history'?'今后的确认会保留在这里。':'后台会继续自动核验。读取、提交等问题统一在恢复受阻查看。'));if(scope==='pending'){const go=node('button','button small secondary','查看恢复受阻');go.onclick=()=>navigate('blockers');empty.append(go);}rows.push(empty);}$('price-reviews').replaceChildren(...rows);
